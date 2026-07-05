@@ -23,6 +23,12 @@ interface UITranslationRow {
 
 type TranslationSourceLabels = Record<string, string>;
 
+interface ChangelogEntry {
+  version: string;
+  date?: string;
+  items: string[];
+}
+
 interface TranslationImportStats {
   total: number;
   imported: number;
@@ -246,6 +252,10 @@ export default function SystemConfigPage() {
   const [translationSaving, setTranslationSaving] = useState(false);
   const [translationFilling, setTranslationFilling] = useState(false);
   const [translationSourceLabels, setTranslationSourceLabels] = useState<TranslationSourceLabels>({});
+  const [versionOpen, setVersionOpen] = useState(false);
+  const [appVersion, setAppVersion] = useState("");
+  const [changelog, setChangelog] = useState<ChangelogEntry[]>([]);
+  const [changelogErr, setChangelogErr] = useState("");
 
   useEffect(() => {
     adminApi<Record<string, unknown>>("/system-configs").then((cfg) => {
@@ -277,6 +287,31 @@ export default function SystemConfigPage() {
       setTranslationRows(normalizeTranslationRows(cfg.ui_translation_overrides));
     });
   }, []);
+
+  const loadVersionInfo = async () => {
+    setChangelogErr("");
+    if (changelog.length) return;
+      try {
+        const res = await fetch("/admin/version", { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const rows = Array.isArray(data?.changelog) ? data.changelog : [];
+        setAppVersion(String(data?.version || rows[0]?.version || ""));
+        setChangelog(rows);
+      } catch (err) {
+        setChangelogErr(err instanceof Error ? `更新记录读取失败：${err.message}` : "更新记录读取失败");
+      }
+  };
+
+  useEffect(() => {
+    loadVersionInfo();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const openVersionLog = async () => {
+    setVersionOpen(true);
+    await loadVersionInfo();
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -624,7 +659,16 @@ export default function SystemConfigPage() {
     <div className="w-full">
       <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-950">系统配置</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-bold text-gray-950">系统配置</h1>
+            <button
+              type="button"
+              onClick={openVersionLog}
+              className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-xs font-semibold text-gray-500 shadow-sm hover:border-gray-300 hover:text-gray-900"
+            >
+              当前版本 {appVersion ? `v${appVersion.replace(/^v/i, "")}` : "读取中"}
+            </button>
+          </div>
           <p className="mt-1 text-sm text-gray-500">把品牌展示、登录注册、对象存储、OAuth 和邮件发信集中放在这里统一维护。</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -634,6 +678,35 @@ export default function SystemConfigPage() {
           {/* <div className="rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs text-gray-500 shadow-sm">保存后前台与后台品牌区域会同步读取最新配置</div> */}
         </div>
       </div>
+
+      {versionOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setVersionOpen(false)}>
+          <div className="w-full max-w-2xl rounded-2xl bg-white p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-950">更新记录</h2>
+                <p className="mt-1 text-xs text-gray-400">当前版本 {appVersion ? `v${appVersion.replace(/^v/i, "")}` : "读取中"}，内容来自 apps/admin/CHANGELOG.md。</p>
+              </div>
+              <button type="button" onClick={() => setVersionOpen(false)} className="rounded-xl border px-3 py-2 text-sm text-gray-500 hover:bg-gray-50">关闭</button>
+            </div>
+            {changelogErr ? <div className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-600">{changelogErr}</div> : null}
+            {!changelogErr && changelog.length === 0 ? <div className="rounded-xl bg-gray-50 px-3 py-8 text-center text-sm text-gray-400">正在读取更新记录...</div> : null}
+            <div className="max-h-[60vh] space-y-4 overflow-y-auto pr-1">
+              {changelog.map((entry) => (
+                <div key={`${entry.version}-${entry.date || ""}`} className="rounded-2xl border border-gray-200 p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="font-semibold text-gray-950">v{entry.version.replace(/^v/i, "")}</div>
+                    {entry.date ? <div className="text-xs text-gray-400">{entry.date}</div> : null}
+                  </div>
+                  <ul className="mt-3 space-y-2 text-sm leading-6 text-gray-600">
+                    {entry.items.length ? entry.items.map((item) => <li key={item}>- {item}</li>) : <li>- 暂无更新说明。</li>}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {uiLanguageOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setUiLanguageOpen(false)}>

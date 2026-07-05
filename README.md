@@ -53,6 +53,40 @@ StarAI 是一套 AI 聚合平台，可以把市面上优秀的大模型接入到
 
 ![后台视频模型配置](docs/images/admin-models-video.webp)
 
+
+
+## 系统环境要求
+
+本地开发建议使用：
+
+| 环境 | 要求 |
+|---|---|
+| 操作系统 | Windows 10/11、macOS、Linux |
+| Node.js | 20 或更高版本 |
+| pnpm | 建议使用最新版 |
+| Go | 1.25 或更高版本 |
+| Docker | Docker Desktop 或 Docker Engine |
+| Git | 用于拉取代码和版本管理 |
+
+Windows 用户建议使用 PowerShell 运行脚本，并提前启动 Docker Desktop。
+
+## 安装前置准备
+
+本地启动前，请先确认：
+
+- 已安装并启动 Docker。
+- 已安装 Node.js 20+。
+- 已安装 Go 1.25+。
+- 已安装 Git。
+- 当前目录可以正常执行 PowerShell 脚本。
+- 端口 `3000`、`3001`、`3002`、`5432`、`6379`、`8080`、`9000`、`9001` 没有被其它程序占用。
+
+如果还没有 pnpm，可以执行：
+
+```bash
+corepack enable
+```
+
 ## 本地一键启动
 
 Windows / PowerShell：

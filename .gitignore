@@ -1,0 +1,69 @@
+# Dependencies
+node_modules/
+
+# Frontend build outputs
+.next/
+out/
+dist/
+build/
+apps/*/.next/
+apps/*/out/
+apps/*/dist/
+apps/*/build/
+
+# Go / binary outputs
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+bin/
+
+# Local env and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and local runtime files
+*.log
+*.err.log
+.tmp*.log
+.tmp*.err.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+
+# Private backups and deployment settings packs
+backups/
+*.dump
+*.backup
+starai-full-backup-*.tar.gz
+starai-settings-*.tar.gz
+
+# Generated uploads and local storage
+data/uploads/
+data/tmp/
+uploads/
+uploads-local/
+apps/*/public/uploads/
+apps/*/public/uploads-local/
+
+# Caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.turbo/
+.cache/
+.parcel-cache/
+.eslintcache
+coverage/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/

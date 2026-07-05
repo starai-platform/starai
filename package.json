@@ -1,0 +1,15 @@
+{
+  "name": "star-ai-platform",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "dev:web": "pnpm --filter @starai/web dev",
+    "dev:admin": "pnpm --filter @starai/admin dev",
+    "build:web": "pnpm --filter @starai/web build",
+    "build:admin": "pnpm --filter @starai/admin build",
+    "lint": "pnpm -r lint"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

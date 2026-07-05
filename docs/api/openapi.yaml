@@ -1,0 +1,34 @@
+openapi: 3.0.3
+info:
+  title: StarAI Platform API
+  version: 0.1.0
+servers:
+  - url: http://localhost:8080
+paths:
+  /health:
+    get:
+      summary: Health check
+  /api/auth/login/password:
+    post:
+      summary: User login
+  /api/models:
+    get:
+      summary: List public models
+  /api/chat/completions:
+    post:
+      summary: Chat completion (supports SSE stream)
+  /api/tasks:
+    post:
+      summary: Create async task
+  /api/recharge/card:
+    post:
+      summary: Redeem card
+  /api/payment/orders:
+    post:
+      summary: Create payment order (blocked when payment_enabled=false)
+  /admin/api/login:
+    post:
+      summary: Admin login
+  /admin/api/models:
+    post:
+      summary: Create model

@@ -1,0 +1,127 @@
+name: starai
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "${DOCKER_LOG_MAX_SIZE:-20m}"
+    max-file: "${DOCKER_LOG_MAX_FILES:-3}"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-starai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-starai}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-starai} -d ${POSTGRES_DB:-starai}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "${REDIS_MAXMEMORY:-1gb}", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ../../services/api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    logging: *default-logging
+    env_file:
+      - ../../.env.production
+    environment:
+      LOCAL_STORAGE_DIR: ${LOCAL_STORAGE_DIR:-/app/data/uploads}
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ../../data/uploads:/app/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ../../services/worker
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    logging: *default-logging
+    env_file:
+      - ../../.env.production
+    environment:
+      LOCAL_STORAGE_DIR: ${LOCAL_STORAGE_DIR:-/app/data/uploads}
+    volumes:
+      - ../../data/uploads:/app/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?set NEXT_PUBLIC_API_URL}
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      NODE_ENV: production
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - api
+
+  admin:
+    build:
+      context: ../..
+      dockerfile: apps/admin/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?set NEXT_PUBLIC_API_URL}
+        ADMIN_ASSET_PREFIX: ${ADMIN_ASSET_PREFIX:-/admin-assets}
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      NODE_ENV: production
+      ADMIN_ASSET_PREFIX: ${ADMIN_ASSET_PREFIX:-/admin-assets}
+    ports:
+      - "127.0.0.1:3001:3001"
+    depends_on:
+      - api
+
+  migrate:
+    build:
+      context: ../../services/api
+      dockerfile: Dockerfile
+    env_file:
+      - ../../.env.production
+    logging: *default-logging
+    command: ["/migrate", "up"]
+    volumes:
+      - ../../infra/migrations:/infra/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - tools
+
+volumes:
+  postgres_data:
+  redis_data:

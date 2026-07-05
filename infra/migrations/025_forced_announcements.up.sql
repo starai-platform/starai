@@ -1,0 +1,2 @@
+ALTER TABLE announcements
+  ADD COLUMN IF NOT EXISTS is_forced BOOLEAN NOT NULL DEFAULT false;

@@ -226,6 +226,9 @@ function mergeTranslationRows(current: UITranslationRow[], incoming: UITranslati
 export default function SystemConfigPage() {
   const [configs, setConfigs] = useState<Record<string, unknown>>({});
   const [saved, setSaved] = useState(false);
+  const [saveMsg, setSaveMsg] = useState("");
+  const [saveErr, setSaveErr] = useState("");
+  const [saving, setSaving] = useState(false);
   const [logoUploading, setLogoUploading] = useState(false);
   const [faviconUploading, setFaviconUploading] = useState(false);
   const [supportUploading, setSupportUploading] = useState(false);
@@ -276,12 +279,25 @@ export default function SystemConfigPage() {
   }, []);
 
   const handleSave = async () => {
-    await adminApi("/system-configs", {
-      method: "PATCH",
-      body: JSON.stringify(configs),
-    });
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    setSaving(true);
+    setSaveMsg("");
+    setSaveErr("");
+    try {
+      await adminApi("/system-configs", {
+        method: "PATCH",
+        body: JSON.stringify(configs),
+      });
+      setSaved(true);
+      setSaveMsg("配置已保存");
+      setTimeout(() => {
+        setSaved(false);
+        setSaveMsg("");
+      }, 3000);
+    } catch (err) {
+      setSaveErr(err instanceof Error ? `保存失败：${err.message}` : "保存失败，请稍后重试");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const zhLabelForTranslationKey = (key: string) => translationSourceLabels[key] || UI_TRANSLATION_ZH_LABELS[key] || "";
@@ -1161,7 +1177,10 @@ export default function SystemConfigPage() {
                 <option value="smtp">SMTP 邮箱服务商</option>
                 <option value="resend">Resend 邮件 API</option>
               </select>
-              <p className="mt-1 text-[11px] leading-relaxed text-gray-400">Resend 需要先在 Resend 后台完成域名验证，并使用已验证域名作为发件人。</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-gray-400">
+                Resend 需要先在 Resend 后台完成域名验证，并使用已验证域名作为发件人。官网：
+                <a href="https://resend.com" target="_blank" rel="noreferrer" className="text-emerald-700 hover:underline">https://resend.com</a>
+              </p>
             </div>
             {emailProvider === "resend" ? (
               <>
@@ -1204,9 +1223,13 @@ export default function SystemConfigPage() {
         </section>
       </div>
 
-      <div className="-mx-2 sticky bottom-0 mt-6 flex justify-end border-t border-gray-100 bg-white/95 px-2 py-4 backdrop-blur-sm">
-        <button onClick={handleSave} className="min-w-[140px] rounded-xl bg-primary px-8 py-2.5 text-sm font-semibold text-dark">
-          {saved ? "已保存" : "保存配置"}
+      <div className="-mx-2 sticky bottom-0 mt-6 flex items-center justify-between gap-3 border-t border-gray-100 bg-white/95 px-2 py-4 backdrop-blur-sm">
+        <div className="min-h-5 text-xs">
+          {saveErr ? <span className="text-red-500">{saveErr}</span> : null}
+          {saveMsg ? <span className="text-emerald-600">{saveMsg}</span> : null}
+        </div>
+        <button onClick={handleSave} disabled={saving} className="min-w-[140px] rounded-xl bg-primary px-8 py-2.5 text-sm font-semibold text-dark disabled:cursor-not-allowed disabled:opacity-60">
+          {saving ? "保存中..." : saved ? "已保存" : "保存配置"}
         </button>
       </div>
     </div>

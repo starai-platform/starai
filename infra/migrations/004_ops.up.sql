@@ -51,5 +51,4 @@ INSERT INTO system_configs (key, value) VALUES
 ON CONFLICT (key) DO NOTHING;
 
 INSERT INTO announcements (title, content, level, is_published) VALUES
-  ('欢迎使用 StarAI', 'StarAI 多模型聚合平台已上线，支持对话、图片生成、智能体工作流与灵感广场。充值算力即可调用全部模型。', 'info', true),
-  ('每日签到领算力', '开启每日签到后，登录即可领取免费算力奖励，记得每天来看看。', 'success', true);
+  ('欢迎使用 StarAI', 'StarAI 多模型聚合平台已上线，支持对话、图片生成、智能体工作流与灵感广场。充值算力即可调用全部模型。', 'info', true);

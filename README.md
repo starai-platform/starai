@@ -70,7 +70,7 @@ Windows 用户建议使用 PowerShell 运行脚本，并提前启动 Docker Desk
 
 ![后台视频模型配置](docs/images/admin-models-video.webp)
 
-### 管理后台
+### 联系交流
 
 ![联系交流](docs/images/comminicate.webp)
 

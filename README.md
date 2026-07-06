@@ -57,7 +57,7 @@ cp .env.local .env
 cp .env.example .env.production
 ```
 
-生产环境必须修改 `.env.production` 里的域名、数据库密码、JWT 密钥、对象存储和模型网关配置。
+生产环境必须修改 `.env.production` 里的域名、对象存储和模型网关配置。数据库密码和 JWT 密钥可以先使用模板默认值完成快速部署，但正式公开使用前建议改成随机强密码。
 
 ## 本地一键启动
 
@@ -124,7 +124,7 @@ cp .env.example .env.production
 bash scripts/deploy-prod.sh
 ```
 
-部署脚本会校验生产环境变量。如果 `APP_ENV=production` 但仍使用 `localhost`、`yourdomain.com` 或示例密钥，脚本会停止，避免构建出错误的前端包。
+部署脚本会校验生产环境变量。如果 `APP_ENV=production` 但仍使用 `localhost` 或 `yourdomain.com`，脚本会停止，避免构建出错误的前端包。数据库密码和 JWT 密钥使用模板默认值时只会提示警告，不会阻断部署。
 
 常用更新命令：
 
@@ -212,7 +212,7 @@ docs/                  部署和运维文档
 - 不要提交 `.env`、`.env.production`、数据库备份、配置包、真实 API Key、OAuth Secret、邮箱密钥。
 - 公开仓库前建议执行数据脱敏脚本，清理真实域名、邮箱、模型密钥、任务记录和用户业务数据。
 - 模型供应商 API Key 只能保存在后端环境变量或后台安全配置中，不要写进前端代码。
-- 管理后台上线后必须使用强密码，建议限制访问 IP 或增加网关鉴权。
+- 管理后台上线后必须使用强密码，建议限制访问 IP 或增加网关鉴权。公开生产环境建议修改默认数据库密码、`JWT_SECRET` 和 `ADMIN_JWT_SECRET`。
 - 正式开放注册前，请自行处理内容安全、频率限制、滥用防护和数据备份。
 - 启用在线支付前，请先完成支付合规、回调验签、订单对账和退款异常处理。
 

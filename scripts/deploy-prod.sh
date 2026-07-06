@@ -30,6 +30,10 @@ env_value() {
   grep -E "^[[:space:]]*${key}=" "$ENV_FILE" | tail -n 1 | cut -d= -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
 }
 
+warn() {
+  echo "Warning: $*" >&2
+}
+
 app_env="$(env_value APP_ENV)"
 public_api_url="$(env_value NEXT_PUBLIC_API_URL)"
 database_url="$(env_value DATABASE_URL)"
@@ -55,9 +59,12 @@ if [ "$app_env" = "production" ]; then
       ;;
   esac
   case "$postgres_password" in
-    ""|starai|change_this_to_a_strong_password)
-      echo "Invalid POSTGRES_PASSWORD for production. Set a strong database password." >&2
+    "")
+      echo "Invalid POSTGRES_PASSWORD for production. Set POSTGRES_PASSWORD or keep the template default." >&2
       exit 1
+      ;;
+    starai|change_this_to_a_strong_password)
+      warn "POSTGRES_PASSWORD is using a default value. This is allowed for quick deployment, but changing it is recommended before public production use."
       ;;
   esac
   case "$database_url" in
@@ -69,8 +76,7 @@ if [ "$app_env" = "production" ]; then
   esac
   case "$database_url" in
     *"change_this_to_a_strong_password"*)
-      echo "Invalid DATABASE_URL for production. Replace the example database password." >&2
-      exit 1
+      warn "DATABASE_URL is using the default PostgreSQL password. This is allowed for quick deployment, but changing it is recommended before public production use."
       ;;
   esac
   case "$database_url" in
@@ -89,15 +95,21 @@ if [ "$app_env" = "production" ]; then
       ;;
   esac
   case "$jwt_secret" in
-    ""|change-me-in-production-starai-jwt-secret|replace_with_a_long_random_secret|dev-jwt-secret-starai)
-      echo "Invalid JWT_SECRET for production. Set a long random secret." >&2
+    "")
+      echo "Invalid JWT_SECRET for production. Set JWT_SECRET or keep the template default." >&2
       exit 1
+      ;;
+    change-me-in-production-starai-jwt-secret|replace_with_a_long_random_secret|dev-jwt-secret-starai)
+      warn "JWT_SECRET is using a default value. Anyone who knows this open-source default may forge user tokens. Change it before public production use."
       ;;
   esac
   case "$admin_jwt_secret" in
-    ""|change-me-admin-jwt-secret|replace_with_another_long_random_secret|dev-admin-jwt-secret)
-      echo "Invalid ADMIN_JWT_SECRET for production. Set a long random secret." >&2
+    "")
+      echo "Invalid ADMIN_JWT_SECRET for production. Set ADMIN_JWT_SECRET or keep the template default." >&2
       exit 1
+      ;;
+    change-me-admin-jwt-secret|replace_with_another_long_random_secret|dev-admin-jwt-secret)
+      warn "ADMIN_JWT_SECRET is using a default value. Anyone who knows this open-source default may forge admin tokens. Change it before public production use."
       ;;
   esac
 fi

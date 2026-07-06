@@ -156,7 +156,7 @@ NEW_API_STREAM_TIMEOUT_SECONDS=600
 - `LOCAL_STORAGE_PUBLIC_URL` 是本地上传兜底路径。生产环境建议主要使用 R2/S3。
 - `ADMIN_ASSET_PREFIX=/admin-assets` 必须和 Nginx 配置一致，修改后必须重新构建 `admin`。
 - 后台 API 文档里的 `Base URL` 推荐填写 `https://yourdomain.com`，用户最终调用示例是 `https://yourdomain.com/v1/chat/completions`。
-- 首次部署前必须把 `yourdomain.com`、`change_this_to_a_strong_password`、`replace_with_*`、对象存储和模型网关占位值全部替换成真实值。部署脚本会在 `APP_ENV=production` 时主动拦截这些占位配置。
+- 首次部署前必须把 `yourdomain.com`、对象存储和模型网关占位值替换成真实值。`change_this_to_a_strong_password` 和 `replace_with_*` 可以先保留用于快速部署，脚本只会提示警告；正式公开使用前建议改成随机强密码和随机 JWT 密钥。
 
 ## 5. 首次部署
 

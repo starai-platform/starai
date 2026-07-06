@@ -290,17 +290,16 @@ export default function SystemConfigPage() {
 
   const loadVersionInfo = async () => {
     setChangelogErr("");
-    if (changelog.length) return;
-      try {
-        const res = await fetch("/admin/version", { cache: "no-store" });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        const rows = Array.isArray(data?.changelog) ? data.changelog : [];
-        setAppVersion(String(data?.version || rows[0]?.version || ""));
-        setChangelog(rows);
-      } catch (err) {
-        setChangelogErr(err instanceof Error ? `更新记录读取失败：${err.message}` : "更新记录读取失败");
-      }
+    try {
+      const res = await fetch("/admin/version", { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const rows = Array.isArray(data?.changelog) ? data.changelog : [];
+      setAppVersion(String(data?.version || rows[0]?.version || ""));
+      setChangelog(rows);
+    } catch (err) {
+      setChangelogErr(err instanceof Error ? `更新记录读取失败：${err.message}` : "更新记录读取失败");
+    }
   };
 
   useEffect(() => {

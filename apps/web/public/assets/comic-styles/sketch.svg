@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 260">
+  <rect width="420" height="260" fill="#f2f2ee"/>
+  <path d="M45 56h330v150H45Z" fill="#fff" stroke="#1f2937" stroke-width="5"/>
+  <path d="M102 183c8-64 30-101 66-112 37 14 57 51 63 112Z" fill="#1f2937"/>
+  <circle cx="168" cy="90" r="35" fill="#ddd" stroke="#1f2937" stroke-width="5"/>
+  <path d="M270 80h62M270 112h62M270 144h62" stroke="#1f2937" stroke-width="8" stroke-linecap="round"/>
+  <path d="M70 42 350 220M360 43 70 220" stroke="#9ca3af" stroke-width="3" opacity=".45"/>
+  <text x="28" y="235" fill="#111827" font-family="Arial" font-size="28" font-weight="700">美漫硬朗</text>
+</svg>

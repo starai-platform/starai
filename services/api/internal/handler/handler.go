@@ -167,6 +167,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			auth.POST("/agent-projects/:id/retry", h.RetryAgentProject)
 			auth.POST("/agent-projects/:id/steps/:step/confirm", h.ConfirmAgentProjectStep)
 			auth.POST("/agent-projects/:id/autopilot", h.SetAgentProjectAutopilot)
+			auth.GET("/comic-drama/projects", h.ListComicDramaProjects)
+			auth.POST("/comic-drama/projects", h.CreateComicDramaProject)
+			auth.GET("/comic-drama/projects/:id", h.GetComicDramaProject)
+			auth.PATCH("/comic-drama/projects/:id", h.UpdateComicDramaProject)
+			auth.GET("/comic-drama/styles", h.ListComicDramaStyles)
+			auth.POST("/comic-drama/styles", h.CreateComicDramaStyle)
 			auth.GET("/roles", h.ListRoles)
 			auth.POST("/roles", h.CreateRole)
 		}
@@ -2198,35 +2204,41 @@ func (h *Handler) GetPublicSystemConfigs(c *gin.Context) {
 		return
 	}
 	util.OK(c, map[string]interface{}{
-		"site_name":                       cfg["site_name"],
-		"site_logo":                       cfg["site_logo"],
-		"site_favicon":                    cfg["site_favicon"],
-		"site_description":                cfg["site_description"],
-		"admin_site_description":          cfg["admin_site_description"],
-		"site_api_tagline":                cfg["site_api_tagline"],
-		"site_copyright":                  cfg["site_copyright"],
-		"home_meta_title":                 cfg["home_meta_title"],
-		"home_meta_description":           cfg["home_meta_description"],
-		"terms_title":                     cfg["terms_title"],
-		"terms_content":                   cfg["terms_content"],
-		"privacy_title":                   cfg["privacy_title"],
-		"privacy_content":                 cfg["privacy_content"],
-		"image_captcha_enabled":           cfg["image_captcha_enabled"],
-		"customer_service_enabled":        cfg["customer_service_enabled"],
-		"customer_service_title":          cfg["customer_service_title"],
-		"customer_service_name":           cfg["customer_service_name"],
-		"customer_service_subtitle":       cfg["customer_service_subtitle"],
-		"customer_service_floating_image": cfg["customer_service_floating_image"],
-		"customer_service_avatar":         cfg["customer_service_avatar"],
-		"customer_service_qr_url":         cfg["customer_service_qr_url"],
-		"customer_service_qr_tip":         cfg["customer_service_qr_tip"],
-		"customer_service_phone":          cfg["customer_service_phone"],
-		"customer_service_wechat":         cfg["customer_service_wechat"],
-		"customer_service_hours":          cfg["customer_service_hours"],
-		"default_locale":                  cfg["default_locale"],
-		"generation_languages":            cfg["generation_languages"],
-		"ui_languages":                    cfg["ui_languages"],
-		"ui_translation_overrides":        cfg["ui_translation_overrides"],
+		"site_name":                           cfg["site_name"],
+		"site_logo":                           cfg["site_logo"],
+		"site_favicon":                        cfg["site_favicon"],
+		"site_description":                    cfg["site_description"],
+		"admin_site_description":              cfg["admin_site_description"],
+		"site_api_tagline":                    cfg["site_api_tagline"],
+		"site_copyright":                      cfg["site_copyright"],
+		"home_meta_title":                     cfg["home_meta_title"],
+		"home_meta_description":               cfg["home_meta_description"],
+		"terms_title":                         cfg["terms_title"],
+		"terms_content":                       cfg["terms_content"],
+		"privacy_title":                       cfg["privacy_title"],
+		"privacy_content":                     cfg["privacy_content"],
+		"image_captcha_enabled":               cfg["image_captcha_enabled"],
+		"customer_service_enabled":            cfg["customer_service_enabled"],
+		"customer_service_title":              cfg["customer_service_title"],
+		"customer_service_name":               cfg["customer_service_name"],
+		"customer_service_subtitle":           cfg["customer_service_subtitle"],
+		"customer_service_floating_image":     cfg["customer_service_floating_image"],
+		"customer_service_avatar":             cfg["customer_service_avatar"],
+		"comic_drama_default_style_mode":      cfg["comic_drama_default_style_mode"],
+		"comic_drama_default_orientation":     cfg["comic_drama_default_orientation"],
+		"comic_drama_default_quality":         cfg["comic_drama_default_quality"],
+		"comic_drama_default_storyboard_grid": cfg["comic_drama_default_storyboard_grid"],
+		"comic_drama_default_max_retry":       cfg["comic_drama_default_max_retry"],
+		"comic_drama_default_step_confirm":    cfg["comic_drama_default_step_confirm"],
+		"customer_service_qr_url":             cfg["customer_service_qr_url"],
+		"customer_service_qr_tip":             cfg["customer_service_qr_tip"],
+		"customer_service_phone":              cfg["customer_service_phone"],
+		"customer_service_wechat":             cfg["customer_service_wechat"],
+		"customer_service_hours":              cfg["customer_service_hours"],
+		"default_locale":                      cfg["default_locale"],
+		"generation_languages":                cfg["generation_languages"],
+		"ui_languages":                        cfg["ui_languages"],
+		"ui_translation_overrides":            cfg["ui_translation_overrides"],
 	})
 }
 
@@ -3238,6 +3250,75 @@ func (h *Handler) SetAgentProjectAutopilot(c *gin.Context) {
 		return
 	}
 	util.OK(c, nil)
+}
+
+func (h *Handler) ListComicDramaProjects(c *gin.Context) {
+	items, err := h.agents.ListComicDramaProjects(c.Request.Context(), c.GetInt64("user_id"))
+	if err != nil {
+		util.InternalError(c, err.Error())
+		return
+	}
+	util.OK(c, map[string]interface{}{"items": items})
+}
+
+func (h *Handler) CreateComicDramaProject(c *gin.Context) {
+	var input service.ComicDramaProjectInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		util.BadRequest(c, "参数错误")
+		return
+	}
+	project, err := h.agents.CreateComicDramaProject(c.Request.Context(), c.GetInt64("user_id"), input)
+	if err != nil {
+		util.BadRequest(c, err.Error())
+		return
+	}
+	util.Created(c, project)
+}
+
+func (h *Handler) GetComicDramaProject(c *gin.Context) {
+	project, err := h.agents.GetComicDramaProject(c.Request.Context(), c.GetInt64("user_id"), c.Param("id"))
+	if err != nil {
+		util.NotFound(c, "项目不存在")
+		return
+	}
+	util.OK(c, project)
+}
+
+func (h *Handler) UpdateComicDramaProject(c *gin.Context) {
+	var input service.ComicDramaProjectInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		util.BadRequest(c, "参数错误")
+		return
+	}
+	project, err := h.agents.UpdateComicDramaProject(c.Request.Context(), c.GetInt64("user_id"), c.Param("id"), input)
+	if err != nil {
+		util.BadRequest(c, err.Error())
+		return
+	}
+	util.OK(c, project)
+}
+
+func (h *Handler) ListComicDramaStyles(c *gin.Context) {
+	items, err := h.agents.ListComicDramaStyles(c.Request.Context(), c.GetInt64("user_id"), c.Query("source"))
+	if err != nil {
+		util.InternalError(c, err.Error())
+		return
+	}
+	util.OK(c, map[string]interface{}{"items": items})
+}
+
+func (h *Handler) CreateComicDramaStyle(c *gin.Context) {
+	var input service.ComicDramaStyleInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		util.BadRequest(c, "参数错误")
+		return
+	}
+	style, err := h.agents.CreateComicDramaStyle(c.Request.Context(), c.GetInt64("user_id"), input)
+	if err != nil {
+		util.BadRequest(c, err.Error())
+		return
+	}
+	util.Created(c, style)
 }
 
 func (h *Handler) AdminListAgents(c *gin.Context) {

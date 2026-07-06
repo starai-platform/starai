@@ -5,10 +5,10 @@ import { Bot, Check, Code2, Image as ImageIcon, Layers, Pencil, Plus, Settings2,
 import { adminApi } from "@/lib/api";
 import { AdminPagination } from "@/components/AdminPagination";
 
-type GenerationType = "image" | "video";
+type GenerationType = "image" | "video" | "comic_drama";
 type WorkflowNode = { id: string; name: string; type: string; model_code: string; prompt_template?: string; cost: number };
 type RuntimeConfig = {
-  agent_mode?: "simple_pipeline" | "custom_nodes";
+  agent_mode?: "simple_pipeline" | "custom_nodes" | "comic_drama";
   analysis_model_code?: string;
   generation_model_code?: string;
   generation_type?: GenerationType;
@@ -20,6 +20,16 @@ type RuntimeConfig = {
   output_scenes?: string[];
   input_capabilities?: Record<string, boolean>;
   flow_options?: Record<string, boolean>;
+  dialogue_model_codes?: string[];
+  image_model_code?: string;
+  video_model_code?: string;
+  style_reference_mode?: string;
+  duration_mode?: string;
+  storyboard_grid?: number;
+  max_retry?: number;
+  asset_consistency_score?: number;
+  logic_score?: number;
+  output_mode?: string;
 };
 type Workflow = {
   code: string;
@@ -46,6 +56,15 @@ type FormState = {
   generation_type: GenerationType;
   analysis_model_code: string;
   generation_model_code: string;
+  image_model_code: string;
+  video_model_code: string;
+  dialogue_model_codes: string;
+  style_reference_mode: string;
+  duration_mode: string;
+  storyboard_grid: number;
+  max_retry: number;
+  asset_consistency_score: number;
+  logic_score: number;
   require_image: boolean;
   allow_text_only: boolean;
   support_reference_image: boolean;
@@ -84,6 +103,10 @@ const VIDEO_SCENES: SceneDef[] = [
   { code: "image_to_video", label: "图生视频", desc: "用首帧或参考图扩展成动态视频，保持主体一致。" },
 ];
 
+const COMIC_SCENES: SceneDef[] = [
+  { code: "ai_comic_drama", label: "AI漫剧", desc: "剧本、分镜、关键帧、分段视频与最终合成。", locked: true },
+];
+
 const TYPE_PRESETS = {
   image: {
     label: "电商图片",
@@ -109,16 +132,38 @@ const TYPE_PRESETS = {
     featureTags: ["商品视频", "图生视频", "运镜", "短视频素材"],
     defaults: { require_image: true, allow_text_only: false, support_reference_image: true, support_multiple_references: true, support_first_last_frame: true },
   },
+  comic_drama: {
+    label: "AI漫剧",
+    icon: "🎨",
+    theme: "comic",
+    description: "输入故事创意与风格参考，AI 自动完成剧本、角色、分镜、关键帧、分段视频和最终合成。",
+    placeholder: "例如：赛博城市里的少年侦探追查失控 AI，电影感，节奏紧凑",
+    help: "输入故事创意，可上传风格参考图。逐步确认模式会在分镜规划后暂停，智能托管会自动完成关键帧、分段视频和最终合成。",
+    imageLabel: "风格参考图",
+    heroTags: ["超级智能体", "AI漫剧", "一键成片"],
+    featureTags: ["剧本规划", "角色一致", "关键帧", "视频合成"],
+    defaults: { require_image: false, allow_text_only: true, support_reference_image: true, support_multiple_references: true, support_first_last_frame: false },
+  },
 } as const;
 
-const defaultScenes = (type: GenerationType) => (type === "video" ? ["product_video"] : ["main_image"]);
-const sceneDefs = (type: GenerationType) => (type === "video" ? VIDEO_SCENES : IMAGE_SCENES);
-const presetCode = (type: GenerationType) => (type === "video" ? "ecommerce_video" : "ecommerce_image");
+const defaultScenes = (type: GenerationType) => (type === "comic_drama" ? ["ai_comic_drama"] : type === "video" ? ["product_video"] : ["main_image"]);
+const sceneDefs = (type: GenerationType) => (type === "comic_drama" ? COMIC_SCENES : type === "video" ? VIDEO_SCENES : IMAGE_SCENES);
+const presetCode = (type: GenerationType) => (type === "comic_drama" ? "ai_comic_drama" : type === "video" ? "ecommerce_video" : "ecommerce_image");
 
-const defaultNodes = (analysis = "", generation = "", type: GenerationType = "image"): WorkflowNode[] => [
-  { id: "analysis", type: "llm", name: "需求分析", model_code: analysis, prompt_template: "", cost: 0 },
-  { id: "generate", type, name: "生成结果", model_code: generation, prompt_template: "", cost: 0 },
-];
+const defaultNodes = (analysis = "", generation = "", type: GenerationType = "image"): WorkflowNode[] => {
+  if (type === "comic_drama") {
+    return [
+      { id: "comic_plan", type: "llm", name: "AI漫剧规划", model_code: analysis, prompt_template: "", cost: 0 },
+      { id: "keyframes", type: "image", name: "关键帧生成", model_code: "", prompt_template: "", cost: 0 },
+      { id: "video_segments", type: "video", name: "分段视频生成", model_code: generation, prompt_template: "", cost: 0 },
+      { id: "compose", type: "video", name: "视频合成", model_code: "", prompt_template: "", cost: 0 },
+    ];
+  }
+  return [
+    { id: "analysis", type: "llm", name: "需求分析", model_code: analysis, prompt_template: "", cost: 0 },
+    { id: "generate", type, name: "生成结果", model_code: generation, prompt_template: "", cost: 0 },
+  ];
+};
 
 const defaultSchema = (count = 1) => ({
   type: "object",
@@ -145,6 +190,41 @@ function displayConfig(form: FormState) {
 }
 
 function runtimeConfig(form: FormState): RuntimeConfig {
+  if (form.generation_type === "comic_drama") {
+    const dialogue = form.dialogue_model_codes.split(",").map((item) => item.trim()).filter(Boolean);
+    return {
+      agent_mode: "comic_drama",
+      analysis_model_code: form.analysis_model_code,
+      generation_model_code: form.video_model_code || form.generation_model_code,
+      generation_type: "video",
+      preset_code: "ai_comic_drama",
+      require_image: form.require_image,
+      default_count: 1,
+      candidate_count: 1,
+      creative_scenes: ["ai_comic_drama"],
+      dialogue_model_codes: dialogue.length ? dialogue : [form.analysis_model_code].filter(Boolean),
+      image_model_code: form.image_model_code,
+      video_model_code: form.video_model_code || form.generation_model_code,
+      style_reference_mode: form.style_reference_mode,
+      duration_mode: form.duration_mode,
+      storyboard_grid: form.storyboard_grid,
+      max_retry: form.max_retry,
+      asset_consistency_score: form.asset_consistency_score,
+      logic_score: form.logic_score,
+      output_mode: "composed_video",
+      input_capabilities: {
+        allow_text_only: form.allow_text_only,
+        support_reference_image: form.support_reference_image,
+        support_multiple_references: form.support_multiple_references,
+        support_first_last_frame: false,
+      },
+      flow_options: {
+        enable_step_confirm: form.enable_step_confirm,
+        enable_autopilot: form.enable_autopilot,
+        allow_prompt_edit: form.allow_prompt_edit,
+      },
+    };
+  }
   return {
     agent_mode: "simple_pipeline",
     analysis_model_code: form.analysis_model_code,
@@ -196,6 +276,15 @@ function makeEmptyForm(): FormState {
     generation_type: "image",
     analysis_model_code: "",
     generation_model_code: "",
+    image_model_code: "image_fast_v1",
+    video_model_code: "video_demo_v1",
+    dialogue_model_codes: "chat_demo_v1",
+    style_reference_mode: "image_reference",
+    duration_mode: "standard",
+    storyboard_grid: 6,
+    max_retry: 2,
+    asset_consistency_score: 80,
+    logic_score: 50,
     ...preset.defaults,
     enable_step_confirm: true,
     enable_autopilot: true,
@@ -223,6 +312,7 @@ function readBool(map: Record<string, any> | undefined, key: string, fallback: b
 }
 
 function typeFromRuntime(runtime: RuntimeConfig, category: string): GenerationType {
+  if (runtime.agent_mode === "comic_drama" || runtime.preset_code === "ai_comic_drama") return "comic_drama";
   if (runtime.generation_type === "video" || category === "video" || runtime.preset_code === "product_showcase_video" || runtime.preset_code === "image_to_video") return "video";
   return "image";
 }
@@ -241,7 +331,7 @@ export default function AgentsAdminPage() {
   const chatModels = useMemo(() => models.filter((m) => m.is_enabled && ["chat_completions", "responses"].includes(m.request_mode)), [models]);
   const imageModels = useMemo(() => models.filter((m) => m.is_enabled && m.request_mode === "images"), [models]);
   const videoModels = useMemo(() => models.filter((m) => m.is_enabled && m.request_mode === "video"), [models]);
-  const generationModels = form.generation_type === "video" ? videoModels : imageModels;
+  const generationModels = form.generation_type === "video" || form.generation_type === "comic_drama" ? videoModels : imageModels;
   const activePreset = TYPE_PRESETS[form.generation_type];
   const paginatedItems = useMemo(() => items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE), [items, page]);
 
@@ -292,6 +382,15 @@ export default function AgentsAdminPage() {
       generation_type: type,
       analysis_model_code: runtime.analysis_model_code || "",
       generation_model_code: runtime.generation_model_code || "",
+      image_model_code: runtime.image_model_code || "image_fast_v1",
+      video_model_code: runtime.video_model_code || runtime.generation_model_code || "video_demo_v1",
+      dialogue_model_codes: Array.isArray(runtime.dialogue_model_codes) ? runtime.dialogue_model_codes.join(",") : runtime.analysis_model_code || "chat_demo_v1",
+      style_reference_mode: runtime.style_reference_mode || "image_reference",
+      duration_mode: runtime.duration_mode || "standard",
+      storyboard_grid: Number(runtime.storyboard_grid || 6),
+      max_retry: Number(runtime.max_retry || 2),
+      asset_consistency_score: Number(runtime.asset_consistency_score || 80),
+      logic_score: Number(runtime.logic_score || 50),
       require_image: runtime.require_image !== false,
       allow_text_only: readBool(inputCaps, "allow_text_only", preset.defaults.allow_text_only),
       support_reference_image: readBool(inputCaps, "support_reference_image", preset.defaults.support_reference_image),
@@ -336,7 +435,11 @@ export default function AgentsAdminPage() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr("");
-    if (!form.analysis_model_code || !form.generation_model_code) {
+    if (form.generation_type === "comic_drama" && (!form.analysis_model_code || !form.image_model_code || !form.video_model_code)) {
+      setErr("请选择分析模型、图片模型和视频模型");
+      return;
+    }
+    if (form.generation_type !== "comic_drama" && (!form.analysis_model_code || !form.generation_model_code)) {
       setErr("请选择分析模型和生成模型");
       return;
     }
@@ -346,13 +449,13 @@ export default function AgentsAdminPage() {
       name: form.name.trim(),
       description: form.description.trim(),
       icon: form.icon,
-      category: form.generation_type,
+      category: form.generation_type === "comic_drama" ? "video" : form.generation_type,
       sort_order: Number(form.sort_order) || 0,
       is_enabled: form.is_enabled,
-      agent_mode: "simple_pipeline",
+      agent_mode: form.generation_type === "comic_drama" ? "comic_drama" : "simple_pipeline",
       analysis_model_code: form.analysis_model_code,
-      generation_model_code: form.generation_model_code,
-      generation_type: form.generation_type,
+      generation_model_code: form.generation_type === "comic_drama" ? form.video_model_code : form.generation_model_code,
+      generation_type: form.generation_type === "comic_drama" ? "video" : form.generation_type,
       preset_code: presetCode(form.generation_type),
       require_image: form.require_image,
       default_count: Number(form.default_count) || 1,
@@ -369,7 +472,9 @@ export default function AgentsAdminPage() {
       input_schema: bundle.input_schema,
       price_rule: bundle.price_rule,
       display_config: bundle.display_config,
-      runtime_config: { ...bundle.runtime_config, creative_scenes: normalizeScenes((bundle.runtime_config as any)?.creative_scenes || form.creative_scenes, form.generation_type), output_scenes: undefined },
+      runtime_config: form.generation_type === "comic_drama"
+        ? bundle.runtime_config
+        : { ...bundle.runtime_config, creative_scenes: normalizeScenes((bundle.runtime_config as any)?.creative_scenes || form.creative_scenes, form.generation_type), output_scenes: undefined },
     };
     try {
       await adminApi(form.isEdit ? `/agents/${form.code}` : "/agents", {
@@ -421,7 +526,7 @@ export default function AgentsAdminPage() {
               <section className="rounded-2xl border border-gray-100 p-4">
                 <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-gray-900"><Sparkles size={16} />选择智能体类型</div>
                 <div className="grid gap-3 md:grid-cols-2">
-                  {(["image", "video"] as GenerationType[]).map((type) => {
+                  {(["image", "video", "comic_drama"] as GenerationType[]).map((type) => {
                     const preset = TYPE_PRESETS[type];
                     const active = form.generation_type === type;
                     return (
@@ -458,10 +563,46 @@ export default function AgentsAdminPage() {
                 <div className="md:col-span-2 flex items-center gap-2 text-sm font-semibold text-gray-900"><Settings2 size={16} />模型与计费</div>
                 <Field label="分析大模型"><select className="admin-input" value={form.analysis_model_code} onChange={(e) => setForm({ ...form, analysis_model_code: e.target.value })}><option value="">请选择分析模型</option>{chatModels.map((m) => <option key={m.code} value={m.code}>{m.display_name} / {m.code}</option>)}</select></Field>
                 <Field label={form.generation_type === "video" ? "视频生成模型" : "图片生成模型"}><select className="admin-input" value={form.generation_model_code} onChange={(e) => setForm({ ...form, generation_model_code: e.target.value })}><option value="">请选择生成模型</option>{generationModels.map((m) => <option key={m.code} value={m.code}>{m.display_name} / {m.code}</option>)}</select></Field>
+                {form.generation_type === "comic_drama" && (
+                  <>
+                    <Field label="关键帧图片模型"><select className="admin-input" value={form.image_model_code} onChange={(e) => setForm({ ...form, image_model_code: e.target.value })}><option value="">请选择图片模型</option>{imageModels.map((m) => <option key={m.code} value={m.code}>{m.display_name} / {m.code}</option>)}</select></Field>
+                    <Field label="分段视频模型"><select className="admin-input" value={form.video_model_code} onChange={(e) => setForm({ ...form, video_model_code: e.target.value, generation_model_code: e.target.value })}><option value="">请选择视频模型</option>{videoModels.map((m) => <option key={m.code} value={m.code}>{m.display_name} / {m.code}</option>)}</select></Field>
+                    <Field label="对话主备模型" wide><input className="admin-input" value={form.dialogue_model_codes} onChange={(e) => setForm({ ...form, dialogue_model_codes: e.target.value })} placeholder="chat_demo_v1,backup_model_code" /></Field>
+                  </>
+                )}
                 <Field label="默认生成数量"><input type="number" min={1} max={50} className="admin-input" value={form.default_count} onChange={(e) => setForm({ ...form, default_count: Math.max(1, Number(e.target.value) || 1) })} /></Field>
                 <Field label="AI方案数量"><input type="number" min={1} max={5} className="admin-input" value={form.candidate_count} onChange={(e) => setForm({ ...form, candidate_count: Math.min(5, Math.max(1, Number(e.target.value) || 3)) })} /></Field>
                 <Field label="工作流收费"><input type="number" min={0} step="0.01" className="admin-input" value={form.unit_price} onChange={(e) => setForm({ ...form, unit_price: Number(e.target.value) || 0 })} /></Field>
               </section>
+
+              {form.generation_type === "comic_drama" && (
+                <section className="grid gap-4 rounded-2xl border border-gray-100 p-4 md:grid-cols-2">
+                  <div className="md:col-span-2 flex items-center gap-2 text-sm font-semibold text-gray-900"><Settings2 size={16} />AI漫剧偏好</div>
+                  <Field label="风格参考模式">
+                    <select className="admin-input" value={form.style_reference_mode} onChange={(e) => setForm({ ...form, style_reference_mode: e.target.value })}>
+                      <option value="image_reference">附带风格参考图</option>
+                      <option value="text_only">仅文字描述</option>
+                    </select>
+                  </Field>
+                  <Field label="分镜时长模式">
+                    <select className="admin-input" value={form.duration_mode} onChange={(e) => setForm({ ...form, duration_mode: e.target.value })}>
+                      <option value="compact">紧凑</option>
+                      <option value="standard">常规</option>
+                      <option value="long">超长</option>
+                    </select>
+                  </Field>
+                  <Field label="分镜宫格数">
+                    <select className="admin-input" value={form.storyboard_grid} onChange={(e) => setForm({ ...form, storyboard_grid: Number(e.target.value) })}>
+                      <option value={4}>4宫格</option>
+                      <option value={6}>6宫格</option>
+                      <option value={9}>9宫格</option>
+                    </select>
+                  </Field>
+                  <Field label="最大重试次数"><input type="number" min={0} max={5} className="admin-input" value={form.max_retry} onChange={(e) => setForm({ ...form, max_retry: Math.max(0, Math.min(5, Number(e.target.value) || 0)) })} /></Field>
+                  <Field label="资产一致性合格分"><input type="number" min={0} max={100} className="admin-input" value={form.asset_consistency_score} onChange={(e) => setForm({ ...form, asset_consistency_score: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })} /></Field>
+                  <Field label="画面逻辑合格分"><input type="number" min={0} max={100} className="admin-input" value={form.logic_score} onChange={(e) => setForm({ ...form, logic_score: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })} /></Field>
+                </section>
+              )}
 
               <section className="rounded-2xl border border-gray-100 p-4">
                 <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-gray-900">{form.generation_type === "video" ? <Video size={16} /> : <ImageIcon size={16} />}{form.generation_type === "video" ? "视频场景" : "出图场景"}</div>

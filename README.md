@@ -23,6 +23,23 @@ StarAI 是一套 AI 聚合平台，可以把市面上优秀的大模型接入到
 - 队列：Asynq、Redis
 - 部署：Docker Compose
 
+## 系统环境要求
+
+本地开发建议使用：
+
+| 环境 | 要求 |
+|---|---|
+| 操作系统 | Windows 10/11、macOS、Linux |
+| Node.js | 20 或更高版本 |
+| pnpm | 建议使用最新版 |
+| Go | 1.25 或更高版本 |
+| Docker | Docker Desktop 或 Docker Engine |
+| Git | 用于拉取代码和版本管理 |
+
+Windows 用户建议使用 PowerShell 运行脚本，并提前启动 Docker Desktop。
+
+
+
 ## 页面预览
 
 ### 前台页面
@@ -53,22 +70,12 @@ StarAI 是一套 AI 聚合平台，可以把市面上优秀的大模型接入到
 
 ![后台视频模型配置](docs/images/admin-models-video.webp)
 
+### 管理后台
+
+![联系交流](docs/images/comminicate.webp)
 
 
-## 系统环境要求
 
-本地开发建议使用：
-
-| 环境 | 要求 |
-|---|---|
-| 操作系统 | Windows 10/11、macOS、Linux |
-| Node.js | 20 或更高版本 |
-| pnpm | 建议使用最新版 |
-| Go | 1.25 或更高版本 |
-| Docker | Docker Desktop 或 Docker Engine |
-| Git | 用于拉取代码和版本管理 |
-
-Windows 用户建议使用 PowerShell 运行脚本，并提前启动 Docker Desktop。
 
 ## 安装前置准备
 

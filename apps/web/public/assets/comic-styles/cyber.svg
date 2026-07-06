@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 260">
+  <rect width="420" height="260" fill="#10121c"/>
+  <path d="M34 210 370 42M78 42l287 175" stroke="#18e3ff" stroke-width="8" opacity=".35"/>
+  <path d="M124 34c42 19 71 52 80 100-35-19-76-17-117 3 0-44 12-78 37-103Z" fill="#38255b"/>
+  <circle cx="145" cy="101" r="43" fill="#f0b59e"/>
+  <path d="M96 190h104l28 47H67Z" fill="#151a2a" stroke="#fb9c20" stroke-width="5"/>
+  <path d="M266 74h95M250 112h118M272 151h75" stroke="#8b5cf6" stroke-width="10" stroke-linecap="round"/>
+  <text x="28" y="235" fill="#23d3ef" font-family="Arial" font-size="28" font-weight="700">激燃极光</text>
+</svg>

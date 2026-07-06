@@ -135,6 +135,48 @@ type NodeRunDTO struct {
 	Error      *string                `json:"error,omitempty"`
 }
 
+type ComicDramaStyleDTO struct {
+	PublicID  string `json:"public_id"`
+	Name      string `json:"name"`
+	Prompt    string `json:"prompt"`
+	CoverURL  string `json:"cover_url"`
+	Source    string `json:"source"`
+	CreatedAt string `json:"created_at"`
+}
+
+type ComicDramaStyleInput struct {
+	Name     string `json:"name"`
+	Prompt   string `json:"prompt"`
+	CoverURL string `json:"cover_url"`
+	Mode     string `json:"mode"`
+}
+
+type ComicDramaProjectDTO struct {
+	PublicID              string                 `json:"public_id"`
+	WorkflowCode          string                 `json:"workflow_code"`
+	Name                  string                 `json:"name"`
+	Description           string                 `json:"description"`
+	CoverURL              string                 `json:"cover_url"`
+	Style                 map[string]interface{} `json:"style"`
+	StyleID               string                 `json:"style_id,omitempty"`
+	Orientation           string                 `json:"orientation"`
+	Quality               string                 `json:"quality"`
+	LastWorkflowProjectID string                 `json:"last_workflow_project_id,omitempty"`
+	LastWorkflowStatus    string                 `json:"last_workflow_status,omitempty"`
+	CreatedAt             string                 `json:"created_at"`
+	UpdatedAt             string                 `json:"updated_at"`
+}
+
+type ComicDramaProjectInput struct {
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	CoverURL     string `json:"cover_url"`
+	StyleID      string `json:"style_id"`
+	Orientation  string `json:"orientation"`
+	Quality      string `json:"quality"`
+	WorkflowCode string `json:"workflow_code"`
+}
+
 func (s *AgentService) CreateProject(ctx context.Context, userID int64, code string, inputs map[string]interface{}) (*WorkflowProjectDTO, error) {
 	wfID, def, err := s.getDefinition(ctx, code)
 	if err != nil {
@@ -145,6 +187,9 @@ func (s *AgentService) CreateProject(ctx context.Context, userID int64, code str
 	}
 	if !def.IsEnabled {
 		return nil, errors.New("智能体已下线")
+	}
+	if stringValue(def.RuntimeConfig["agent_mode"]) == "comic_drama" {
+		inputs = s.mergeComicDramaSystemDefaults(ctx, inputs)
 	}
 	estimated := 0.0
 	if v, ok := def.PriceRule["unit_price"].(float64); ok {
@@ -172,6 +217,9 @@ func (s *AgentService) CreateProject(ctx context.Context, userID int64, code str
 	if err != nil {
 		s.billing.Unfreeze(ctx, userID, estimated, "workflow", publicID)
 		return nil, err
+	}
+	if stringValue(def.RuntimeConfig["agent_mode"]) == "comic_drama" {
+		s.attachWorkflowToComicProject(ctx, userID, projectID, inputs)
 	}
 	if err := queue.EnqueueWorkflowTask(s.queue, queue.WorkflowTaskPayload{ProjectID: projectID, UserID: userID}); err != nil {
 		s.db.Exec(ctx, `UPDATE workflow_projects SET status='failed', error_message='入队失败' WHERE id=$1`, projectID)
@@ -286,6 +334,205 @@ func (s *AgentService) ListProjects(ctx context.Context, userID int64, page, pag
 	return items, total, nil
 }
 
+func (s *AgentService) ListComicDramaStyles(ctx context.Context, userID int64, source string) ([]ComicDramaStyleDTO, error) {
+	args := []interface{}{userID}
+	where := `(source='system' OR user_id=$1)`
+	switch strings.TrimSpace(source) {
+	case "system":
+		where = `source='system'`
+		args = nil
+	case "mine":
+		where = `user_id=$1`
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT public_id, name, prompt, cover_url, source, created_at
+		FROM comic_drama_styles
+		WHERE `+where+`
+		ORDER BY CASE WHEN source='system' THEN 0 ELSE 1 END, sort_order ASC, created_at DESC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ComicDramaStyleDTO{}
+	for rows.Next() {
+		var item ComicDramaStyleDTO
+		var created time.Time
+		if err := rows.Scan(&item.PublicID, &item.Name, &item.Prompt, &item.CoverURL, &item.Source, &created); err != nil {
+			return nil, err
+		}
+		item.CreatedAt = created.Format(time.RFC3339)
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func (s *AgentService) CreateComicDramaStyle(ctx context.Context, userID int64, input ComicDramaStyleInput) (*ComicDramaStyleDTO, error) {
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		return nil, errors.New("风格名称不能为空")
+	}
+	prompt := strings.TrimSpace(input.Prompt)
+	if prompt == "" {
+		if strings.TrimSpace(input.Mode) == "smart" {
+			prompt = "请根据参考图保持角色、场景、色彩、线条和镜头语言一致。"
+		} else {
+			return nil, errors.New("风格提示词不能为空")
+		}
+	}
+	publicID := util.NewPublicID("cds")
+	var item ComicDramaStyleDTO
+	var created time.Time
+	err := s.db.QueryRow(ctx, `
+		INSERT INTO comic_drama_styles (public_id, user_id, name, prompt, cover_url, source)
+		VALUES ($1,$2,$3,$4,$5,'user')
+		RETURNING public_id, name, prompt, cover_url, source, created_at`,
+		publicID, userID, name, prompt, strings.TrimSpace(input.CoverURL)).
+		Scan(&item.PublicID, &item.Name, &item.Prompt, &item.CoverURL, &item.Source, &created)
+	if err != nil {
+		return nil, err
+	}
+	item.CreatedAt = created.Format(time.RFC3339)
+	return &item, nil
+}
+
+func (s *AgentService) ListComicDramaProjects(ctx context.Context, userID int64) ([]ComicDramaProjectDTO, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT p.public_id, p.workflow_code, p.name, p.description, p.cover_url, p.style_snapshot, COALESCE(s.public_id,''), p.orientation, p.quality,
+		       COALESCE(wp.public_id,''), COALESCE(wp.status,''), p.created_at, p.updated_at
+		FROM comic_drama_projects p
+		LEFT JOIN comic_drama_styles s ON s.id = p.style_id
+		LEFT JOIN workflow_projects wp ON wp.id = p.last_workflow_project_id
+		WHERE p.user_id=$1
+		ORDER BY p.updated_at DESC, p.created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ComicDramaProjectDTO{}
+	for rows.Next() {
+		item, err := scanComicDramaProject(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, *item)
+	}
+	return items, nil
+}
+
+func (s *AgentService) GetComicDramaProject(ctx context.Context, userID int64, publicID string) (*ComicDramaProjectDTO, error) {
+	row := s.db.QueryRow(ctx, `
+		SELECT p.public_id, p.workflow_code, p.name, p.description, p.cover_url, p.style_snapshot, COALESCE(s.public_id,''), p.orientation, p.quality,
+		       COALESCE(wp.public_id,''), COALESCE(wp.status,''), p.created_at, p.updated_at
+		FROM comic_drama_projects p
+		LEFT JOIN comic_drama_styles s ON s.id = p.style_id
+		LEFT JOIN workflow_projects wp ON wp.id = p.last_workflow_project_id
+		WHERE p.user_id=$1 AND p.public_id=$2`, userID, publicID)
+	return scanComicDramaProject(row)
+}
+
+func (s *AgentService) CreateComicDramaProject(ctx context.Context, userID int64, input ComicDramaProjectInput) (*ComicDramaProjectDTO, error) {
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		return nil, errors.New("项目名称不能为空")
+	}
+	if len([]rune(name)) > 100 {
+		return nil, errors.New("项目名称不能超过100个字")
+	}
+	orientation := normalizeComicOrientation(input.Orientation)
+	quality := normalizeComicQuality(input.Quality)
+	workflowCode := strings.TrimSpace(input.WorkflowCode)
+	if workflowCode == "" {
+		workflowCode = "ai_comic_drama"
+	}
+	styleDBID, snapshot, err := s.resolveComicStyle(ctx, userID, input.StyleID)
+	if err != nil {
+		return nil, err
+	}
+	var styleArg interface{}
+	if styleDBID != nil {
+		styleArg = *styleDBID
+	}
+	publicID := util.NewPublicID("cdp")
+	_, err = s.db.Exec(ctx, `
+		INSERT INTO comic_drama_projects (public_id, user_id, workflow_code, name, description, cover_url, style_id, style_snapshot, orientation, quality)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		publicID, userID, workflowCode, name, strings.TrimSpace(input.Description), strings.TrimSpace(input.CoverURL), styleArg, mustAgentJSON(snapshot), orientation, quality)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetComicDramaProject(ctx, userID, publicID)
+}
+
+func (s *AgentService) UpdateComicDramaProject(ctx context.Context, userID int64, publicID string, input ComicDramaProjectInput) (*ComicDramaProjectDTO, error) {
+	styleDBID, snapshot, err := s.resolveComicStyle(ctx, userID, input.StyleID)
+	if err != nil {
+		return nil, err
+	}
+	var styleArg interface{}
+	if styleDBID != nil {
+		styleArg = *styleDBID
+	}
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		return nil, errors.New("项目名称不能为空")
+	}
+	tag, err := s.db.Exec(ctx, `
+		UPDATE comic_drama_projects
+		SET name=$1, description=$2, cover_url=$3, style_id=$4, style_snapshot=$5, orientation=$6, quality=$7, updated_at=now()
+		WHERE public_id=$8 AND user_id=$9`,
+		name, strings.TrimSpace(input.Description), strings.TrimSpace(input.CoverURL), styleArg, mustAgentJSON(snapshot), normalizeComicOrientation(input.Orientation), normalizeComicQuality(input.Quality), publicID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, pgx.ErrNoRows
+	}
+	return s.GetComicDramaProject(ctx, userID, publicID)
+}
+
+func (s *AgentService) attachWorkflowToComicProject(ctx context.Context, userID, workflowProjectID int64, inputs map[string]interface{}) {
+	publicID := stringValue(inputs["comic_project_id"])
+	if publicID == "" {
+		return
+	}
+	_, _ = s.db.Exec(ctx, `UPDATE comic_drama_projects SET last_workflow_project_id=$1, updated_at=now() WHERE public_id=$2 AND user_id=$3`, workflowProjectID, publicID, userID)
+}
+
+func scanComicDramaProject(row pgx.Row) (*ComicDramaProjectDTO, error) {
+	var item ComicDramaProjectDTO
+	var styleRaw []byte
+	var created, updated time.Time
+	if err := row.Scan(&item.PublicID, &item.WorkflowCode, &item.Name, &item.Description, &item.CoverURL, &styleRaw, &item.StyleID, &item.Orientation, &item.Quality, &item.LastWorkflowProjectID, &item.LastWorkflowStatus, &created, &updated); err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(styleRaw, &item.Style)
+	if item.Style == nil {
+		item.Style = map[string]interface{}{}
+	}
+	item.CreatedAt = created.Format(time.RFC3339)
+	item.UpdatedAt = updated.Format(time.RFC3339)
+	return &item, nil
+}
+
+func (s *AgentService) resolveComicStyle(ctx context.Context, userID int64, publicID string) (*int64, map[string]interface{}, error) {
+	publicID = strings.TrimSpace(publicID)
+	if publicID == "" {
+		return nil, map[string]interface{}{}, nil
+	}
+	var id int64
+	var name, prompt, coverURL, source string
+	err := s.db.QueryRow(ctx, `
+		SELECT id, name, prompt, cover_url, source
+		FROM comic_drama_styles
+		WHERE public_id=$1 AND (source='system' OR user_id=$2)`, publicID, userID).
+		Scan(&id, &name, &prompt, &coverURL, &source)
+	if err != nil {
+		return nil, nil, err
+	}
+	snapshot := map[string]interface{}{"public_id": publicID, "name": name, "prompt": prompt, "cover_url": coverURL, "source": source}
+	return &id, snapshot, nil
+}
+
 func projectDisplayTitle(fallback string, inputs map[string]interface{}) string {
 	for _, key := range []string{"user_prompt", "prompt", "description", "title"} {
 		if v, ok := inputs[key].(string); ok && strings.TrimSpace(v) != "" {
@@ -295,11 +542,107 @@ func projectDisplayTitle(fallback string, inputs map[string]interface{}) string 
 	return fallback
 }
 
+func normalizeComicOrientation(value string) string {
+	switch strings.TrimSpace(value) {
+	case "portrait":
+		return "portrait"
+	default:
+		return "landscape"
+	}
+}
+
+func normalizeComicQuality(value string) string {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "720P", "1080P":
+		return strings.ToUpper(strings.TrimSpace(value))
+	default:
+		return "480P"
+	}
+}
+
+func mustAgentJSON(value interface{}) []byte {
+	raw, _ := json.Marshal(value)
+	if raw == nil {
+		return []byte("{}")
+	}
+	return raw
+}
+
+func (s *AgentService) mergeComicDramaSystemDefaults(ctx context.Context, inputs map[string]interface{}) map[string]interface{} {
+	if inputs == nil {
+		inputs = map[string]interface{}{}
+	}
+	defaults := map[string]string{
+		"style_reference_mode": "comic_drama_default_style_mode",
+		"image_model_code":     "comic_drama_default_image_model",
+		"video_model_code":     "comic_drama_default_video_model",
+		"orientation":          "comic_drama_default_orientation",
+		"quality":              "comic_drama_default_quality",
+	}
+	for inputKey, configKey := range defaults {
+		if stringValue(inputs[inputKey]) != "" {
+			continue
+		}
+		if value, ok := s.systemConfigValue(ctx, configKey); ok {
+			inputs[inputKey] = value
+		}
+	}
+	if stringValue(inputs["dialogue_model_codes"]) == "" {
+		if value, ok := s.systemConfigValue(ctx, "comic_drama_backup_dialogue_models"); ok {
+			inputs["dialogue_model_codes"] = value
+		}
+	}
+	if _, ok := inputs["storyboard_grid"]; !ok {
+		if value, ok := s.systemConfigValue(ctx, "comic_drama_default_storyboard_grid"); ok {
+			inputs["storyboard_grid"] = value
+		}
+	}
+	if _, ok := inputs["max_retry"]; !ok {
+		if value, ok := s.systemConfigValue(ctx, "comic_drama_default_max_retry"); ok {
+			inputs["max_retry"] = value
+		}
+	}
+	if _, ok := inputs["_mode"]; !ok {
+		if value, ok := s.systemConfigValue(ctx, "comic_drama_default_step_confirm"); ok {
+			if b, _ := value.(bool); b {
+				inputs["_mode"] = "step"
+			} else {
+				inputs["_mode"] = "auto"
+			}
+		}
+	}
+	return inputs
+}
+
+func (s *AgentService) systemConfigValue(ctx context.Context, key string) (interface{}, bool) {
+	var raw []byte
+	if err := s.db.QueryRow(ctx, `SELECT value FROM system_configs WHERE key=$1`, key).Scan(&raw); err != nil {
+		return nil, false
+	}
+	var value interface{}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, false
+	}
+	return value, true
+}
+
 func (s *AgentService) estimateAgentRuntimeCost(ctx context.Context, runtimeCfg map[string]interface{}, inputs map[string]interface{}) float64 {
 	if runtimeCfg == nil {
 		return 0
 	}
 	total := 0.0
+	if stringValue(runtimeCfg["agent_mode"]) == "comic_drama" {
+		if code := stringValue(runtimeCfg["analysis_model_code"]); code != "" {
+			total += s.estimateModelCostByCode(ctx, code, inputs, 1200, 2500)
+		}
+		if code := firstAgentString(stringValue(runtimeCfg["image_model_code"]), stringValue(runtimeCfg["generation_model_code"])); code != "" {
+			total += s.estimateModelCostByCode(ctx, code, map[string]interface{}{"n": positiveAgentInt(intFromAgentAny(runtimeCfg["storyboard_grid"]), 6)}, 0, 0)
+		}
+		if code := firstAgentString(stringValue(runtimeCfg["video_model_code"]), stringValue(runtimeCfg["generation_model_code"])); code != "" {
+			total += s.estimateModelCostByCode(ctx, code, map[string]interface{}{"count": positiveAgentInt(intFromAgentAny(runtimeCfg["storyboard_grid"]), 6)}, 0, 0)
+		}
+		return total
+	}
 	if code := stringValue(runtimeCfg["analysis_model_code"]); code != "" {
 		total += s.estimateModelCostByCode(ctx, code, inputs, 500, 1000)
 	}
@@ -459,7 +802,9 @@ func (s *AgentService) Upsert(ctx context.Context, in AgentUpsertInput) error {
 	if _, ok := in.RuntimeConfig["agent_mode"]; !ok {
 		in.RuntimeConfig["agent_mode"] = "custom_nodes"
 	}
-	if mode, _ := in.RuntimeConfig["agent_mode"].(string); mode == "simple_pipeline" {
+	if mode, _ := in.RuntimeConfig["agent_mode"].(string); mode == "comic_drama" {
+		in = normalizeComicDramaAgentInput(in)
+	} else if mode == "simple_pipeline" {
 		in = normalizeSimpleAgentInput(in)
 	}
 	nodes, _ := json.Marshal(in.Nodes)
@@ -627,6 +972,91 @@ func normalizeSimpleAgentInput(in AgentUpsertInput) AgentUpsertInput {
 	return in
 }
 
+func normalizeComicDramaAgentInput(in AgentUpsertInput) AgentUpsertInput {
+	in.Category = "video"
+	in.GenerationType = "video"
+	in.RuntimeConfig["agent_mode"] = "comic_drama"
+	in.RuntimeConfig["generation_type"] = "video"
+	in.RuntimeConfig["preset_code"] = "ai_comic_drama"
+	if stringValue(in.RuntimeConfig["analysis_model_code"]) == "" {
+		in.RuntimeConfig["analysis_model_code"] = in.AnalysisModelCode
+	}
+	if stringValue(in.RuntimeConfig["generation_model_code"]) == "" {
+		in.RuntimeConfig["generation_model_code"] = in.GenerationModelCode
+	}
+	if stringValue(in.RuntimeConfig["video_model_code"]) == "" {
+		in.RuntimeConfig["video_model_code"] = firstAgentString(stringValue(in.RuntimeConfig["generation_model_code"]), in.GenerationModelCode)
+	}
+	if stringValue(in.RuntimeConfig["image_model_code"]) == "" {
+		in.RuntimeConfig["image_model_code"] = "image_fast_v1"
+	}
+	if _, ok := in.RuntimeConfig["dialogue_model_codes"]; !ok {
+		in.RuntimeConfig["dialogue_model_codes"] = []string{firstAgentString(stringValue(in.RuntimeConfig["analysis_model_code"]), in.AnalysisModelCode, "chat_demo_v1")}
+	}
+	if _, ok := in.RuntimeConfig["style_reference_mode"]; !ok {
+		in.RuntimeConfig["style_reference_mode"] = "image_reference"
+	}
+	if _, ok := in.RuntimeConfig["duration_mode"]; !ok {
+		in.RuntimeConfig["duration_mode"] = "standard"
+	}
+	if !validComicGrid(intFromAgentAny(in.RuntimeConfig["storyboard_grid"])) {
+		in.RuntimeConfig["storyboard_grid"] = 6
+	}
+	if intFromAgentAny(in.RuntimeConfig["max_retry"]) <= 0 {
+		in.RuntimeConfig["max_retry"] = 2
+	}
+	if intFromAgentAny(in.RuntimeConfig["asset_consistency_score"]) <= 0 {
+		in.RuntimeConfig["asset_consistency_score"] = 80
+	}
+	if intFromAgentAny(in.RuntimeConfig["logic_score"]) <= 0 {
+		in.RuntimeConfig["logic_score"] = 50
+	}
+	in.RuntimeConfig["output_mode"] = "composed_video"
+	in.RuntimeConfig["creative_scenes"] = []string{"ai_comic_drama"}
+	if _, ok := in.RuntimeConfig["input_capabilities"]; !ok {
+		in.RuntimeConfig["input_capabilities"] = map[string]interface{}{
+			"allow_text_only":             true,
+			"support_reference_image":     true,
+			"support_multiple_references": true,
+			"support_first_last_frame":    false,
+		}
+	}
+	if _, ok := in.RuntimeConfig["flow_options"]; !ok {
+		in.RuntimeConfig["flow_options"] = map[string]interface{}{
+			"enable_step_confirm": true,
+			"enable_autopilot":    true,
+			"allow_prompt_edit":   true,
+		}
+	}
+	if len(in.Nodes) == 0 {
+		in.Nodes = []WorkflowNode{
+			{ID: "comic_plan", Type: "llm", Name: "AI漫剧规划", ModelCode: stringValue(in.RuntimeConfig["analysis_model_code"]), Cost: 0},
+			{ID: "keyframes", Type: "image", Name: "关键帧生成", ModelCode: stringValue(in.RuntimeConfig["image_model_code"]), Cost: 0},
+			{ID: "video_segments", Type: "video", Name: "分段视频生成", ModelCode: stringValue(in.RuntimeConfig["video_model_code"]), Cost: 0},
+			{ID: "compose", Type: "video", Name: "视频合成", ModelCode: "", Cost: 0},
+		}
+	}
+	if len(in.InputSchema) == 0 {
+		in.InputSchema = map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"prompt": map[string]interface{}{"type": "string", "title": "漫剧创意", "placeholder": "描述你想生成的 AI 漫剧内容、角色和风格"},
+			},
+		}
+	}
+	if len(in.PriceRule) == 0 {
+		in.PriceRule = map[string]interface{}{"billing_type": "per_request", "unit_price": 0}
+	}
+	if len(in.DisplayConfig) == 0 {
+		in.DisplayConfig = defaultAgentDisplayConfig(in)
+	}
+	return in
+}
+
+func validComicGrid(v int) bool {
+	return v == 4 || v == 6 || v == 9
+}
+
 func defaultAgentDisplayConfig(in AgentUpsertInput) map[string]interface{} {
 	preset := agentPresetMeta(firstAgentString(stringValue(in.RuntimeConfig["preset_code"]), in.PresetCode, defaultPresetForType(in.GenerationType)))
 	title := "结果生成"
@@ -660,6 +1090,8 @@ type agentPreset struct {
 
 func agentPresetMeta(code string) agentPreset {
 	switch code {
+	case "ai_comic_drama":
+		return agentPreset{"comic", []string{"AI漫剧", "一键成片", "智能托管"}, []string{"剧本规划", "角色一致", "关键帧", "视频合成"}, "风格参考图", "例如：赛博城市里的少年侦探追查失控 AI，电影感，节奏紧凑", "输入故事创意，可上传风格参考图；AI 会规划剧本、角色、分镜、关键帧和分段视频，并自动合成为一个视频。"}
 	case "ecommerce_scene_image":
 		return agentPreset{"emerald", []string{"电商场景图", "多方案", "商品视觉"}, []string{"场景补全", "卖点强化", "商业构图", "批量生成"}, "商品/参考图", "例如：把这款产品放到高端家居场景，突出质感和卖点", "输入简单需求并上传商品图，AI 会生成多条场景化方案。"}
 	case "poster_image":
@@ -703,6 +1135,7 @@ func normalizeAgentCreativeScenes(items []string, generationType string) []strin
 		fallback = "product_video"
 		allowed["product_video"] = true
 		allowed["image_to_video"] = true
+		allowed["ai_comic_drama"] = true
 	} else {
 		allowed["main_image"] = true
 		allowed["detail_image"] = true

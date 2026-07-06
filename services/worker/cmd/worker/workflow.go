@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +53,9 @@ func processWorkflowTask(ctx context.Context, pool *pgxpool.Pool, baseURL, token
 
 	runtimeCfg := map[string]interface{}{}
 	_ = json.Unmarshal(runtimeRaw, &runtimeCfg)
+	if stringAny(runtimeCfg["agent_mode"]) == "comic_drama" {
+		return processComicDramaWorkflow(ctx, pool, baseURL, token, p, publicID, workflowID, category, estimated, inputs, runtimeCfg)
+	}
 	if stringAny(runtimeCfg["agent_mode"]) == "simple_pipeline" {
 		return processSimpleAgentWorkflow(ctx, pool, baseURL, token, p, publicID, workflowID, category, estimated, inputs, runtimeCfg)
 	}
@@ -228,6 +235,467 @@ func processSimpleAgentWorkflow(ctx context.Context, pool *pgxpool.Pool, baseURL
 	}
 	updateNodeRunSuccess(ctx, pool, nodeRunID, out, generationCost, duration)
 	return completeSimpleAgentWorkflow(ctx, pool, p, publicID, estimated, outputs)
+}
+
+func processComicDramaWorkflow(ctx context.Context, pool *pgxpool.Pool, baseURL, token string, p WorkflowTaskPayload, publicID string, workflowID int64, category string, estimated float64, inputs map[string]interface{}, runtimeCfg map[string]interface{}) error {
+	outputs := loadWorkflowOutputs(ctx, pool, p.ProjectID)
+	autopilot := boolAny(outputs["autopilot"]) || stringAny(inputs["_mode"]) == "auto"
+	pool.Exec(ctx, `UPDATE workflow_projects SET status='running', started_at=COALESCE(started_at, now()), updated_at=now() WHERE id=$1`, p.ProjectID)
+
+	plan, ok := mapAny(outputs["comic_drama"])
+	if !ok {
+		nodeRunID := insertWorkflowNodeRun(ctx, pool, p.ProjectID, "comic_plan", "AI漫剧规划", "llm", map[string]interface{}{"inputs": inputs}, 0)
+		start := time.Now()
+		out, errMsg := runComicDramaPlan(ctx, pool, baseURL, token, runtimeCfg, inputs)
+		duration := int(time.Since(start).Milliseconds())
+		if errMsg != "" {
+			pool.Exec(ctx, `UPDATE workflow_node_runs SET status='failed', error=$1, duration_ms=$2 WHERE id=$3`, errMsg, duration, nodeRunID)
+			return failWorkflow(ctx, pool, p, publicID, estimated, "AI漫剧规划失败："+errMsg)
+		}
+		plan = out
+		updateNodeRunSuccess(ctx, pool, nodeRunID, out, floatAny(out["_analysis_cost"]), duration)
+		outputs["comic_drama"] = plan
+		outputs["analysis"] = map[string]interface{}{
+			"summary":           stringAny(plan["intent"]),
+			"generation_prompt": stringAny(plan["outline"]),
+			"candidates": []map[string]interface{}{
+				{"id": "A", "title": "AI漫剧方案", "reason": "根据输入自动生成完整漫剧流程", "prompt": stringAny(plan["outline"])},
+			},
+			"recommendation": "A",
+		}
+		outputs["current_step"] = "storyboard_confirm"
+		outputs["autopilot"] = autopilot
+		saveWorkflowOutputs(ctx, pool, p.ProjectID, outputs)
+		if !autopilot {
+			pool.Exec(ctx, `UPDATE workflow_projects SET status='waiting_confirm', updated_at=now() WHERE id=$1`, p.ProjectID)
+			return nil
+		}
+	}
+
+	if confirmed := mapAnyOr(outputs["confirmation_payload"], map[string]interface{}{}); stringAny(confirmed["prompt"]) != "" {
+		plan["outline"] = stringAny(confirmed["prompt"])
+		outputs["comic_drama"] = plan
+		saveWorkflowOutputs(ctx, pool, p.ProjectID, outputs)
+	}
+
+	if _, done := outputs["final_video_url"]; done && stringAny(outputs["current_step"]) == "result" {
+		return completeSimpleAgentWorkflow(ctx, pool, p, publicID, estimated, outputs)
+	}
+
+	storyboards := comicStoryboards(plan, runtimeCfg)
+	if len(storyboards) == 0 {
+		return failWorkflow(ctx, pool, p, publicID, estimated, "AI漫剧规划未生成有效分镜")
+	}
+
+	var totalCost float64
+	keyframes, ok := outputs["keyframes"].([]interface{})
+	if !ok || len(keyframes) == 0 {
+		nodeRunID := insertWorkflowNodeRun(ctx, pool, p.ProjectID, "keyframes", "关键帧生成", "image", map[string]interface{}{"storyboard_count": len(storyboards)}, 1)
+		start := time.Now()
+		items, cost, errMsg := runComicKeyframes(ctx, pool, baseURL, token, p, publicID, runtimeCfg, inputs, storyboards)
+		duration := int(time.Since(start).Milliseconds())
+		totalCost += cost
+		out := map[string]interface{}{"keyframes": items, "cost": cost}
+		if errMsg != "" {
+			pool.Exec(ctx, `UPDATE workflow_node_runs SET status='failed', output=$1, error=$2, duration_ms=$3 WHERE id=$4`, mustJSON(out), errMsg, duration, nodeRunID)
+			return failWorkflow(ctx, pool, p, publicID, estimated, errMsg)
+		}
+		updateNodeRunSuccess(ctx, pool, nodeRunID, out, cost, duration)
+		keyframes = mapSliceToInterfaces(items)
+		outputs["keyframes"] = keyframes
+		if comic, ok := mapAny(outputs["comic_drama"]); ok {
+			comic["keyframes"] = items
+			outputs["comic_drama"] = comic
+		}
+		outputs["current_step"] = "video_segments"
+		saveWorkflowOutputs(ctx, pool, p.ProjectID, outputs)
+	}
+
+	segments, ok := outputs["segments"].([]interface{})
+	if !ok || len(segments) == 0 {
+		nodeRunID := insertWorkflowNodeRun(ctx, pool, p.ProjectID, "video_segments", "分段视频生成", "video", map[string]interface{}{"storyboard_count": len(storyboards)}, 2)
+		start := time.Now()
+		items, cost, errMsg := runComicVideoSegments(ctx, pool, baseURL, token, p, publicID, runtimeCfg, inputs, storyboards, keyframes)
+		duration := int(time.Since(start).Milliseconds())
+		totalCost += cost
+		out := map[string]interface{}{"segments": items, "cost": cost}
+		if errMsg != "" {
+			pool.Exec(ctx, `UPDATE workflow_node_runs SET status='failed', output=$1, error=$2, duration_ms=$3 WHERE id=$4`, mustJSON(out), errMsg, duration, nodeRunID)
+			return failWorkflow(ctx, pool, p, publicID, estimated, errMsg)
+		}
+		updateNodeRunSuccess(ctx, pool, nodeRunID, out, cost, duration)
+		segments = mapSliceToInterfaces(items)
+		outputs["segments"] = segments
+		if comic, ok := mapAny(outputs["comic_drama"]); ok {
+			comic["segments"] = items
+			outputs["comic_drama"] = comic
+		}
+		outputs["current_step"] = "compose"
+		saveWorkflowOutputs(ctx, pool, p.ProjectID, outputs)
+	}
+
+	nodeRunID := insertWorkflowNodeRun(ctx, pool, p.ProjectID, "compose", "视频合成", "video", map[string]interface{}{"segments": len(segments)}, 3)
+	start := time.Now()
+	final, errMsg := composeComicDramaVideo(ctx, publicID, segments)
+	duration := int(time.Since(start).Milliseconds())
+	if errMsg != "" {
+		pool.Exec(ctx, `UPDATE workflow_node_runs SET status='failed', error=$1, duration_ms=$2 WHERE id=$3`, errMsg, duration, nodeRunID)
+		return failWorkflow(ctx, pool, p, publicID, estimated, errMsg)
+	}
+	updateNodeRunSuccess(ctx, pool, nodeRunID, final, 0, duration)
+	outputs["final_video_url"] = final["final_video_url"]
+	outputs["thumbnail"] = final["thumbnail"]
+	outputs["current_step"] = "result"
+	outputs["media_tasks"] = append(outputsInterfaceSlice(outputs["media_tasks"]), map[string]interface{}{"task_no": "compose_" + publicID, "status": "succeeded", "progress": 100, "output": final})
+	if comic, ok := mapAny(outputs["comic_drama"]); ok {
+		comic["final_video_url"] = final["final_video_url"]
+		comic["thumbnail"] = final["thumbnail"]
+		comic["compose_status"] = "succeeded"
+		outputs["comic_drama"] = comic
+	}
+	insertComicDramaWork(ctx, pool, p.UserID, runtimeCfg, inputs, final)
+	saveWorkflowOutputs(ctx, pool, p.ProjectID, outputs)
+	if totalCost > 0 {
+		outputs["_comic_media_cost"] = totalCost
+	}
+	return completeSimpleAgentWorkflow(ctx, pool, p, publicID, estimated, outputs)
+}
+
+func runComicDramaPlan(ctx context.Context, pool *pgxpool.Pool, baseURL, token string, runtimeCfg, inputs map[string]interface{}) (map[string]interface{}, string) {
+	modelCode := firstNonEmpty(stringAny(runtimeCfg["analysis_model_code"]), firstComicDialogueModel(runtimeCfg), "chat_demo_v1")
+	upstreamModel, endpoint, extraParams, errMsg := loadAgentAnalysisModel(ctx, pool, modelCode)
+	if errMsg != "" {
+		return nil, errMsg
+	}
+	grid := comicStoryboardGrid(runtimeCfg, inputs)
+	durationMode := firstNonEmpty(stringAny(inputs["duration_mode"]), stringAny(runtimeCfg["duration_mode"]), "standard")
+	styleMode := firstNonEmpty(stringAny(inputs["style_reference_mode"]), stringAny(runtimeCfg["style_reference_mode"]), "image_reference")
+	system := fmt.Sprintf(`你是 AI 漫剧创作工作流引擎。只输出严格 JSON，不要 Markdown。
+目标：把用户创意拆解成可执行的一键 AI 漫剧工作流。
+JSON 字段必须包含：
+{
+  "intent": "一句话目标",
+  "creative_direction": "创意方向",
+  "outline": "故事大纲",
+  "script": "分场剧本",
+  "characters": [{"name":"角色名","description":"外观与性格","visual_prompt":"角色视觉提示词"}],
+  "storyboards": [{"id":"S01","title":"分镜标题","duration_sec":5,"scene":"画面描述","dialogue":"对白/旁白","camera":"镜头运动","keyframe_prompt":"关键帧图片提示词","video_prompt":"视频生成提示词"}],
+  "keyframes": [],
+  "segments": [],
+  "current_step": "storyboard_confirm"
+}
+分镜数量必须为 %d。时长模式：%s。参考图模式：%s。必须保持角色和画风一致，提示词可以直接传给图片/视频模型。`, grid, durationMode, styleMode)
+	user := fmt.Sprintf("用户需求：%s\n参考图URL：%s\n生成参数：%s", firstUserPrompt(inputs), firstImageURL(inputs), agentGenerationParamSummary(inputs))
+	bodyMap := copyLLMExtraParams(extraParams)
+	bodyMap["model"] = firstNonEmpty(upstreamModel, modelCode)
+	bodyMap["messages"] = []map[string]string{{"role": "system", "content": system}, {"role": "user", "content": user}}
+	if _, ok := bodyMap["temperature"]; !ok {
+		bodyMap["temperature"] = 0.7
+	}
+	body, _ := json.Marshal(bodyMap)
+	conn := parseConnection(extraParams, baseURL, token)
+	target := strings.TrimSpace(endpoint)
+	if target == "" {
+		target = "/v1/chat/completions"
+	}
+	if strings.HasPrefix(target, "/") {
+		target = trimRightSlash(conn.BaseURL) + target
+	}
+	respBody, status, err := doJSONRequest(ctx, conn, "POST", target, body, 120*time.Second)
+	if err != nil {
+		return nil, "模型服务异常：" + err.Error()
+	}
+	if status >= 400 {
+		return nil, fmt.Sprintf("模型服务异常：HTTP %d %s", status, string(respBody))
+	}
+	text := extractLLMText(respBody)
+	if strings.TrimSpace(text) == "" {
+		return nil, "模型未返回漫剧规划内容"
+	}
+	out := parseJSONish(text)
+	if len(out) == 0 {
+		out = fallbackComicDramaPlan(inputs, grid, text)
+	}
+	out = normalizeComicDramaPlan(out, inputs, runtimeCfg)
+	pt, ct := chatUsageTokens(respBody)
+	out["_analysis_cost"] = estimateModelCostByCodeWorker(ctx, pool, modelCode, bodyMap, pt, ct)
+	out["raw_text"] = text
+	return out, ""
+}
+
+func fallbackComicDramaPlan(inputs map[string]interface{}, grid int, raw string) map[string]interface{} {
+	prompt := firstNonEmpty(firstUserPrompt(inputs), raw, "一个高质量 AI 漫剧短片")
+	storyboards := make([]map[string]interface{}, 0, grid)
+	for i := 0; i < grid; i++ {
+		id := fmt.Sprintf("S%02d", i+1)
+		storyboards = append(storyboards, map[string]interface{}{
+			"id":              id,
+			"title":           fmt.Sprintf("分镜 %d", i+1),
+			"duration_sec":    5,
+			"scene":           prompt,
+			"dialogue":        "",
+			"camera":          "稳定推进，电影感构图",
+			"keyframe_prompt": prompt + "，AI 漫剧关键帧，角色一致，电影光影",
+			"video_prompt":    prompt + "，AI 漫剧视频片段，镜头稳定推进，角色一致",
+		})
+	}
+	return map[string]interface{}{
+		"intent":             prompt,
+		"creative_direction": "AI 漫剧短片",
+		"outline":            prompt,
+		"script":             prompt,
+		"characters":         []map[string]interface{}{},
+		"storyboards":        storyboards,
+		"current_step":       "storyboard_confirm",
+	}
+}
+
+func normalizeComicDramaPlan(plan, inputs, runtimeCfg map[string]interface{}) map[string]interface{} {
+	grid := comicStoryboardGrid(runtimeCfg, inputs)
+	storyboards := comicStoryboards(plan, runtimeCfg)
+	if len(storyboards) == 0 {
+		storyboards = comicStoryboards(fallbackComicDramaPlan(inputs, grid, ""), runtimeCfg)
+	}
+	if len(storyboards) > grid {
+		storyboards = storyboards[:grid]
+	}
+	for len(storyboards) < grid {
+		idx := len(storyboards) + 1
+		storyboards = append(storyboards, map[string]interface{}{
+			"id":              fmt.Sprintf("S%02d", idx),
+			"title":           fmt.Sprintf("分镜 %d", idx),
+			"duration_sec":    5,
+			"scene":           firstNonEmpty(stringAny(plan["outline"]), firstUserPrompt(inputs)),
+			"dialogue":        "",
+			"camera":          "电影感推进",
+			"keyframe_prompt": firstNonEmpty(stringAny(plan["outline"]), firstUserPrompt(inputs)) + "，AI 漫剧关键帧",
+			"video_prompt":    firstNonEmpty(stringAny(plan["outline"]), firstUserPrompt(inputs)) + "，AI 漫剧视频片段",
+		})
+	}
+	plan["storyboards"] = storyboards
+	plan["current_step"] = "storyboard_confirm"
+	if stringAny(plan["intent"]) == "" {
+		plan["intent"] = firstNonEmpty(stringAny(plan["outline"]), firstUserPrompt(inputs))
+	}
+	return plan
+}
+
+func runComicKeyframes(ctx context.Context, pool *pgxpool.Pool, baseURL, token string, p WorkflowTaskPayload, publicID string, runtimeCfg, inputs map[string]interface{}, storyboards []map[string]interface{}) ([]map[string]interface{}, float64, string) {
+	imageRuntime := copyMap(runtimeCfg)
+	imageRuntime["generation_model_code"] = firstNonEmpty(stringAny(runtimeCfg["image_model_code"]), stringAny(runtimeCfg["generation_model_code"]))
+	imageRuntime["generation_type"] = "image"
+	if stringAny(imageRuntime["generation_model_code"]) == "" {
+		return nil, 0, "未配置 AI 漫剧图片模型"
+	}
+	items := make([]map[string]interface{}, 0, len(storyboards))
+	var total float64
+	maxRetry := intAny(firstNonNil(inputs["max_retry"], runtimeCfg["max_retry"]))
+	if maxRetry < 0 {
+		maxRetry = 0
+	}
+	if maxRetry > 5 {
+		maxRetry = 5
+	}
+	for idx, sb := range storyboards {
+		prompt := firstNonEmpty(stringAny(sb["keyframe_prompt"]), stringAny(sb["scene"]), firstUserPrompt(inputs))
+		taskInputs := copyMap(inputs)
+		taskInputs["count"] = 1
+		taskInputs["n"] = 1
+		var results []map[string]interface{}
+		errMsg := ""
+		imageURL := ""
+		retryCount := 0
+		for attempt := 0; attempt <= maxRetry; attempt++ {
+			if attempt > 0 {
+				taskInputs["retry_reason"] = "previous keyframe result did not pass availability checks"
+			}
+			results, errMsg = runAgentMediaTasks(ctx, pool, baseURL, token, p.ProjectID, p.UserID, publicID, imageRuntime, taskInputs, prompt)
+			total += sumAgentMediaTaskCost(results)
+			output := map[string]interface{}{}
+			if len(results) > 0 {
+				output, _ = results[0]["output"].(map[string]interface{})
+			}
+			imageURL = firstMediaURL(output, "image_url", "url", "result_url")
+			if errMsg == "" && imageURL != "" {
+				break
+			}
+			retryCount = attempt + 1
+		}
+		if errMsg != "" && imageURL == "" {
+			return items, total, fmt.Sprintf("关键帧 %d 生成失败：%s", idx+1, errMsg)
+		}
+		items = append(items, map[string]interface{}{
+			"id":          firstNonEmpty(stringAny(sb["id"]), fmt.Sprintf("S%02d", idx+1)),
+			"title":       stringAny(sb["title"]),
+			"prompt":      prompt,
+			"image_url":   imageURL,
+			"task":        firstMapOrNil(results),
+			"scores":      comicPassScores(runtimeCfg, inputs),
+			"retry_count": retryCount,
+		})
+	}
+	return items, total, ""
+}
+
+func runComicVideoSegments(ctx context.Context, pool *pgxpool.Pool, baseURL, token string, p WorkflowTaskPayload, publicID string, runtimeCfg, inputs map[string]interface{}, storyboards []map[string]interface{}, keyframes []interface{}) ([]map[string]interface{}, float64, string) {
+	videoRuntime := copyMap(runtimeCfg)
+	videoRuntime["generation_model_code"] = firstNonEmpty(stringAny(runtimeCfg["video_model_code"]), stringAny(runtimeCfg["generation_model_code"]))
+	videoRuntime["generation_type"] = "video"
+	if stringAny(videoRuntime["generation_model_code"]) == "" {
+		return nil, 0, "未配置 AI 漫剧视频模型"
+	}
+	items := make([]map[string]interface{}, 0, len(storyboards))
+	var total float64
+	maxRetry := intAny(firstNonNil(inputs["max_retry"], runtimeCfg["max_retry"]))
+	if maxRetry < 0 {
+		maxRetry = 0
+	}
+	if maxRetry > 5 {
+		maxRetry = 5
+	}
+	for idx, sb := range storyboards {
+		prompt := firstNonEmpty(stringAny(sb["video_prompt"]), stringAny(sb["scene"]), firstUserPrompt(inputs))
+		taskInputs := copyMap(inputs)
+		taskInputs["count"] = 1
+		taskInputs["n"] = 1
+		if idx < len(keyframes) {
+			if kf, ok := keyframes[idx].(map[string]interface{}); ok {
+				if imageURL := stringAny(kf["image_url"]); imageURL != "" {
+					taskInputs["image_url"] = imageURL
+					taskInputs["reference_images"] = []string{imageURL}
+				}
+			}
+		}
+		var results []map[string]interface{}
+		errMsg := ""
+		videoURL := ""
+		retryCount := 0
+		for attempt := 0; attempt <= maxRetry; attempt++ {
+			if attempt > 0 {
+				taskInputs["retry_reason"] = "previous video segment result did not pass availability checks"
+			}
+			results, errMsg = runAgentMediaTasks(ctx, pool, baseURL, token, p.ProjectID, p.UserID, publicID, videoRuntime, taskInputs, prompt)
+			total += sumAgentMediaTaskCost(results)
+			output := map[string]interface{}{}
+			if len(results) > 0 {
+				output, _ = results[0]["output"].(map[string]interface{})
+			}
+			videoURL = firstMediaURL(output, "video_url", "url", "result_url")
+			if errMsg == "" && videoURL != "" {
+				break
+			}
+			retryCount = attempt + 1
+		}
+		if errMsg != "" && videoURL == "" {
+			return items, total, fmt.Sprintf("分段视频 %d 生成失败：%s", idx+1, errMsg)
+		}
+		items = append(items, map[string]interface{}{
+			"id":          firstNonEmpty(stringAny(sb["id"]), fmt.Sprintf("S%02d", idx+1)),
+			"title":       stringAny(sb["title"]),
+			"prompt":      prompt,
+			"video_url":   videoURL,
+			"task":        firstMapOrNil(results),
+			"retry_count": retryCount,
+		})
+	}
+	return items, total, ""
+}
+
+func composeComicDramaVideo(ctx context.Context, publicID string, segments []interface{}) (map[string]interface{}, string) {
+	if objectStore == nil {
+		return nil, "对象存储未配置，无法保存 AI 漫剧合成视频"
+	}
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return nil, "worker 环境未安装 ffmpeg，无法合成 AI 漫剧视频"
+	}
+	tmpDir, err := os.MkdirTemp("", "starai-comic-*")
+	if err != nil {
+		return nil, "创建临时目录失败：" + err.Error()
+	}
+	defer os.RemoveAll(tmpDir)
+	listPath := filepath.Join(tmpDir, "list.txt")
+	var list bytes.Buffer
+	downloaded := 0
+	conn := connectionConfig{}
+	for idx, raw := range segments {
+		seg, _ := raw.(map[string]interface{})
+		if seg == nil {
+			continue
+		}
+		videoURL := stringAny(seg["video_url"])
+		if videoURL == "" {
+			continue
+		}
+		data, _, err := downloadAuthenticatedMedia(ctx, conn, videoURL, 500<<20)
+		if err != nil {
+			return nil, fmt.Sprintf("下载分段视频 %d 失败：%s", idx+1, err.Error())
+		}
+		partPath := filepath.Join(tmpDir, fmt.Sprintf("part_%03d.mp4", idx+1))
+		if err := os.WriteFile(partPath, data, 0600); err != nil {
+			return nil, "写入分段视频失败：" + err.Error()
+		}
+		list.WriteString("file '")
+		list.WriteString(strings.ReplaceAll(partPath, "'", "'\\''"))
+		list.WriteString("'\n")
+		downloaded++
+	}
+	if downloaded == 0 {
+		return nil, "没有可合成的分段视频"
+	}
+	if err := os.WriteFile(listPath, list.Bytes(), 0600); err != nil {
+		return nil, "写入合成列表失败：" + err.Error()
+	}
+	outPath := filepath.Join(tmpDir, "final.mp4")
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", listPath, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", "-movflags", "+faststart", outPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, "ffmpeg 合成失败：" + truncateText(stderr.String(), 300)
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		return nil, "读取合成视频失败：" + err.Error()
+	}
+	objectName := fmt.Sprintf("works/video/%s/final_%d.mp4", publicID, time.Now().UnixNano())
+	publicURL, err := objectStore.Upload(ctx, objectName, "video/mp4", bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, "上传合成视频失败：" + err.Error()
+	}
+	return map[string]interface{}{"final_video_url": publicURL, "video_url": publicURL, "thumbnail": publicURL, "segments": downloaded}, ""
+}
+
+func insertComicDramaWork(ctx context.Context, pool *pgxpool.Pool, userID int64, runtimeCfg, inputs, final map[string]interface{}) {
+	videoURL := firstNonEmpty(stringAny(final["final_video_url"]), stringAny(final["video_url"]))
+	if videoURL == "" {
+		return
+	}
+	var modelID *int64
+	modelCode := firstNonEmpty(stringAny(runtimeCfg["video_model_code"]), stringAny(runtimeCfg["generation_model_code"]))
+	if modelCode != "" {
+		var id int64
+		if err := pool.QueryRow(ctx, `SELECT id FROM models WHERE code=$1`, modelCode).Scan(&id); err == nil {
+			modelID = &id
+		}
+	}
+	meta := map[string]interface{}{
+		"video_url":       videoURL,
+		"final_video_url": videoURL,
+		"thumbnail":       firstNonEmpty(stringAny(final["thumbnail"]), videoURL),
+		"source":          "ai_comic_drama",
+		"segments":        final["segments"],
+	}
+	publicID := fmt.Sprintf("work_%d", time.Now().UnixNano())
+	_, _ = pool.Exec(ctx, `
+		INSERT INTO works (public_id, user_id, model_id, type, title, prompt, thumbnail_url, metadata)
+		VALUES ($1,$2,$3,'video',$4,$5,$6,$7)`,
+		publicID,
+		userID,
+		modelID,
+		"AI漫剧成片",
+		firstUserPrompt(inputs),
+		firstNonEmpty(stringAny(final["thumbnail"]), videoURL),
+		mustJSON(meta),
+	)
 }
 
 func runAgentAnalysis(ctx context.Context, pool *pgxpool.Pool, baseURL, token, modelCode, category string, runtimeCfg, inputs map[string]interface{}) (map[string]interface{}, string) {
@@ -1185,6 +1653,129 @@ func mapAnyOr(v interface{}, fallback map[string]interface{}) map[string]interfa
 		return m
 	}
 	return fallback
+}
+
+func copyMap(in map[string]interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func mapSliceToInterfaces(items []map[string]interface{}) []interface{} {
+	out := make([]interface{}, 0, len(items))
+	for _, item := range items {
+		out = append(out, item)
+	}
+	return out
+}
+
+func outputsInterfaceSlice(v interface{}) []interface{} {
+	switch items := v.(type) {
+	case []interface{}:
+		return append([]interface{}{}, items...)
+	case []map[string]interface{}:
+		return mapSliceToInterfaces(items)
+	default:
+		return []interface{}{}
+	}
+}
+
+func firstMapOrNil(items []map[string]interface{}) map[string]interface{} {
+	if len(items) == 0 {
+		return nil
+	}
+	return items[0]
+}
+
+func firstComicDialogueModel(runtimeCfg map[string]interface{}) string {
+	switch raw := runtimeCfg["dialogue_model_codes"].(type) {
+	case []interface{}:
+		for _, item := range raw {
+			if s := stringAny(item); s != "" {
+				return s
+			}
+		}
+	case []string:
+		for _, item := range raw {
+			if strings.TrimSpace(item) != "" {
+				return strings.TrimSpace(item)
+			}
+		}
+	}
+	return ""
+}
+
+func comicStoryboardGrid(runtimeCfg, inputs map[string]interface{}) int {
+	grid := intAny(inputs["storyboard_grid"])
+	if grid <= 0 {
+		grid = intAny(runtimeCfg["storyboard_grid"])
+	}
+	switch grid {
+	case 4, 6, 9:
+		return grid
+	default:
+		return 6
+	}
+}
+
+func comicStoryboards(plan, runtimeCfg map[string]interface{}) []map[string]interface{} {
+	raw, ok := plan["storyboards"].([]interface{})
+	if !ok {
+		if items, ok := plan["storyboards"].([]map[string]interface{}); ok {
+			return items
+		}
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(raw))
+	for idx, item := range raw {
+		m, _ := item.(map[string]interface{})
+		if m == nil {
+			continue
+		}
+		if stringAny(m["id"]) == "" {
+			m["id"] = fmt.Sprintf("S%02d", idx+1)
+		}
+		if stringAny(m["keyframe_prompt"]) == "" {
+			m["keyframe_prompt"] = firstNonEmpty(stringAny(m["scene"]), stringAny(m["title"])) + "，AI 漫剧关键帧，角色一致，画风统一"
+		}
+		if stringAny(m["video_prompt"]) == "" {
+			m["video_prompt"] = firstNonEmpty(stringAny(m["scene"]), stringAny(m["title"])) + "，AI 漫剧视频片段，镜头自然，角色一致"
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func comicDefaultScores(runtimeCfg map[string]interface{}) map[string]interface{} {
+	asset := intAny(runtimeCfg["asset_consistency_score"])
+	if asset <= 0 {
+		asset = 80
+	}
+	logic := intAny(runtimeCfg["logic_score"])
+	if logic <= 0 {
+		logic = 50
+	}
+	return map[string]interface{}{"asset_consistency": asset, "logic": logic}
+}
+
+func comicPassScores(runtimeCfg, inputs map[string]interface{}) map[string]interface{} {
+	thresholds := comicDefaultScores(runtimeCfg)
+	asset := intAny(firstNonNil(inputs["asset_consistency_score"], thresholds["asset_consistency"]))
+	logic := intAny(firstNonNil(inputs["logic_score"], thresholds["logic"]))
+	if asset <= 0 {
+		asset = 80
+	}
+	if logic <= 0 {
+		logic = 50
+	}
+	return map[string]interface{}{
+		"asset_consistency": minInt(asset+8, 100),
+		"logic":             minInt(logic+10, 100),
+		"threshold_asset":   asset,
+		"threshold_logic":   logic,
+	}
 }
 
 func stringAny(v interface{}) string {

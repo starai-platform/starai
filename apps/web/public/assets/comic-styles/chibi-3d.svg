@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 260">
+  <rect width="420" height="260" fill="#f4f1ff"/>
+  <circle cx="122" cy="92" r="58" fill="#ffcf9f"/>
+  <path d="M74 77c16-45 81-55 107-14 13 21 7 47-5 65-15-32-65-47-102-51Z" fill="#ce7b38"/>
+  <path d="M88 154h74v69H88Z" fill="#252b3a"/>
+  <circle cx="284" cy="92" r="44" fill="#ffd9ad"/>
+  <path d="M245 84c13-38 62-44 80-10 8 15 2 35-9 50-13-23-44-35-71-40Z" fill="#c96f2f"/>
+  <path d="M259 139h51v76h-51Z" fill="#ffffff"/>
+  <text x="28" y="235" fill="#7247b6" font-family="Arial" font-size="28" font-weight="700">3D盲盒</text>
+</svg>

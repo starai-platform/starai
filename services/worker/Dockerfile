@@ -8,6 +8,6 @@ COPY . .
 RUN CGO_ENABLED=0 go build -p=2 -o /worker ./cmd/worker
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates ffmpeg
 COPY --from=builder /worker /worker
 CMD ["/worker"]

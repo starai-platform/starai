@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 260">
+  <rect width="420" height="260" fill="#f7f0df"/>
+  <path d="M20 170c62-43 132-36 195 0s118 32 185-16" fill="none" stroke="#c6a96e" stroke-width="9" opacity=".6"/>
+  <circle cx="140" cy="82" r="42" fill="#f0d3aa"/>
+  <path d="M102 91c5-48 71-61 91-20 8 16 1 39-9 56-12-31-58-44-82-36Z" fill="#6b4a35"/>
+  <path d="M107 133h74l27 92H76Z" fill="#d9ccb0"/>
+  <path d="M268 70l62 32-62 32-62-32Z" fill="#b65c47"/>
+  <path d="M219 118h98v87h-98Z" fill="#eadbbb"/>
+  <text x="28" y="235" fill="#73522f" font-family="Arial" font-size="28" font-weight="700">纯正国风</text>
+</svg>

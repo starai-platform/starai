@@ -71,6 +71,12 @@ export const AGENT_THEMES: Record<string, { gradient: string; iconBg: string; pi
     pill: "bg-emerald-100/70 text-emerald-700",
     accent: "text-emerald-600",
   },
+  comic: {
+    gradient: "from-cyan-50 via-violet-50 to-white",
+    iconBg: "bg-cyan-100 text-cyan-700",
+    pill: "bg-cyan-100/70 text-cyan-700",
+    accent: "text-cyan-600",
+  },
 };
 
 export const FEATURE_CARDS = [

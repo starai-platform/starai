@@ -23,6 +23,7 @@ bin/
 .env
 .env.*
 !.env.example
+!.env.local
 
 # Logs and local runtime files
 *.log

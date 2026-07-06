@@ -100,6 +100,8 @@ cd /www/wwwroot/starai
 cp .env.example .env.production
 ```
 
+`.env.example` 是生产部署模板，适合宝塔 / Docker Compose 一键部署。`.env.local` 只用于本地开发，不要复制到生产服务器使用，否则前端可能会把 API 地址构建成 `localhost:8080`，导致线上浏览器无法登录或请求接口。
+
 编辑 `.env.production`，参考下面配置：
 
 ```env
@@ -154,6 +156,7 @@ NEW_API_STREAM_TIMEOUT_SECONDS=600
 - `LOCAL_STORAGE_PUBLIC_URL` 是本地上传兜底路径。生产环境建议主要使用 R2/S3。
 - `ADMIN_ASSET_PREFIX=/admin-assets` 必须和 Nginx 配置一致，修改后必须重新构建 `admin`。
 - 后台 API 文档里的 `Base URL` 推荐填写 `https://yourdomain.com`，用户最终调用示例是 `https://yourdomain.com/v1/chat/completions`。
+- 首次部署前必须把 `yourdomain.com`、`change_this_to_a_strong_password`、`replace_with_*`、对象存储和模型网关占位值全部替换成真实值。部署脚本会在 `APP_ENV=production` 时主动拦截这些占位配置。
 
 ## 5. 首次部署
 

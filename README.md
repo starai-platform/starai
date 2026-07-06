@@ -1,98 +1,63 @@
 # StarAI
 
-StarAI 是一套 AI 聚合平台，可以把市面上优秀的大模型接入到同一个网站里，让用户在一个平台完成 AI 对话、推理问答、图片生成、视频生成、音频生成、智能体工作流和作品发布。
+StarAI 是一套开源 AI 聚合平台，可把对话、推理、图片、视频、音频、智能体工作流和 OpenAI 兼容 API 聚合到同一个站点中。你可以用它搭建 AI 工具站、AI 创作平台、模型聚合平台或企业内部 AI 助手。
 
-你可以用它搭建自己的 AI 工具站、AI 创作平台、模型聚合平台或企业内部 AI 助手平台。例如：生成商品图、商品视频、场景图、营销素材、短视频灵感、文案内容，或者把多个模型组合起来完成更复杂的创作任务。
+## 功能概览
 
-## 能做什么
-
-- 聚合大模型：统一接入对话、推理、图片、视频、音频等模型能力。
-- AI 对话和推理：支持普通聊天、复杂问答、多模型协作和总结输出。
-- 图片生成：可用于商品图、场景图、海报、封面、素材图等创作。
-- 视频生成：可用于商品视频、场景视频、短视频素材和灵感内容。
-- 智能体工作流：一键串联多个步骤，自动生成图片、视频或特定场景内容。
-- 灵感广场：用户可以发布作品、浏览案例、复用提示词和模型配置。
-- 用户和计费：内置登录、钱包、卡密充值、余额冻结、扣费和流水记录。
-- 管理后台：可配置模型、价格、用户、任务、作品、公告、客服和系统信息。
-- 开放 API：下游系统可以通过 OpenAI 风格接口调用平台内的模型能力。
+- 多模型聚合：统一接入对话、推理、图片、视频、音频等模型能力。
+- 前台工作台：支持模型选择、参数配置、素材上传、任务生成和作品管理。
+- 智能体工作流：支持多步骤分析、确认、生成和自动化创作流程。
+- 灵感广场：支持作品展示、案例浏览、提示词复用。
+- 用户体系：登录注册、钱包余额、卡密充值、扣费流水。
+- 管理后台：模型、渠道、用户、任务、作品、公告、角色模板、系统配置。
+- 开放 API：提供 OpenAI 兼容接口，便于下游系统调用。
 
 ## 技术栈
 
-- 前台 / 后台：Next.js、React、TypeScript、Tailwind CSS
-- 后端：Go、Gin、PostgreSQL、Redis
-- 队列：Asynq、Redis
-- 部署：Docker Compose
+| 模块 | 技术 |
+| --- | --- |
+| 前台 / 后台 | Next.js, React, TypeScript, Tailwind CSS |
+| API | Go, Gin |
+| 数据库 | PostgreSQL |
+| 队列 | Redis, Asynq |
+| 部署 | Docker Compose |
 
-## 系统环境要求
+## 环境要求
 
-本地开发建议使用：
+本地开发建议：
 
 | 环境 | 要求 |
-|---|---|
-| 操作系统 | Windows 10/11、macOS、Linux |
-| Node.js | 20 或更高版本 |
-| pnpm | 建议使用最新版 |
-| Go | 1.25 或更高版本 |
+| --- | --- |
+| Node.js | 20+ |
+| pnpm | 建议使用 Corepack |
+| Go | 1.25+ |
 | Docker | Docker Desktop 或 Docker Engine |
-| Git | 用于拉取代码和版本管理 |
+| Git | 用于拉取代码 |
 
-Windows 用户建议使用 PowerShell 运行脚本，并提前启动 Docker Desktop。
+Windows 用户建议使用 PowerShell，并提前启动 Docker Desktop。
 
+## 环境变量模板
 
+项目提供两份可提交模板：
 
-## 页面预览
+| 文件 | 用途 |
+| --- | --- |
+| `.env.local` | 本地一键开发模板，使用 `localhost`、本地 PostgreSQL/Redis/MinIO/Mock 网关 |
+| `.env.example` | 生产一键部署模板，使用 Docker Compose 内部主机名 `postgres`、`redis` 和单域名部署占位 |
 
-### 前台页面
-
-![首页](docs/images/home.webp)
-
-![模型工作台](docs/images/workbench.webp)
-
-![模型工作台](docs/images/workbench-2.webp)
-
-![模型工作台](docs/images/workbench-3.webp)
-
-![作品管理](docs/images/works.webp)
-
-![模型价格](docs/images/model-pr.webp)
-
-![API 文档](docs/images/api-docs.webp)
-
-### 管理后台
-
-![后台仪表盘](docs/images/admin-dashboard.webp)
-
-![后台智能体](docs/images/admin-agents.webp)
-
-![后台智能体配置](docs/images/admin-agents-1.webp)
-
-![后台图片模型配置](docs/images/admin-models-image.webp)
-
-![后台视频模型配置](docs/images/admin-models-video.webp)
-
-### 联系交流
-
-![联系交流](docs/images/comminicate.webp)
-
-
-
-
-## 安装前置准备
-
-本地启动前，请先确认：
-
-- 已安装并启动 Docker。
-- 已安装 Node.js 20+。
-- 已安装 Go 1.25+。
-- 已安装 Git。
-- 当前目录可以正常执行 PowerShell 脚本。
-- 端口 `3000`、`3001`、`3002`、`5432`、`6379`、`8080`、`9000`、`9001` 没有被其它程序占用。
-
-如果还没有 pnpm，可以执行：
+本地开发：
 
 ```bash
-corepack enable
+cp .env.local .env
 ```
+
+生产部署：
+
+```bash
+cp .env.example .env.production
+```
+
+生产环境必须修改 `.env.production` 里的域名、数据库密码、JWT 密钥、对象存储和模型网关配置。
 
 ## 本地一键启动
 
@@ -102,18 +67,18 @@ Windows / PowerShell：
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1
 ```
 
-脚本会自动完成：
+脚本会自动：
 
-- 创建 `.env`
-- 启动 PostgreSQL、Redis、MinIO
-- 执行数据库迁移
-- 安装前端依赖
-- 启动 API、Worker、Mock 模型网关、前台、后台
+1. 如果没有 `.env`，从 `.env.local` 创建。
+2. 启动 PostgreSQL、Redis、MinIO。
+3. 执行数据库迁移。
+4. 安装前端依赖。
+5. 启动 API、Worker、Mock 模型网关、前台和后台。
 
 启动后访问：
 
 | 服务 | 地址 |
-|---|---|
+| --- | --- |
 | 前台 | http://localhost:3000 |
 | 后台 | http://localhost:3001 |
 | API | http://localhost:8080 |
@@ -123,17 +88,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1
 默认开发账号：
 
 | 类型 | 账号 |
-|---|---|
+| --- | --- |
 | 管理员 | `admin@starai.local` / `admin123` |
 | 测试用户 | `demo@starai.local` / `demo123` |
 | 测试卡密 | `STARAI-DEMO-1000` |
 
-> 生产环境必须修改默认账号密码和所有密钥。
+生产环境上线后必须修改默认账号密码和所有密钥。
 
-## 手动开发启动
+## 手动本地启动
 
 ```bash
-cp .env.example .env
+cp .env.local .env
 pnpm install
 make docker-up
 make migrate-up
@@ -149,56 +114,87 @@ pnpm dev:web
 pnpm dev:admin
 ```
 
-## 生产环境一键部署
+## 生产部署
 
-准备 `.env.production` 后执行：
+单域名宝塔部署推荐：
 
 ```bash
+cp .env.example .env.production
+# edit .env.production
 bash scripts/deploy-prod.sh
 ```
 
-常用方式：
+部署脚本会校验生产环境变量。如果 `APP_ENV=production` 但仍使用 `localhost`、`yourdomain.com` 或示例密钥，脚本会停止，避免构建出错误的前端包。
+
+常用更新命令：
 
 ```bash
-# 只更新前台和后台
-BUILD_SERVICES="web admin" RUN_MIGRATIONS=0 bash scripts/deploy-prod.sh
+# 更新全部服务
+bash scripts/deploy-prod.sh
 
-# 更新 API、Worker、前台、后台，并自动执行迁移
-BUILD_SERVICES="api worker web admin" RUN_MIGRATIONS=auto bash scripts/deploy-prod.sh
+# 只更新前台和后台
+BUILD_SERVICES="web admin" bash scripts/deploy-prod.sh
+
+# 只更新 API 和 Worker
+BUILD_SERVICES="api worker" bash scripts/deploy-prod.sh
+
+# 前端地址或代码异常时，无缓存重建
+NO_CACHE_SERVICES="web admin" BUILD_SERVICES="web admin" bash scripts/deploy-prod.sh
 ```
 
-生产环境建议使用 Nginx、Caddy、宝塔或云负载均衡反向代理，并配置 HTTPS。
+详细部署教程：
 
-单域名部署参考：
-
-- [docs/deploy-single-domain-baota.md](docs/deploy-single-domain-baota.md)
-
-## 常用文档
-
-- [单域名 / 宝塔部署](docs/deploy-single-domain-baota.md)
+- [宝塔面板单域名部署教程](docs/deploy-single-domain-baota.md)
 - [完整备份与恢复](docs/full-backup-restore.md)
 - [系统配置包导入导出](docs/settings-pack.md)
-- [OpenAPI 文档](docs/api/openapi.yaml)
+
+## 页面预览
+
+### 前台
+
+![首页](docs/images/home.webp)
+
+![模型工作台](docs/images/workbench.webp)
+
+![作品管理](docs/images/works.webp)
+
+![API 文档](docs/images/api-docs.webp)
+
+### 管理后台
+
+![后台仪表盘](docs/images/admin-dashboard.webp)
+
+![后台智能体](docs/images/admin-agents.webp)
+
+![图片模型配置](docs/images/admin-models-image.webp)
+
+![视频模型配置](docs/images/admin-models-video.webp)
 
 ## 常用命令
 
 ```bash
-# 构建
+# 前端构建
 pnpm build:web
 pnpm build:admin
 
-# 后端测试
+# API 测试
 cd services/api && go test ./...
 
-# Docker 磁盘清理
-bash scripts/docker-disk-maintenance.sh
+# Worker 测试
+cd services/worker && go test ./cmd/worker
+
+# Docker 磁盘报告
+bash scripts/docker-disk-maintenance.sh report
+
+# Docker 安全清理
+bash scripts/docker-disk-maintenance.sh safe-clean
 ```
 
 ## 目录结构
 
 ```text
 apps/
-  web/                 前台用户端
+  web/                 用户前台
   admin/               管理后台
 services/
   api/                 Go API 服务
@@ -213,15 +209,15 @@ docs/                  部署和运维文档
 
 ## 安全提醒
 
-- 不要提交 `.env`、`.env.production`、数据库备份、真实 API Key、OAuth Secret、邮箱密钥。
+- 不要提交 `.env`、`.env.production`、数据库备份、配置包、真实 API Key、OAuth Secret、邮箱密钥。
+- 公开仓库前建议执行数据脱敏脚本，清理真实域名、邮箱、模型密钥、任务记录和用户业务数据。
 - 模型供应商 API Key 只能保存在后端环境变量或后台安全配置中，不要写进前端代码。
-- 公开仓库、截图或导出配置包前，建议先在目标数据库执行 `scripts/sanitize-open-source-data.sql`，清理真实域名、邮箱、模型密钥、任务记录和用户业务数据。
 - 管理后台上线后必须使用强密码，建议限制访问 IP 或增加网关鉴权。
 - 正式开放注册前，请自行处理内容安全、频率限制、滥用防护和数据备份。
-- 如启用在线支付，请先完成支付合规、回调验签、订单对账和退款异常处理。
+- 启用在线支付前，请先完成支付合规、回调验签、订单对账和退款异常处理。
 
 ## License
 
-本项目采用 [MIT License](LICENSE) 开源，允许个人和商业用途。
+本项目采用 [MIT License](LICENSE) 开源。
 
 使用本项目对接第三方 AI 模型、支付、邮箱、对象存储等服务时，请自行遵守对应服务商协议和当地法律法规。MIT License 不提供任何明示或暗示担保，生产环境使用前请自行完成安全、合规和风控审查。

@@ -115,8 +115,8 @@ if (-not $env:GOPROXY) {
 
 # 0) Ensure .env exists
 if (-not (Test-Path (Join-Path $Root ".env"))) {
-  Info "Creating .env from .env.example"
-  Copy-Item (Join-Path $Root ".env.example") (Join-Path $Root ".env")
+  Info "Creating .env from .env.local"
+  Copy-Item (Join-Path $Root ".env.local") (Join-Path $Root ".env")
 } else {
   Info ".env exists"
 }
@@ -289,4 +289,3 @@ Info "Admin: http://localhost:3001"
 Info "API:   http://localhost:8080"
 Info "Mock:  http://localhost:3002"
 Info "MinIO: http://localhost:9001"
-

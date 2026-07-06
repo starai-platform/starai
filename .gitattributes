@@ -1,0 +1,7 @@
+* text=auto
+
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.env text eol=lf
+.env.example text eol=lf
+.env.local text eol=lf

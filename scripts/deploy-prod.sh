@@ -25,6 +25,83 @@ if [ ! -f "$ENV_FILE" ]; then
   exit 1
 fi
 
+env_value() {
+  local key="$1"
+  grep -E "^[[:space:]]*${key}=" "$ENV_FILE" | tail -n 1 | cut -d= -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+}
+
+app_env="$(env_value APP_ENV)"
+public_api_url="$(env_value NEXT_PUBLIC_API_URL)"
+database_url="$(env_value DATABASE_URL)"
+redis_url="$(env_value REDIS_URL)"
+postgres_password="$(env_value POSTGRES_PASSWORD)"
+jwt_secret="$(env_value JWT_SECRET)"
+admin_jwt_secret="$(env_value ADMIN_JWT_SECRET)"
+base_url="$(env_value BASE_URL)"
+
+if [ "$app_env" = "production" ]; then
+  case "$base_url" in
+    ""|https://yourdomain.com|http://yourdomain.com)
+      echo "Invalid BASE_URL for production: ${base_url:-empty}" >&2
+      echo "Set BASE_URL to your public domain, for example: https://yourdomain.com" >&2
+      exit 1
+      ;;
+  esac
+  case "$public_api_url" in
+    http://localhost*|http://127.0.0.1*|http://0.0.0.0*|""|https://yourdomain.com|http://yourdomain.com)
+      echo "Invalid NEXT_PUBLIC_API_URL for production: ${public_api_url:-empty}" >&2
+      echo "Set NEXT_PUBLIC_API_URL to your public domain, for example: https://yourdomain.com" >&2
+      exit 1
+      ;;
+  esac
+  case "$postgres_password" in
+    ""|starai|change_this_to_a_strong_password)
+      echo "Invalid POSTGRES_PASSWORD for production. Set a strong database password." >&2
+      exit 1
+      ;;
+  esac
+  case "$database_url" in
+    *"@localhost:"*|*"@127.0.0.1:"*)
+      echo "Invalid DATABASE_URL for Docker production: $database_url" >&2
+      echo "Use the compose service host instead, for example: postgres://starai:<password>@postgres:5432/starai?sslmode=disable" >&2
+      exit 1
+      ;;
+  esac
+  case "$database_url" in
+    *"change_this_to_a_strong_password"*)
+      echo "Invalid DATABASE_URL for production. Replace the example database password." >&2
+      exit 1
+      ;;
+  esac
+  case "$database_url" in
+    *"@postgres:"*) ;;
+    *)
+      echo "Invalid DATABASE_URL for Docker production: $database_url" >&2
+      echo "Use the compose service host: postgres://starai:<password>@postgres:5432/starai?sslmode=disable" >&2
+      exit 1
+      ;;
+  esac
+  case "$redis_url" in
+    redis://localhost*|redis://127.0.0.1*)
+      echo "Invalid REDIS_URL for Docker production: $redis_url" >&2
+      echo "Use the compose service host instead: redis://redis:6379/0" >&2
+      exit 1
+      ;;
+  esac
+  case "$jwt_secret" in
+    ""|change-me-in-production-starai-jwt-secret|replace_with_a_long_random_secret|dev-jwt-secret-starai)
+      echo "Invalid JWT_SECRET for production. Set a long random secret." >&2
+      exit 1
+      ;;
+  esac
+  case "$admin_jwt_secret" in
+    ""|change-me-admin-jwt-secret|replace_with_another_long_random_secret|dev-admin-jwt-secret)
+      echo "Invalid ADMIN_JWT_SECRET for production. Set a long random secret." >&2
+      exit 1
+      ;;
+  esac
+fi
+
 echo "==> Checking compose config"
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config >/dev/null
 

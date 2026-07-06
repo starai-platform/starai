@@ -170,6 +170,11 @@ NO_CACHE_SERVICES="web admin" BUILD_SERVICES="web admin" bash scripts/deploy-pro
 
 ![视频模型配置](docs/images/admin-models-video.webp)
 
+### 联系交流
+
+![后台仪表盘](docs/images/comminicate.webp)
+
+
 ## 常用命令
 
 ```bash

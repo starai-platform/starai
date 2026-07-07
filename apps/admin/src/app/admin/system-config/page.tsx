@@ -110,11 +110,11 @@ const STORAGE_PRESETS = [
 ];
 
 const DEFAULT_UI_LANGUAGES: UILanguageRow[] = [
-  { code: "zh-CN", short: "ZH", name: "中文", flag: "🇨🇳", enabled: true, sort_order: 10 },
-  { code: "en-US", short: "EN", name: "English", flag: "🇺🇸", enabled: true, sort_order: 20 },
-  { code: "ja-JP", short: "JA", name: "日本語", flag: "🇯🇵", enabled: true, sort_order: 30 },
-  { code: "ko-KR", short: "KO", name: "한국어", flag: "🇰🇷", enabled: true, sort_order: 40 },
-  { code: "vi-VN", short: "VI", name: "Tiếng Việt", flag: "🇻🇳", enabled: true, sort_order: 50 },
+  { code: "zh-CN", short: "ZH", name: "中文", flag: "🇨🇳", flag_url: "/assets/comic-styles/cn.png", enabled: true, sort_order: 10 },
+  { code: "en-US", short: "EN", name: "English", flag: "🇺🇸", flag_url: "/assets/comic-styles/us.png", enabled: true, sort_order: 20 },
+  { code: "ja-JP", short: "JA", name: "日本語", flag: "🇯🇵", flag_url: "/assets/comic-styles/jp.png", enabled: true, sort_order: 30 },
+  { code: "ko-KR", short: "KO", name: "한국어", flag: "🇰🇷", flag_url: "/assets/comic-styles/kr.png", enabled: true, sort_order: 40 },
+  { code: "vi-VN", short: "VI", name: "Tiếng Việt", flag: "🇻🇳", flag_url: "/assets/comic-styles/vn.png", enabled: true, sort_order: 50 },
 ];
 
 function normalizeUILanguageRows(value: unknown): UILanguageRow[] {
@@ -1182,42 +1182,6 @@ export default function SystemConfigPage() {
                 </div>
               </div>
             </div>
-          </div>
-        </section>
-
-        <section className="rounded-2xl border border-cyan-100 bg-white p-6 shadow-sm shadow-cyan-950/5 xl:col-span-2">
-          <div className="mb-1 text-sm font-semibold text-gray-900">AI 漫剧默认配置</div>
-          <p className="mb-5 text-xs leading-relaxed text-gray-400">这里控制前台“一键 AI 漫剧”的默认偏好。用户在工作台里手动选择的项目参数会优先生效；这里仅作为默认值补齐。</p>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {renderItem({ key: "comic_drama_default_dialogue_model", label: "默认对话主模型", type: "text", hint: "填写模型 code，例如 chat_demo_v1。用于剧本、角色和分镜规划。" })}
-            {renderItem({ key: "comic_drama_backup_dialogue_models", label: "备用对话模型", type: "text", hint: "可填写 JSON 数组，如 [\"chat_demo_v1\"]；前台不会暴露密钥。" })}
-            {renderItem({ key: "comic_drama_default_image_model", label: "默认图片模型", type: "text", hint: "用于生成关键帧。" })}
-            {renderItem({ key: "comic_drama_default_video_model", label: "默认视频模型", type: "text", hint: "用于生成分段视频。" })}
-            <div>
-              <label className="text-xs text-gray-500">默认风格模式</label>
-              <select value={String(configs.comic_drama_default_style_mode ?? "image_reference")} onChange={(e) => setField("comic_drama_default_style_mode", e.target.value)} className="mt-1 w-full rounded-lg border bg-white px-3 py-2 text-sm focus:border-primary focus:outline-none">
-                <option value="image_reference">附带风格参考图</option>
-                <option value="text_only">仅文字描述</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-xs text-gray-500">默认屏幕方向</label>
-              <select value={String(configs.comic_drama_default_orientation ?? "landscape")} onChange={(e) => setField("comic_drama_default_orientation", e.target.value)} className="mt-1 w-full rounded-lg border bg-white px-3 py-2 text-sm focus:border-primary focus:outline-none">
-                <option value="landscape">横屏</option>
-                <option value="portrait">竖屏</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-xs text-gray-500">默认清晰度</label>
-              <select value={String(configs.comic_drama_default_quality ?? "480P")} onChange={(e) => setField("comic_drama_default_quality", e.target.value)} className="mt-1 w-full rounded-lg border bg-white px-3 py-2 text-sm focus:border-primary focus:outline-none">
-                <option value="480P">480P</option>
-                <option value="720P">720P</option>
-                <option value="1080P">1080P</option>
-              </select>
-            </div>
-            {renderItem({ key: "comic_drama_default_storyboard_grid", label: "默认分镜宫格", type: "number", hint: "建议 4、6 或 9。" })}
-            {renderItem({ key: "comic_drama_default_max_retry", label: "默认最大重试", type: "number", hint: "关键帧/分段视频失败时的默认重试次数。" })}
-            {renderItem({ key: "comic_drama_default_step_confirm", label: "默认逐步确认", type: "checkbox", hint: "开启后默认在分镜规划完成后暂停确认；关闭后默认智能托管。" })}
           </div>
         </section>
 

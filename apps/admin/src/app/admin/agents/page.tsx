@@ -29,6 +29,8 @@ type RuntimeConfig = {
   max_retry?: number;
   asset_consistency_score?: number;
   logic_score?: number;
+  orientation?: string;
+  quality?: string;
   output_mode?: string;
 };
 type Workflow = {
@@ -65,6 +67,8 @@ type FormState = {
   max_retry: number;
   asset_consistency_score: number;
   logic_score: number;
+  orientation: string;
+  quality: string;
   require_image: boolean;
   allow_text_only: boolean;
   support_reference_image: boolean;
@@ -211,6 +215,8 @@ function runtimeConfig(form: FormState): RuntimeConfig {
       max_retry: form.max_retry,
       asset_consistency_score: form.asset_consistency_score,
       logic_score: form.logic_score,
+      orientation: form.orientation,
+      quality: form.quality,
       output_mode: "composed_video",
       input_capabilities: {
         allow_text_only: form.allow_text_only,
@@ -285,6 +291,8 @@ function makeEmptyForm(): FormState {
     max_retry: 2,
     asset_consistency_score: 80,
     logic_score: 50,
+    orientation: "landscape",
+    quality: "480P",
     ...preset.defaults,
     enable_step_confirm: true,
     enable_autopilot: true,
@@ -391,6 +399,8 @@ export default function AgentsAdminPage() {
       max_retry: Number(runtime.max_retry || 2),
       asset_consistency_score: Number(runtime.asset_consistency_score || 80),
       logic_score: Number(runtime.logic_score || 50),
+      orientation: runtime.orientation || "landscape",
+      quality: runtime.quality || "480P",
       require_image: runtime.require_image !== false,
       allow_text_only: readBool(inputCaps, "allow_text_only", preset.defaults.allow_text_only),
       support_reference_image: readBool(inputCaps, "support_reference_image", preset.defaults.support_reference_image),
@@ -601,6 +611,19 @@ export default function AgentsAdminPage() {
                   <Field label="最大重试次数"><input type="number" min={0} max={5} className="admin-input" value={form.max_retry} onChange={(e) => setForm({ ...form, max_retry: Math.max(0, Math.min(5, Number(e.target.value) || 0)) })} /></Field>
                   <Field label="资产一致性合格分"><input type="number" min={0} max={100} className="admin-input" value={form.asset_consistency_score} onChange={(e) => setForm({ ...form, asset_consistency_score: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })} /></Field>
                   <Field label="画面逻辑合格分"><input type="number" min={0} max={100} className="admin-input" value={form.logic_score} onChange={(e) => setForm({ ...form, logic_score: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })} /></Field>
+                  <Field label="默认屏幕方向">
+                    <select className="admin-input" value={form.orientation} onChange={(e) => setForm({ ...form, orientation: e.target.value })}>
+                      <option value="landscape">横屏</option>
+                      <option value="portrait">竖屏</option>
+                    </select>
+                  </Field>
+                  <Field label="默认清晰度">
+                    <select className="admin-input" value={form.quality} onChange={(e) => setForm({ ...form, quality: e.target.value })}>
+                      <option value="480P">480P</option>
+                      <option value="720P">720P</option>
+                      <option value="1080P">1080P</option>
+                    </select>
+                  </Field>
                 </section>
               )}
 

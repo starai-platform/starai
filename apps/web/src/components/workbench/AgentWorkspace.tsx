@@ -58,6 +58,8 @@ type Workflow = {
     image_model_code?: string;
     video_model_code?: string;
     dialogue_model_codes?: string[];
+    orientation?: string;
+    quality?: string;
   };
 };
 type NodeRun = { node_id: string; name: string; type: string; status: string; output: Record<string, any>; error?: string };
@@ -433,8 +435,8 @@ export function AgentWorkspace({ code }: { code: string }) {
       });
       setProjectDraft((prev) => ({
         ...prev,
-        orientation: prev.orientation || "landscape",
-        quality: prev.quality || "480P",
+        orientation: prev.orientation === "landscape" ? workflow.runtime_config?.orientation || "landscape" : prev.orientation,
+        quality: prev.quality === "480P" ? workflow.runtime_config?.quality || "480P" : prev.quality,
       }));
     }
     if (flow.enable_autopilot !== false) {

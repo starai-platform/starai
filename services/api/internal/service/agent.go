@@ -189,7 +189,7 @@ func (s *AgentService) CreateProject(ctx context.Context, userID int64, code str
 		return nil, errors.New("智能体已下线")
 	}
 	if stringValue(def.RuntimeConfig["agent_mode"]) == "comic_drama" {
-		inputs = s.mergeComicDramaSystemDefaults(ctx, inputs)
+		inputs = mergeComicDramaRuntimeDefaults(def.RuntimeConfig, inputs)
 	}
 	estimated := 0.0
 	if v, ok := def.PriceRule["unit_price"].(float64); ok {
@@ -395,6 +395,21 @@ func (s *AgentService) CreateComicDramaStyle(ctx context.Context, userID int64, 
 	return &item, nil
 }
 
+func (s *AgentService) comicDramaRuntimeConfigByCode(ctx context.Context, code string) map[string]interface{} {
+	var raw []byte
+	if err := s.db.QueryRow(ctx, `SELECT runtime_config FROM workflow_definitions WHERE code=$1`, strings.TrimSpace(code)).Scan(&raw); err != nil {
+		return nil
+	}
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil
+	}
+	if stringValue(cfg["agent_mode"]) != "comic_drama" && stringValue(cfg["preset_code"]) != "ai_comic_drama" {
+		return nil
+	}
+	return cfg
+}
+
 func (s *AgentService) ListComicDramaProjects(ctx context.Context, userID int64) ([]ComicDramaProjectDTO, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT p.public_id, p.workflow_code, p.name, p.description, p.cover_url, p.style_snapshot, COALESCE(s.public_id,''), p.orientation, p.quality,
@@ -438,12 +453,20 @@ func (s *AgentService) CreateComicDramaProject(ctx context.Context, userID int64
 	if len([]rune(name)) > 100 {
 		return nil, errors.New("项目名称不能超过100个字")
 	}
-	orientation := normalizeComicOrientation(input.Orientation)
-	quality := normalizeComicQuality(input.Quality)
 	workflowCode := strings.TrimSpace(input.WorkflowCode)
 	if workflowCode == "" {
 		workflowCode = "ai_comic_drama"
 	}
+	if runtimeCfg := s.comicDramaRuntimeConfigByCode(ctx, workflowCode); runtimeCfg != nil {
+		if strings.TrimSpace(input.Orientation) == "" {
+			input.Orientation = stringValue(runtimeCfg["orientation"])
+		}
+		if strings.TrimSpace(input.Quality) == "" {
+			input.Quality = stringValue(runtimeCfg["quality"])
+		}
+	}
+	orientation := normalizeComicOrientation(input.Orientation)
+	quality := normalizeComicQuality(input.Quality)
 	styleDBID, snapshot, err := s.resolveComicStyle(ctx, userID, input.StyleID)
 	if err != nil {
 		return nil, err
@@ -568,60 +591,76 @@ func mustAgentJSON(value interface{}) []byte {
 	return raw
 }
 
-func (s *AgentService) mergeComicDramaSystemDefaults(ctx context.Context, inputs map[string]interface{}) map[string]interface{} {
+func mergeComicDramaRuntimeDefaults(runtimeCfg map[string]interface{}, inputs map[string]interface{}) map[string]interface{} {
 	if inputs == nil {
 		inputs = map[string]interface{}{}
 	}
 	defaults := map[string]string{
-		"style_reference_mode": "comic_drama_default_style_mode",
-		"image_model_code":     "comic_drama_default_image_model",
-		"video_model_code":     "comic_drama_default_video_model",
-		"orientation":          "comic_drama_default_orientation",
-		"quality":              "comic_drama_default_quality",
+		"style_reference_mode": "style_reference_mode",
+		"image_model_code":     "image_model_code",
+		"video_model_code":     "video_model_code",
+		"orientation":          "orientation",
+		"quality":              "quality",
 	}
-	for inputKey, configKey := range defaults {
+	for inputKey, runtimeKey := range defaults {
 		if stringValue(inputs[inputKey]) != "" {
 			continue
 		}
-		if value, ok := s.systemConfigValue(ctx, configKey); ok {
+		if value, ok := runtimeConfigValue(runtimeCfg, runtimeKey); ok {
 			inputs[inputKey] = value
 		}
 	}
 	if stringValue(inputs["dialogue_model_codes"]) == "" {
-		if value, ok := s.systemConfigValue(ctx, "comic_drama_backup_dialogue_models"); ok {
+		if value, ok := runtimeConfigValue(runtimeCfg, "dialogue_model_codes"); ok {
 			inputs["dialogue_model_codes"] = value
 		}
 	}
 	if _, ok := inputs["storyboard_grid"]; !ok {
-		if value, ok := s.systemConfigValue(ctx, "comic_drama_default_storyboard_grid"); ok {
+		if value, ok := runtimeConfigValue(runtimeCfg, "storyboard_grid"); ok {
 			inputs["storyboard_grid"] = value
 		}
 	}
 	if _, ok := inputs["max_retry"]; !ok {
-		if value, ok := s.systemConfigValue(ctx, "comic_drama_default_max_retry"); ok {
+		if value, ok := runtimeConfigValue(runtimeCfg, "max_retry"); ok {
 			inputs["max_retry"] = value
 		}
 	}
 	if _, ok := inputs["_mode"]; !ok {
-		if value, ok := s.systemConfigValue(ctx, "comic_drama_default_step_confirm"); ok {
-			if b, _ := value.(bool); b {
-				inputs["_mode"] = "step"
-			} else {
-				inputs["_mode"] = "auto"
+		if flow, ok := runtimeCfg["flow_options"].(map[string]interface{}); ok {
+			if b, ok := flow["enable_step_confirm"].(bool); ok {
+				if b {
+					inputs["_mode"] = "step"
+				} else {
+					inputs["_mode"] = "auto"
+				}
+				return inputs
 			}
 		}
 	}
 	return inputs
 }
 
-func (s *AgentService) systemConfigValue(ctx context.Context, key string) (interface{}, bool) {
-	var raw []byte
-	if err := s.db.QueryRow(ctx, `SELECT value FROM system_configs WHERE key=$1`, key).Scan(&raw); err != nil {
+func runtimeConfigValue(runtimeCfg map[string]interface{}, key string) (interface{}, bool) {
+	if runtimeCfg == nil {
 		return nil, false
 	}
-	var value interface{}
-	if err := json.Unmarshal(raw, &value); err != nil {
+	value, ok := runtimeCfg[key]
+	if !ok {
 		return nil, false
+	}
+	switch v := value.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return nil, false
+		}
+	case []interface{}:
+		if len(v) == 0 {
+			return nil, false
+		}
+	case []string:
+		if len(v) == 0 {
+			return nil, false
+		}
 	}
 	return value, true
 }
@@ -1010,6 +1049,12 @@ func normalizeComicDramaAgentInput(in AgentUpsertInput) AgentUpsertInput {
 	}
 	if intFromAgentAny(in.RuntimeConfig["logic_score"]) <= 0 {
 		in.RuntimeConfig["logic_score"] = 50
+	}
+	if stringValue(in.RuntimeConfig["orientation"]) == "" {
+		in.RuntimeConfig["orientation"] = "landscape"
+	}
+	if stringValue(in.RuntimeConfig["quality"]) == "" {
+		in.RuntimeConfig["quality"] = "480P"
 	}
 	in.RuntimeConfig["output_mode"] = "composed_video"
 	in.RuntimeConfig["creative_scenes"] = []string{"ai_comic_drama"}

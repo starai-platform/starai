@@ -31,6 +31,7 @@ ENV ADMIN_ASSET_PREFIX=/admin-assets
 
 COPY --from=builder /app/apps/admin/.next/standalone ./
 COPY --from=builder /app/apps/admin/.next/static ./apps/admin/.next/static
+COPY --from=builder /app/apps/admin/public ./apps/admin/public
 COPY --from=builder /app/apps/admin/CHANGELOG.md ./apps/admin/CHANGELOG.md
 
 EXPOSE 3001

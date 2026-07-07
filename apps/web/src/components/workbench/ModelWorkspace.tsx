@@ -42,7 +42,7 @@ import { AudioOptionToolbar } from "./audio/AudioOptionToolbar";
 import { AudioUploadButton } from "./audio/AudioUploadButton";
 import { VideoUploadArea } from "./video/VideoUploadArea";
 import { VideoOptionToolbar } from "./video/VideoOptionToolbar";
-import { ImageGenerationToolbar, buildImageGenerationParams } from "./ImageGenerationToolbar";
+import { ImageGenerationToolbar, buildImageGenerationParams, normalizeTier } from "./ImageGenerationToolbar";
 import { GenerationLanguageMenu, buildLanguageParams, useGenerationLanguages } from "./GenerationLanguageMenu";
 
 interface Message {
@@ -63,6 +63,12 @@ type MultiCollabSnapshot = {
   summary: string;
   results: MultiModelResult[];
 };
+
+function defaultImageSizeForConfig(runtimeRule: Model["runtime_rule"], defaultParams: Model["default_params"]) {
+  const runtimeQuality = (runtimeRule as any)?.image?.default_quality;
+  const defaultQuality = (defaultParams as any)?.quality ?? (defaultParams as any)?.image_size;
+  return normalizeTier(String(runtimeQuality ?? defaultQuality ?? "1K").toUpperCase());
+}
 
 function parseMultiCollabSnapshot(content: string): MultiCollabSnapshot | null {
   try {
@@ -803,12 +809,15 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
     setVideoMedia(EMPTY_VIDEO_MEDIA);
     setAudioSecondaryPrompt(String(defaults[secondaryKey] ?? ""));
     setAudioRef(null);
+    if (isImage) {
+      setImageSize(defaultImageSizeForConfig(model.runtime_rule, defaults));
+    }
     setBottom((prev) => ({
       ...prev,
       channel_key: typeof defaults.channel_key === "string" && defaults.channel_key ? defaults.channel_key : prev.channel_key,
     }));
     setPrompt(initialPrompt || "");
-  }, [model.code, initialPrompt, isVideo, isAudio, model.input_schema, model.default_params, model.runtime_rule]);
+  }, [model.code, initialPrompt, isVideo, isAudio, isImage, model.input_schema, model.default_params, model.runtime_rule]);
 
   useEffect(() => {
     const selectedAssets = bottom.asset_ids?.length ? { asset_ids: bottom.asset_ids } : {};

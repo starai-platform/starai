@@ -39,6 +39,19 @@ interface ChannelPreset {
 
 const REQUEST_MODES = ["chat_completions", "responses", "images", "video", "audio", "custom"];
 const PAGE_SIZE = 10;
+const IMAGE_QUALITY_TIERS = ["1K", "2K", "4K"] as const;
+
+const normalizeImageQuality = (value: unknown) => {
+  const text = String(value ?? "").trim().toUpperCase();
+  return IMAGE_QUALITY_TIERS.includes(text as (typeof IMAGE_QUALITY_TIERS)[number]) ? text : "1K";
+};
+
+const inferImageQualityFromModel = (modelName: string) => {
+  const text = modelName.toLowerCase();
+  if (text.includes("4k")) return "4K";
+  if (text.includes("2k")) return "2K";
+  return "1K";
+};
 
 function ModelLogo({ model }: { model: Pick<AdminModel, "display_name" | "icon_url" | "code"> }) {
   const [failed, setFailed] = useState(false);
@@ -461,6 +474,7 @@ export default function ModelsPage() {
     return {
       rr,
       max_reference_images: Math.max(0, Math.min(20, Number.isFinite(parsed) ? parsed : 4)),
+      default_quality: normalizeImageQuality(image.default_quality),
     };
   };
 
@@ -486,7 +500,7 @@ export default function ModelsPage() {
 
   const setImageRule = (
     runtimeRuleText: string,
-    patch: { max_reference_images?: number; poll_path?: string; poll_interval_sec?: number; poll_timeout_sec?: number }
+    patch: { max_reference_images?: number; default_quality?: string; poll_path?: string; poll_interval_sec?: number; poll_timeout_sec?: number }
   ) => {
     const rr = safeParseJson(runtimeRuleText, {});
     const image = (rr?.image ?? {}) as Record<string, any>;
@@ -494,6 +508,9 @@ export default function ModelsPage() {
     const nextImage = { ...image };
     if (patch.max_reference_images !== undefined) {
       nextImage.max_reference_images = Math.max(0, Math.min(20, Number(patch.max_reference_images) || 0));
+    }
+    if (patch.default_quality !== undefined) {
+      nextImage.default_quality = normalizeImageQuality(patch.default_quality);
     }
     const nextUpstream = { ...upstream };
     if (patch.poll_path !== undefined) nextUpstream.poll_path = patch.poll_path;
@@ -537,6 +554,7 @@ export default function ModelsPage() {
     const modelName = isBanana
       ? (BANANA_MODELS.includes(prev.new_api_model) ? prev.new_api_model : preset.model)
       : (prev.new_api_model && !prev.new_api_model.startsWith("nano_banana") ? prev.new_api_model : preset.model);
+    const defaultQuality = inferImageQualityFromModel(modelName);
     return {
       ...prev,
       category: "image",
@@ -547,7 +565,7 @@ export default function ModelsPage() {
       default_params: JSON.stringify(
         {
           aspect_ratio: "auto",
-          quality: "auto",
+          quality: defaultQuality,
           max_reference_images: isBanana ? 5 : getImageRule(prev.runtime_rule).max_reference_images,
         },
         null,
@@ -555,6 +573,7 @@ export default function ModelsPage() {
       ),
       runtime_rule: setImageRule(clearModelCaps(prev.runtime_rule), {
         max_reference_images: isBanana ? 5 : getImageRule(prev.runtime_rule).max_reference_images,
+        default_quality: defaultQuality,
         poll_path: isBanana ? "/v1/videos/{id}" : undefined,
         poll_interval_sec: isBanana ? 5 : undefined,
         poll_timeout_sec: isBanana ? 3600 : undefined,
@@ -895,6 +914,7 @@ export default function ModelsPage() {
               image: {
                 ...(((runtimeRule as Record<string, any>)?.image ?? {}) as Record<string, unknown>),
                 max_reference_images: getImageRule(form.runtime_rule).max_reference_images,
+                default_quality: getImageRule(form.runtime_rule).default_quality,
               },
               capabilities: {
                 ...(((runtimeRule as Record<string, any>)?.capabilities ?? {}) as Record<string, unknown>),
@@ -1669,7 +1689,22 @@ export default function ModelsPage() {
                     <select
                       className="w-full mt-1 px-3 py-2 rounded-lg border text-sm bg-white"
                       value={form.new_api_model}
-                      onChange={(e) => setForm((prev) => ({ ...prev, new_api_model: e.target.value }))}
+                      onChange={(e) =>
+                        setForm((prev) => {
+                          const modelName = e.target.value;
+                          const defaultQuality = inferImageQualityFromModel(modelName);
+                          return {
+                            ...prev,
+                            new_api_model: modelName,
+                            runtime_rule: setImageRule(prev.runtime_rule, { default_quality: defaultQuality }),
+                            default_params: JSON.stringify(
+                              { ...(safeParseJson(prev.default_params, {}) || {}), quality: defaultQuality },
+                              null,
+                              2
+                            ),
+                          };
+                        })
+                      }
                     >
                       {BANANA_MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
                     </select>
@@ -1702,6 +1737,25 @@ export default function ModelsPage() {
                       })
                     }
                   />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500">默认质量</label>
+                  <select
+                    className="w-full mt-1 px-3 py-2 rounded-lg border text-sm bg-white"
+                    value={getImageRule(form.runtime_rule).default_quality}
+                    onChange={(e) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        runtime_rule: setImageRule(prev.runtime_rule, { default_quality: e.target.value }),
+                        default_params: JSON.stringify({ ...(safeParseJson(prev.default_params, {}) || {}), quality: normalizeImageQuality(e.target.value) }, null, 2),
+                      }))
+                    }
+                  >
+                    {IMAGE_QUALITY_TIERS.map((tier) => (
+                      <option key={tier} value={tier}>{tier}</option>
+                    ))}
+                  </select>
+                  <div className="text-[11px] text-gray-400 mt-1">前台工作台图片质量工具栏会默认选中该值。</div>
                 </div>
                 <div>
                   <label className="text-xs text-gray-500">每张扣费</label>
@@ -1759,6 +1813,25 @@ export default function ModelsPage() {
                     }
                   />
                   <div className="text-[11px] text-gray-400 mt-1">前台图片输入区会按该数量限制参考图上传。</div>
+                </div>
+                <div className="mt-4 max-w-xs">
+                  <label className="text-xs text-gray-500">默认质量</label>
+                  <select
+                    className="w-full mt-1 px-3 py-2 rounded-lg border text-sm bg-white"
+                    value={getImageRule(form.runtime_rule).default_quality}
+                    onChange={(e) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        runtime_rule: setImageRule(prev.runtime_rule, { default_quality: e.target.value }),
+                        default_params: JSON.stringify({ ...(safeParseJson(prev.default_params, {}) || {}), quality: normalizeImageQuality(e.target.value) }, null, 2),
+                      }))
+                    }
+                  >
+                    {IMAGE_QUALITY_TIERS.map((tier) => (
+                      <option key={tier} value={tier}>{tier}</option>
+                    ))}
+                  </select>
+                  <div className="text-[11px] text-gray-400 mt-1">也可直接在高级 JSON 里配置 runtime_rule.image.default_quality。</div>
                 </div>
               </div>
             ) : form.category === "video" ? (

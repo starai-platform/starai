@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -380,6 +381,20 @@ func processImageTask(ctx context.Context, pool *pgxpool.Pool, baseURL, token st
 	} else if isAudio {
 		workType = "audio"
 		audioURL := resultData[0].URL
+		if audioURL == "" && resultData[0].B64JSON != "" {
+			stored, err := storeBase64MediaResult(ctx, p.TaskNo, 1, resultData[0].B64JSON, resultData[0].MimeType, "audio")
+			if err != nil {
+				log.Printf("Task %s store base64 audio failed: %v", p.TaskNo, err)
+			} else {
+				audioURL = stored
+			}
+			if audioURL == "" {
+				audioURL = normalizeAudioResultURL(resultData[0].B64JSON, resultData[0].MimeType)
+			}
+		}
+		if audioURL == "" {
+			return failTask(ctx, pool, p, "MODEL_PROVIDER_ERROR", "生成完成但未返回可用音频地址")
+		}
 		thumbnail = audioURL
 		output, _ = json.Marshal(map[string]interface{}{"audio_url": audioURL, "upstream_task_id": upstreamID})
 		meta, _ = json.Marshal(map[string]interface{}{"audio_url": audioURL})
@@ -388,7 +403,7 @@ func processImageTask(ctx context.Context, pool *pgxpool.Pool, baseURL, token st
 		for idx, item := range resultData {
 			url := normalizeImageResultURL(item.URL, item.B64JSON)
 			if item.B64JSON != "" {
-				if stored, err := storeBase64ImageResult(ctx, p.TaskNo, idx+1, item.B64JSON); err != nil {
+				if stored, err := storeBase64MediaResult(ctx, p.TaskNo, idx+1, item.B64JSON, item.MimeType, "image"); err != nil {
 					log.Printf("Task %s store base64 image #%d failed: %v", p.TaskNo, idx+1, err)
 				} else if stored != "" {
 					url = stored
@@ -537,7 +552,23 @@ func normalizeImageResultURL(url, b64 string) string {
 	return "data:image/png;base64," + b64
 }
 
+func normalizeAudioResultURL(raw, contentType string) string {
+	data, contentType, err := decodeEncodedMedia(raw, contentType, "audio")
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	contentType = normalizeMediaContentType(contentType, "audio")
+	if contentType == "" {
+		contentType = "audio/mpeg"
+	}
+	return "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(data)
+}
+
 func storeBase64ImageResult(ctx context.Context, taskNo string, idx int, raw string) (string, error) {
+	return storeBase64MediaResult(ctx, taskNo, idx, raw, "", "image")
+}
+
+func storeBase64MediaResult(ctx context.Context, taskNo string, idx int, raw, contentType, kind string) (string, error) {
 	if objectStore == nil {
 		return "", nil
 	}
@@ -545,33 +576,116 @@ func storeBase64ImageResult(ctx context.Context, taskNo string, idx int, raw str
 	if raw == "" {
 		return "", nil
 	}
-	contentType := "image/png"
-	if strings.HasPrefix(raw, "data:") {
-		comma := strings.Index(raw, ",")
-		if comma < 0 {
-			return "", fmt.Errorf("invalid data url")
-		}
-		meta := raw[:comma]
-		raw = raw[comma+1:]
-		if strings.HasPrefix(meta, "data:") {
-			if semi := strings.Index(meta, ";"); semi > 5 {
-				contentType = meta[5:semi]
-			}
+	contentType = strings.TrimSpace(contentType)
+	contentType = normalizeMediaContentType(contentType, kind)
+	if contentType == "" {
+		if kind == "audio" {
+			contentType = "audio/mpeg"
+		} else {
+			contentType = "image/png"
 		}
 	}
-	data, err := base64.StdEncoding.DecodeString(raw)
+	data, contentType, err := decodeEncodedMedia(raw, contentType, kind)
 	if err != nil {
 		return "", err
 	}
 	if len(data) == 0 {
 		return "", nil
 	}
-	if detected := http.DetectContentType(data); strings.HasPrefix(detected, "image/") {
+	if detected := http.DetectContentType(data); strings.HasPrefix(detected, kind+"/") {
 		contentType = detected
 	}
-	ext := imageExtForContentType(contentType)
-	objectName := fmt.Sprintf("works/image/%s/%d%s", taskNo, idx, ext)
+	if kind == "audio" && !validDownloadedMedia("audio", contentType, data) {
+		return "", fmt.Errorf("invalid audio base64 content type=%s", contentType)
+	}
+	if kind == "image" && !validDownloadedMedia("image", contentType, data) {
+		return "", fmt.Errorf("invalid image base64 content type=%s", contentType)
+	}
+	ext := mediaExtForContentType(contentType, kind)
+	objectName := fmt.Sprintf("works/%s/%s/%d%s", kind, taskNo, idx, ext)
 	return objectStore.Upload(ctx, objectName, contentType, bytes.NewReader(data), int64(len(data)))
+}
+
+func decodeEncodedMedia(raw, contentType, kind string) ([]byte, string, error) {
+	raw = strings.TrimSpace(raw)
+	contentType = normalizeMediaContentType(contentType, kind)
+	if strings.HasPrefix(raw, "data:") {
+		comma := strings.Index(raw, ",")
+		if comma < 0 {
+			return nil, "", fmt.Errorf("invalid data url")
+		}
+		meta := raw[:comma]
+		raw = raw[comma+1:]
+		if strings.HasPrefix(meta, "data:") {
+			if semi := strings.Index(meta, ";"); semi > 5 {
+				contentType = normalizeMediaContentType(meta[5:semi], kind)
+			}
+		}
+	}
+	if contentType == "" {
+		if kind == "audio" {
+			contentType = "audio/mpeg"
+		} else {
+			contentType = "image/png"
+		}
+	}
+	if isHexEncodedMedia(raw) {
+		if data, err := hex.DecodeString(raw); err == nil && validDownloadedMedia(kind, contentType, data) {
+			return data, contentType, nil
+		}
+	}
+	data, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, "", err
+	}
+	return data, contentType, nil
+}
+
+func isHexEncodedMedia(s string) bool {
+	s = strings.TrimSpace(s)
+	if len(s) < 32 || len(s)%2 != 0 {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeMediaContentType(contentType, kind string) string {
+	ct := strings.ToLower(strings.TrimSpace(contentType))
+	if strings.Contains(ct, "/") {
+		return contentType
+	}
+	if kind == "audio" {
+		switch ct {
+		case "mp3", "mpeg":
+			return "audio/mpeg"
+		case "wav", "wave":
+			return "audio/wav"
+		case "flac":
+			return "audio/flac"
+		case "ogg":
+			return "audio/ogg"
+		case "pcm":
+			return "audio/pcm"
+		}
+	}
+	if kind == "image" {
+		switch ct {
+		case "png":
+			return "image/png"
+		case "jpg", "jpeg":
+			return "image/jpeg"
+		case "webp":
+			return "image/webp"
+		case "gif":
+			return "image/gif"
+		}
+	}
+	return contentType
 }
 
 func imageExtForContentType(contentType string) string {
@@ -1036,6 +1150,7 @@ func normalizeReferenceImage(ctx context.Context, src string) string {
 type mediaItem struct {
 	URL       string
 	B64JSON   string
+	MimeType  string
 	Thumbnail string
 }
 
@@ -1299,19 +1414,20 @@ func unwrapUpstreamBody(raw map[string]interface{}) map[string]interface{} {
 
 func extractMediaItems(raw map[string]interface{}) []mediaItem {
 	raw = unwrapUpstreamBody(raw)
+	if it, ok := mediaItemFromMap(raw); ok {
+		return []mediaItem{it}
+	}
 	if data, ok := raw["data"].([]interface{}); ok {
 		var out []mediaItem
 		for _, item := range data {
 			m, _ := item.(map[string]interface{})
 			if m == nil {
+				if it, ok := mediaItemFromValue(item, raw); ok {
+					out = append(out, it)
+				}
 				continue
 			}
-			it := mediaItem{
-				URL:       firstMediaURL(m, "url", "video_url", "result_url", "image_url", "audio_url", "download_url", "file_url", "content_url"),
-				B64JSON:   firstString(m, "b64_json"),
-				Thumbnail: firstMediaURL(m, "thumbnail", "cover_url", "poster_url"),
-			}
-			if isValidMediaItem(it) {
+			if it, ok := mediaItemFromMap(m); ok {
 				out = append(out, it)
 			}
 		}
@@ -1319,9 +1435,8 @@ func extractMediaItems(raw map[string]interface{}) []mediaItem {
 			return out
 		}
 	}
-	if mediaURL := firstMediaURL(raw, "video_url", "result_url", "image_url", "audio_url", "url", "download_url", "file_url", "content_url"); mediaURL != "" {
-		thumb := firstMediaURL(raw, "thumbnail", "cover_url", "poster_url")
-		return []mediaItem{{URL: mediaURL, Thumbnail: thumb}}
+	if it, ok := mediaItemFromValue(raw["data"], raw); ok {
+		return []mediaItem{it}
 	}
 	if result, ok := raw["result"].(map[string]interface{}); ok {
 		if items := extractMediaItems(result); len(items) > 0 {
@@ -1332,6 +1447,52 @@ func extractMediaItems(raw map[string]interface{}) []mediaItem {
 		return extractMediaItems(map[string]interface{}{"data": []interface{}{output}})
 	}
 	return nil
+}
+
+func mediaItemFromMap(m map[string]interface{}) (mediaItem, bool) {
+	if mediaURL := firstMediaURL(m, mediaURLKeys()...); mediaURL != "" {
+		thumb := firstMediaURL(m, "thumbnail", "cover_url", "poster_url")
+		return mediaItem{URL: mediaURL, Thumbnail: thumb}, true
+	}
+	if b64 := firstString(m, encodedMediaKeys()...); b64 != "" && looksLikeEncodedMedia(b64) {
+		return mediaItem{B64JSON: b64, MimeType: firstString(m, "mime_type", "mime", "content_type", "format", "audio_format")}, true
+	}
+	for _, key := range []string{"data", "result", "output", "audio_result"} {
+		if it, ok := mediaItemFromValue(m[key], m); ok {
+			return it, true
+		}
+	}
+	return mediaItem{}, false
+}
+
+func mediaItemFromValue(v interface{}, parent map[string]interface{}) (mediaItem, bool) {
+	switch t := v.(type) {
+	case string:
+		s := strings.TrimSpace(t)
+		if isHTTPURL(s) {
+			return mediaItem{URL: s}, true
+		}
+		if looksLikeEncodedMedia(s) {
+			return mediaItem{B64JSON: s, MimeType: firstString(parent, "mime_type", "mime", "content_type", "format", "audio_format")}, true
+		}
+	case map[string]interface{}:
+		return mediaItemFromMap(t)
+	case []interface{}:
+		for _, item := range t {
+			if it, ok := mediaItemFromValue(item, parent); ok {
+				return it, true
+			}
+		}
+	}
+	return mediaItem{}, false
+}
+
+func mediaURLKeys() []string {
+	return []string{"url", "video_url", "result_url", "image_url", "audio_url", "audio", "audio_file", "download_url", "file_url", "content_url"}
+}
+
+func encodedMediaKeys() []string {
+	return []string{"b64_json", "audio", "audio_data", "audio_base64", "audio_file", "audio_hex", "hex_audio", "base64", "data"}
 }
 
 func firstDirectMediaURL(raw map[string]interface{}) string {
@@ -1411,6 +1572,24 @@ func isValidMediaItem(it mediaItem) bool {
 	return isHTTPURL(it.URL) || strings.TrimSpace(it.B64JSON) != ""
 }
 
+func looksLikeEncodedMedia(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	if strings.HasPrefix(s, "data:") {
+		return true
+	}
+	if len(s) < 32 || strings.ContainsAny(s, "{}[]:,") {
+		return false
+	}
+	if isHexEncodedMedia(s) {
+		return true
+	}
+	_, err := base64.StdEncoding.DecodeString(s)
+	return err == nil
+}
+
 // upstreamContentFailure detects otuapi-style errors stored in result_url/fail_reason as plain text.
 func upstreamContentFailure(raw map[string]interface{}) string {
 	raw = unwrapUpstreamBody(raw)
@@ -1429,6 +1608,9 @@ func humanizeUpstreamFailure(msg string) string {
 	lower := strings.ToLower(msg)
 	if strings.Contains(lower, "unsafe") {
 		return "生成内容未通过安全审核，请修改提示词或参考图后重试"
+	}
+	if strings.Contains(lower, "insufficient balance") || strings.Contains(lower, "insufficient_balance") {
+		return "上游模型账户余额不足，请检查或更换可用渠道"
 	}
 	if strings.Contains(lower, "upstream_error") {
 		return strings.TrimPrefix(strings.TrimSpace(strings.ReplaceAll(msg, "map[code:upstream_error message:", "")), "]")
@@ -1898,6 +2080,14 @@ func upstreamErrorMessage(body []byte) string {
 	if errObj, ok := raw["error"].(map[string]interface{}); ok {
 		if msg, ok := errObj["message"].(string); ok && strings.TrimSpace(msg) != "" {
 			return humanizeUpstreamFailure(msg)
+		}
+	}
+	if baseResp, ok := raw["base_resp"].(map[string]interface{}); ok {
+		if msg := firstString(baseResp, "status_msg", "message", "error_message"); msg != "" {
+			return humanizeUpstreamFailure(msg)
+		}
+		if code := firstString(baseResp, "status_code", "code"); code != "" && code != "0" {
+			return "上游模型服务返回错误：" + code
 		}
 	}
 	if msg := firstString(raw, "message", "error_message", "fail_reason", "error"); msg != "" {

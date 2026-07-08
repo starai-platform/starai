@@ -38,7 +38,7 @@ import { CATEGORY_TAG, MODEL_ICONS } from "./categoryMeta";
 import { SchemaForm, schemaDefaults, schemaProperties } from "./SchemaForm";
 import { BottomBar, ChatTopTools, type BottomBarState } from "./BottomBar";
 import { PricingModal } from "@/components/workbench/PricingModal";
-import { AudioOptionToolbar } from "./audio/AudioOptionToolbar";
+import { AudioOptionToolbar, AudioTopControls } from "./audio/AudioOptionToolbar";
 import { AudioUploadButton } from "./audio/AudioUploadButton";
 import { VideoUploadArea } from "./video/VideoUploadArea";
 import { VideoOptionToolbar } from "./video/VideoOptionToolbar";
@@ -2046,7 +2046,13 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                   </div>
                 ) : isAudio ? (
                   <div className="flex items-center gap-2 sm:gap-3">
-                    <div className="flex items-center gap-2 min-w-0 flex-1 h-9">
+                    <div className="flex items-center gap-2 min-w-0 flex-1 min-h-9 flex-wrap">
+                      <AudioTopControls
+                        schema={model.input_schema}
+                        values={params}
+                        onChange={setParams}
+                        audioConfig={audioConfig}
+                      />
                       {audioConfig.show_upload && (
                         <AudioUploadButton
                           url={audioRef?.url}

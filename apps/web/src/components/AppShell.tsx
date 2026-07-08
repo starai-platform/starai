@@ -171,7 +171,8 @@ export function AppShell({ children, selectedModelCode }: AppShellProps) {
     const hasModels = enabled.size > 0;
     const hasChatLike = enabled.has("chat") || enabled.has("multi_collab");
     return CATEGORIES.filter((cat) => {
-      if (cat.code === "all" || cat.code === "mine") return true;
+      if (cat.code === "mine") return false;
+      if (cat.code === "all") return true;
       if (!hasModels) return false;
       if (cat.code === "chat") return hasChatLike;
       return enabled.has(cat.code);
@@ -179,7 +180,7 @@ export function AppShell({ children, selectedModelCode }: AppShellProps) {
   }, [modelCategoryCodes]);
 
   useEffect(() => {
-    if (category === "all" || category === "mine") return;
+    if (category === "all") return;
     if (!visibleModelCategories.some((cat) => cat.code === category)) {
       setCategory("all");
       setActiveModelCode(undefined);
@@ -190,7 +191,7 @@ export function AppShell({ children, selectedModelCode }: AppShellProps) {
   useEffect(() => {
     if (!isWorkbench || section !== "models") return;
     const q =
-      category === "all" || category === "mine"
+      category === "all"
         ? ""
         : category === "chat"
           ? `?category=chat`
@@ -413,7 +414,14 @@ export function AppShell({ children, selectedModelCode }: AppShellProps) {
               {AGENT_CATEGORIES.map((cat) => (
                 <button
                   key={cat.code}
-                  onClick={() => setAgentCategory(cat.code)}
+                  onClick={() => {
+                    if (cat.code === "mine") {
+                      router.push("/app/works");
+                      closeDrawer();
+                      return;
+                    }
+                    setAgentCategory(cat.code);
+                  }}
                   className={clsx(
                     "px-1 py-1.5 rounded-full text-[11px] leading-none text-center truncate transition",
                     agentCategory === cat.code
@@ -540,16 +548,18 @@ export function AppShell({ children, selectedModelCode }: AppShellProps) {
       {showFooter ? (
         <div className="px-2.5 py-3 border-t border-gray-50 mt-auto shrink-0">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-primary to-secondary flex items-center justify-center text-white text-sm font-bold shrink-0">
-              {user?.nickname?.[0] || "U"}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium truncate">{user?.nickname || t("common.notLoggedIn")}</div>
-              <div className="flex items-center gap-1 text-[10px] text-gray-400">
-                <span className="w-1.5 h-1.5 rounded-full bg-primary" />
-                {t("common.online")} · {wallet?.compute_balance?.toFixed(1) ?? "0"} {t("common.compute")}
+            <Link href="/app/wallet" onClick={closeDrawer} className="flex min-w-0 flex-1 items-center gap-3 rounded-xl transition hover:bg-gray-50 dark:hover:bg-white/5">
+              <div className="w-9 h-9 rounded-full bg-gradient-to-br from-primary to-secondary flex items-center justify-center text-white text-sm font-bold shrink-0">
+                {user?.nickname?.[0] || "U"}
               </div>
-            </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium truncate">{user?.nickname || t("common.notLoggedIn")}</div>
+                <div className="flex items-center gap-1 text-[10px] text-gray-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-primary" />
+                  {t("common.online")} · {wallet?.compute_balance?.toFixed(1) ?? "0"} {t("common.compute")}
+                </div>
+              </div>
+            </Link>
             <button
               onClick={() => setShowRecharge(true)}
               className="px-2.5 py-1.5 rounded-xl bg-primary/10 text-primary text-xs font-semibold hover:bg-primary/15 transition shrink-0"

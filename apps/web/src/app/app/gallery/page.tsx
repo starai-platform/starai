@@ -40,7 +40,18 @@ export default function GalleryPage() {
     api<{ items: GalleryItem[] }>(`/api/gallery${q}`).then((r) => setItems(r.items || []));
   }, [activeTag]);
 
-  const navTags = useMemo(() => [{ name: t("gallery.all"), slug: "all" }, ...tags], [tags, t]);
+  const navTags = useMemo(() => {
+    const seen = new Set<string>(["all"]);
+    return [
+      { name: t("gallery.all"), slug: "all" },
+      ...tags.filter((tag) => {
+        const slug = (tag.slug || "").trim();
+        if (!slug || seen.has(slug)) return false;
+        seen.add(slug);
+        return true;
+      }),
+    ];
+  }, [tags, t]);
   const tagLabel = (tag: GalleryTag) => (tag.slug === "all" ? tag.name : td(`gallery.tag.${tag.slug}`, tag.name));
 
   return (

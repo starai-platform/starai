@@ -66,4 +66,15 @@ LOCAL_STORAGE_PUBLIC_URL=http://localhost:8080/uploads-local
 NEXT_PUBLIC_API_URL=http://localhost:8080
 ```
 
+本地.env.local 开发环境一键清理脚本 /scripts/cleanup-local-dev.ps1
+
+# 预览，不删除
+powershell -ExecutionPolicy Bypass -File .\scripts\cleanup-local-dev.ps1 -DryRun
+
+# 执行清理，会要求输入确认词
+powershell -ExecutionPolicy Bypass -File .\scripts\cleanup-local-dev.ps1
+
+# 跳过确认
+powershell -ExecutionPolicy Bypass -File .\scripts\cleanup-local-dev.ps1 -Force
+
 如果你要模拟线上域名环境，可以保持生产域名配置，但本地浏览器访问和上传文件打开地址会依赖这个域名是否能访问。

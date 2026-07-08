@@ -54,6 +54,8 @@ export interface SchemaFieldMeta {
   "x-order"?: number;
   "x-icon"?: string;
   "x-highlight"?: boolean;
+  /** Move a field to a model-specific prominent area instead of the bottom toolbar. */
+  "x-placement"?: string;
   /** If true, value is omitted from upstream when equal to "auto" or false */
   "x-omit-auto"?: boolean;
 }
@@ -96,7 +98,7 @@ export function parseVideoRuntime(runtimeRule?: Record<string, unknown>): VideoR
     count_toward_total: video.count_toward_total !== false,
     prompt_hint: typeof video.prompt_hint === "string" ? video.prompt_hint : "",
     prompt_required: video.prompt_required !== false,
-    show_channel: video.show_channel !== false,
+    show_channel: video.show_channel === true,
     show_web_search: video.show_web_search === true,
     count_options: parseCountOptions(video.count_options),
     count_allow_custom: video.count_allow_custom !== false,

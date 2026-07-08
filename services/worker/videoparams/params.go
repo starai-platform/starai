@@ -19,9 +19,10 @@ func BuildUpstreamVideoPayload(
 	if modelName == "" {
 		modelName = modelCode
 	}
-	out := map[string]interface{}{"model": modelName}
+	out := map[string]interface{}{}
+	setPayloadValue(out, mappedUpstreamKey(upCfg, "model", "model"), modelName)
 	if prompt, ok := params["prompt"].(string); ok {
-		out["prompt"] = prompt
+		setPayloadValue(out, mappedUpstreamKey(upCfg, "prompt", "prompt"), prompt)
 	}
 	for k, v := range extraParams {
 		// connection 仅用于 Worker 鉴权，绝不能进入上游请求体
@@ -57,7 +58,7 @@ func BuildUpstreamVideoPayload(
 		if omitAutoValue(val) {
 			continue
 		}
-		out[upKey] = normalizeUpstreamValue(val)
+		setPayloadValue(out, upKey, normalizeUpstreamValue(val))
 	}
 	out = ApplyUpstreamTransforms(out, runtimeRule, params)
 	return SanitizeUpstreamPayload(out, "")
@@ -282,6 +283,44 @@ func parseUpstreamConfig(runtimeRule map[string]interface{}) upstreamConfig {
 		cfg.Static = st
 	}
 	return cfg
+}
+
+func mappedUpstreamKey(upCfg upstreamConfig, key string, fallback string) string {
+	if upCfg.Map != nil {
+		if mapped, ok := upCfg.Map[key]; ok && mapped != "" {
+			return mapped
+		}
+	}
+	return fallback
+}
+
+func setPayloadValue(out map[string]interface{}, key string, val interface{}) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+	parts := strings.Split(key, ".")
+	if len(parts) == 1 {
+		out[key] = val
+		return
+	}
+	cur := out
+	for _, part := range parts[:len(parts)-1] {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return
+		}
+		next, _ := cur[part].(map[string]interface{})
+		if next == nil {
+			next = map[string]interface{}{}
+			cur[part] = next
+		}
+		cur = next
+	}
+	last := strings.TrimSpace(parts[len(parts)-1])
+	if last != "" {
+		cur[last] = val
+	}
 }
 
 func omitAutoValue(val interface{}) bool {

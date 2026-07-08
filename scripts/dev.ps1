@@ -42,6 +42,17 @@ function Test-PortListening([int]$Port) {
   }
 }
 
+function Test-PostgresReady([string]$ComposeFile) {
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    & docker compose -f $ComposeFile exec -T postgres pg_isready -U starai -d starai *> $null
+    return $LASTEXITCODE -eq 0
+  } finally {
+    $ErrorActionPreference = $prev
+  }
+}
+
 function Wait-HttpOk([string]$Url, [int]$Retries = 30, [int]$DelayMs = 1000) {
   for ($i = 0; $i -lt $Retries; $i++) {
     try {
@@ -146,23 +157,18 @@ if ((Invoke-External { docker compose -f $composeFile up -d postgres redis minio
   Fail "Docker compose failed. Make sure Docker Desktop is running and can pull images, then re-run this script."
 }
 
-# wait for postgres port
-Info "Waiting for Postgres on localhost:5432"
+# wait for postgres readiness. A fresh volume can open port 5432 before init scripts are fully ready.
+Info "Waiting for Postgres readiness"
 $ok = $false
-for ($i = 0; $i -lt 40; $i++) {
-  try {
-    $client = New-Object System.Net.Sockets.TcpClient
-    $iar = $client.BeginConnect("127.0.0.1", 5432, $null, $null)
-    $ok = $iar.AsyncWaitHandle.WaitOne(500)
-    $client.Close()
-  } catch {
-    $ok = $false
-  }
+for ($i = 0; $i -lt 80; $i++) {
+  $ok = Test-PostgresReady $composeFile
   if ($ok) { break }
-  Start-Sleep -Milliseconds 500
+  Start-Sleep -Milliseconds 750
 }
 if (-not $ok) {
-  Fail "Postgres is not reachable on 127.0.0.1:5432. If Docker just started, wait a bit and retry."
+  Warn "Postgres did not become ready. Recent logs:"
+  Invoke-External { docker compose -f $composeFile logs --tail=80 postgres } | Out-Null
+  Fail "Postgres is not ready. If Docker just started, wait a bit and retry; otherwise check the logs above."
 }
 
 # 2) Download Go deps + run migrations (seeds data)

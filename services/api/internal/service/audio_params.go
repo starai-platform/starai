@@ -14,12 +14,13 @@ func BuildUpstreamAudioPayload(model *ModelFull, params map[string]interface{}) 
 	if modelName == "" {
 		modelName = model.Code
 	}
-	out := map[string]interface{}{"model": modelName}
+	out := map[string]interface{}{}
+	setPayloadValue(out, mappedUpstreamKey(upCfg, "model", "model"), modelName)
 	if prompt, ok := params["prompt"].(string); ok {
-		out["prompt"] = prompt
+		setPayloadValue(out, mappedUpstreamKey(upCfg, "prompt", "prompt"), prompt)
 	}
-	if text, ok := params["input"].(string); ok && out["prompt"] == nil {
-		out["input"] = text
+	if text, ok := params["input"].(string); ok && out["prompt"] == nil && out["text"] == nil {
+		setPayloadValue(out, mappedUpstreamKey(upCfg, "input", "input"), text)
 	}
 	for k, v := range model.NewAPIExtraParams {
 		out[k] = v
@@ -47,7 +48,7 @@ func BuildUpstreamAudioPayload(model *ModelFull, params map[string]interface{}) 
 		if omitAutoValue(val) {
 			continue
 		}
-		out[upKey] = normalizeUpstreamValue(val)
+		setPayloadValue(out, upKey, normalizeUpstreamValue(val))
 	}
 	return out
 }

@@ -11,6 +11,10 @@ import {
   type SchemaFieldMeta,
 } from "@starai/shared-types";
 
+function isAudioTopField(prop: SchemaFieldMeta) {
+  return prop["x-placement"] === "audio_top";
+}
+
 function iconFor(name?: string): ReactNode {
   switch (name) {
     case "layers":
@@ -28,6 +32,8 @@ function iconFor(name?: string): ReactNode {
     case "format":
       return <FileAudio size={16} />;
     case "audio":
+      return <AudioLines size={16} />;
+    case "voice":
       return <AudioLines size={16} />;
     case "bitrate":
       return <Gauge size={16} />;
@@ -265,7 +271,24 @@ export function AudioOptionToolbar({
   audioConfig?: AudioRuntimeConfig;
 }) {
   const set = (key: string, val: unknown) => onChange({ ...values, [key]: val });
-  const entries = schemaFieldEntries(schema);
+  const entries = schemaFieldEntries(schema).filter(([, prop]) => !isAudioTopField(prop));
+  if (entries.length === 0) return null;
+  return <>{entries.map(([key, prop]) => <span key={key}>{renderFieldControl(key, prop, values[key], set, audioConfig)}</span>)}</>;
+}
+
+export function AudioTopControls({
+  schema,
+  values,
+  onChange,
+  audioConfig,
+}: {
+  schema: unknown;
+  values: Record<string, unknown>;
+  onChange: (next: Record<string, unknown>) => void;
+  audioConfig?: AudioRuntimeConfig;
+}) {
+  const set = (key: string, val: unknown) => onChange({ ...values, [key]: val });
+  const entries = schemaFieldEntries(schema).filter(([, prop]) => isAudioTopField(prop));
   if (entries.length === 0) return null;
   return <>{entries.map(([key, prop]) => <span key={key}>{renderFieldControl(key, prop, values[key], set, audioConfig)}</span>)}</>;
 }

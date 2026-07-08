@@ -27,8 +27,8 @@ export const AGENT_CATEGORIES = [
   { code: "all", label: "\u5168\u90e8", labelKey: "nav.all" },
   { code: "image", label: "\u56fe\u7247", labelKey: "nav.image" },
   { code: "video", label: "\u89c6\u9891", labelKey: "nav.video" },
-  { code: "multi_collab", label: "\u591a\u6a21\u578b", labelKey: "category.multiCollab" },
   { code: "api", label: "API", labelKey: "category.api" },
+  { code: "mine", label: "\u6211\u7684", labelKey: "nav.mine" },
 ] as const;
 
 export const AGENT_CATEGORY_TAG: Record<string, { label: string; labelKey: string; className: string }> = {

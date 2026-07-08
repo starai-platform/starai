@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"encoding/base64"
+	"encoding/hex"
+	"testing"
+)
 
 func TestParseUpstreamMediaKeepsTaskIDWhenMediaExists(t *testing.T) {
 	body := []byte(`{
@@ -18,6 +22,95 @@ func TestParseUpstreamMediaKeepsTaskIDWhenMediaExists(t *testing.T) {
 		t.Fatalf("upstreamID = %q", upstreamID)
 	}
 	if len(items) != 1 || items[0].URL != "https://otuapi.com/v1/videos/task_ijlim0lsyqb6Svhqgh1VkAQf1ys1nUne/content" {
+		t.Fatalf("items = %#v", items)
+	}
+}
+
+func TestParseUpstreamMediaReadsBase64Audio(t *testing.T) {
+	audio := base64.StdEncoding.EncodeToString([]byte("ID3\x04audio-audio-audio-audio-audio-audio-audio-audio"))
+	body := []byte(`{
+		"data": {
+			"audio": "` + audio + `",
+			"format": "mp3"
+		}
+	}`)
+
+	items, upstreamID := parseUpstreamMedia(body)
+	if upstreamID != "" {
+		t.Fatalf("upstreamID = %q", upstreamID)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %#v", items)
+	}
+	if items[0].B64JSON != audio {
+		t.Fatalf("audio base64 = %q", items[0].B64JSON)
+	}
+	if items[0].MimeType != "mp3" {
+		t.Fatalf("mime/format = %q", items[0].MimeType)
+	}
+}
+
+func TestParseUpstreamMediaReadsHexAudio(t *testing.T) {
+	audio := hex.EncodeToString([]byte("ID3\x04audio-audio-audio-audio-audio-audio-audio-audio"))
+	body := []byte(`{
+		"data": {
+			"audio": "` + audio + `",
+			"format": "mp3"
+		}
+	}`)
+
+	items, _ := parseUpstreamMedia(body)
+	if len(items) != 1 {
+		t.Fatalf("items = %#v", items)
+	}
+	if items[0].B64JSON != audio {
+		t.Fatalf("audio hex = %q", items[0].B64JSON)
+	}
+	data, contentType, err := decodeEncodedMedia(items[0].B64JSON, items[0].MimeType, "audio")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data[:3]) != "ID3" {
+		t.Fatalf("decoded head = %q", string(data[:3]))
+	}
+	if contentType != "audio/mpeg" {
+		t.Fatalf("contentType = %q", contentType)
+	}
+	dataURL := normalizeAudioResultURL(items[0].B64JSON, items[0].MimeType)
+	if dataURL == "" {
+		t.Fatal("data url fallback is empty")
+	}
+	if got, want := dataURL[:22], "data:audio/mpeg;base64"; got != want {
+		t.Fatalf("data url prefix = %q, want %q", got, want)
+	}
+}
+
+func TestParseUpstreamMediaReadsHexAudioFromDataString(t *testing.T) {
+	audio := hex.EncodeToString([]byte("ID3\x04music-music-music-music-music-music-music"))
+	body := []byte(`{"data":"` + audio + `","format":"mp3"}`)
+
+	items, _ := parseUpstreamMedia(body)
+	if len(items) != 1 || items[0].B64JSON != audio {
+		t.Fatalf("items = %#v", items)
+	}
+}
+
+func TestParseUpstreamMediaReadsHexAudioFromAudioFile(t *testing.T) {
+	audio := hex.EncodeToString([]byte("ID3\x04music-music-music-music-music-music-music"))
+	body := []byte(`{"data":{"audio_file":"` + audio + `","audio_format":"mp3"}}`)
+
+	items, _ := parseUpstreamMedia(body)
+	if len(items) != 1 || items[0].B64JSON != audio || items[0].MimeType != "mp3" {
+		t.Fatalf("items = %#v", items)
+	}
+}
+
+func TestParseUpstreamMediaReadsNestedAudioResult(t *testing.T) {
+	audio := hex.EncodeToString([]byte("ID3\x04music-music-music-music-music-music-music"))
+	body := []byte(`{"data":{"audio_result":{"audio":"` + audio + `","format":"mp3"}}}`)
+
+	items, _ := parseUpstreamMedia(body)
+	if len(items) != 1 || items[0].B64JSON != audio {
 		t.Fatalf("items = %#v", items)
 	}
 }
@@ -92,5 +185,15 @@ func TestUpstreamErrorMessageHumanizesUnsafePrompt(t *testing.T) {
 	got := upstreamErrorMessage(body)
 	if got != "生成内容未通过安全审核，请修改提示词或参考图后重试" {
 		t.Fatalf("message = %q", got)
+	}
+}
+
+func TestUpstreamErrorMessageReadsBaseResp(t *testing.T) {
+	body := []byte(`{"data":null,"trace_id":"x","base_resp":{"status_code":1008,"status_msg":"insufficient balance"}}`)
+
+	got := upstreamErrorMessage(body)
+	want := "上游模型账户余额不足，请检查或更换可用渠道"
+	if got != want {
+		t.Fatalf("message = %q, want %q", got, want)
 	}
 }

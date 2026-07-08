@@ -601,7 +601,7 @@ export default function ModelsPage() {
       max_total_images: Number(video.max_total_images ?? 9),
       ref_slot_max: Number(ref.max ?? 4),
       prompt_hint: video.prompt_hint || "",
-      show_channel: video.show_channel !== false,
+      show_channel: video.show_channel === true,
       show_web_search: video.show_web_search === true,
       count_options: Array.isArray(video.count_options)
         ? video.count_options.map((x: unknown) => Number(x)).filter((n: number) => Number.isFinite(n) && n >= 1)
@@ -766,8 +766,8 @@ export default function ModelsPage() {
       count_allow_custom: true,
       count_max: 50,
       prompt_hint: "输入文本内容，选择音色即可生成语音",
-      upstream_include: ["count", "speed", "format"],
-      upstream_map: JSON.stringify({ count: "n", format: "response_format" }, null, 2),
+      upstream_include: ["count", "voice_id", "emotion", "speed", "format"],
+      upstream_map: JSON.stringify({ count: "n" }, null, 2),
     }),
     input_schema: JSON.stringify(
       {
@@ -786,22 +786,61 @@ export default function ModelsPage() {
             "x-icon": "layers",
             "x-highlight": true,
           },
-          speed: {
+          voice_id: {
             type: "string",
-            title: "语速",
-            enum: ["0.8x", "1.0x", "1.2x", "1.5x"],
-            default: "1.0x",
+            title: "Voice ID",
+            enum: ["Chinese (Mandarin)_Warm_Bestie", "Chinese (Mandarin)_Gentleman", "Chinese (Mandarin)_Cute_Spirit", "English_expressive_narrator"],
+            enumLabels: {
+              "Chinese (Mandarin)_Warm_Bestie": "中文女声 · 温柔闺蜜",
+              "Chinese (Mandarin)_Gentleman": "中文男声 · 绅士",
+              "Chinese (Mandarin)_Cute_Spirit": "中文女声 · 活泼",
+              English_expressive_narrator: "English · Expressive Narrator",
+            },
+            default: "Chinese (Mandarin)_Warm_Bestie",
             "x-order": 2,
             "x-widget": "option_menu",
+            "x-icon": "voice",
+            "x-placement": "audio_top",
+            "x-highlight": true,
+          },
+          speed: {
+            type: "number",
+            title: "语速",
+            enum: [0.8, 1, 1.2, 1.5],
+            enumLabels: { "0.8": "0.8x", "1": "1.0x", "1.2": "1.2x", "1.5": "1.5x" },
+            default: 1,
+            "x-order": 3,
+            "x-widget": "option_menu",
             "x-icon": "speed",
+          },
+          emotion: {
+            type: "string",
+            title: "Emotion",
+            enum: ["auto", "happy", "sad", "angry", "fearful", "disgusted", "surprised", "calm", "neutral"],
+            enumLabels: {
+              auto: "自动",
+              happy: "开心",
+              sad: "悲伤",
+              angry: "愤怒",
+              fearful: "恐惧",
+              disgusted: "厌恶",
+              surprised: "惊讶",
+              calm: "平静",
+              neutral: "中性",
+            },
+            default: "auto",
+            "x-order": 4,
+            "x-widget": "option_menu",
+            "x-icon": "emotion",
+            "x-omit-auto": true,
           },
           format: {
             type: "string",
             title: "输出格式",
-            enum: ["mp3", "wav"],
-            enumLabels: { mp3: "MP3", wav: "WAV" },
+            enum: ["mp3", "wav", "flac", "pcm"],
+            enumLabels: { mp3: "MP3", wav: "WAV", flac: "FLAC", pcm: "PCM" },
             default: "mp3",
-            "x-order": 3,
+            "x-order": 5,
             "x-widget": "option_menu",
             "x-icon": "format",
           },
@@ -810,8 +849,8 @@ export default function ModelsPage() {
       null,
       2
     ),
-    default_params: JSON.stringify({ count: 1, speed: "1.0x", format: "mp3" }, null, 2),
-    price_rule: JSON.stringify({ billing_type: "per_token", input_price: 0.000002, output_price: 0.000004 }, null, 2),
+    default_params: JSON.stringify({ count: 1, voice_id: "Chinese (Mandarin)_Warm_Bestie", emotion: "auto", speed: 1, format: "mp3" }, null, 2),
+    price_rule: JSON.stringify({ billing_type: "per_token", currency: "¥", input_price_per_m: 2, output_price_per_m: 4 }, null, 2),
   });
 
   const applyVideoStandard = (prev: FormState): FormState => ({
@@ -2098,12 +2137,36 @@ export default function ModelsPage() {
                       className="w-full mt-1 px-3 py-2 rounded-lg border text-sm bg-white"
                       value={getAudioRule(form.runtime_rule).billing_hint}
                       onChange={(e) =>
-                        setForm((prev) => ({
-                          ...prev,
-                          runtime_rule: setAudioRule(prev.runtime_rule, {
-                            billing_hint: e.target.value as "per_token" | "estimated",
-                          }),
-                        }))
+                        setForm((prev) => {
+                          const billingHint = e.target.value as "per_token" | "estimated";
+                          const price = safeParseJson(prev.price_rule, {}) || {};
+                          const inputPrice = Number(price.input_price ?? 0);
+                          const outputPrice = Number(price.output_price ?? 0);
+                          const nextPrice =
+                            billingHint === "estimated"
+                              ? {
+                                  ...price,
+                                  billing_type: "per_request",
+                                  currency: price.currency || "¥",
+                                  unit_price: Number(price.unit_price ?? 0.01) || 0.01,
+                                }
+                              : {
+                                  ...price,
+                                  billing_type: "per_token",
+                                  currency: price.currency || "¥",
+                                  input_price_per_m: Number(price.input_price_per_m ?? (inputPrice > 0 ? inputPrice * 1_000_000 : 2)) || 0,
+                                  output_price_per_m: Number(price.output_price_per_m ?? (outputPrice > 0 ? outputPrice * 1_000_000 : 4)) || 0,
+                                };
+                          delete (nextPrice as Record<string, unknown>).input_price;
+                          delete (nextPrice as Record<string, unknown>).output_price;
+                          return {
+                            ...prev,
+                            runtime_rule: setAudioRule(prev.runtime_rule, {
+                              billing_hint: billingHint,
+                            }),
+                            price_rule: JSON.stringify(nextPrice, null, 2),
+                          };
+                        })
                       }
                     >
                       <option value="per_token">按token计费</option>

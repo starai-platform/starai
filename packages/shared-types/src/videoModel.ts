@@ -133,6 +133,10 @@ export function schemaFieldEntries(schema: unknown): [string, SchemaFieldMeta][]
     .sort((a, b) => (a[1]["x-order"] ?? 99) - (b[1]["x-order"] ?? 99));
 }
 
+export function isTopPlacementField(prop: Pick<SchemaFieldMeta, "x-placement">) {
+  return prop["x-placement"] === "top" || prop["x-placement"] === "audio_top";
+}
+
 export function schemaDefaultsFromFields(schema: unknown): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, prop] of schemaFieldEntries(schema)) {

@@ -15,10 +15,10 @@ INSERT INTO models (
     "type":"object",
     "properties":{
       "count":{"type":"integer","title":"生成数量","enum":[1,3,5,10,30,50],"default":1,"minimum":1,"maximum":50,"x-allow-custom":true,"x-order":1,"x-widget":"option_menu","x-icon":"layers","x-highlight":true},
-      "voice_id":{"type":"string","title":"Voice ID","enum":["male-qn-qingse","female-shaonv","female-yujie","male-qn-jingying","male-qn-badao"],"enumLabels":{"male-qn-qingse":"男声 · 青涩","female-shaonv":"女声 · 少女","female-yujie":"女声 · 御姐","male-qn-jingying":"男声 · 精英","male-qn-badao":"男声 · 霸道"},"default":"male-qn-qingse","x-order":2,"x-widget":"option_menu","x-icon":"voice","x-placement":"audio_top","x-highlight":true},
+      "voice_id":{"type":"string","title":"Voice ID","enum":["male-qn-qingse","female-shaonv","female-yujie","male-qn-jingying","male-qn-badao"],"enumLabels":{"male-qn-qingse":"男声 · 青涩","female-shaonv":"女声 · 少女","female-yujie":"女声 · 御姐","male-qn-jingying":"男声 · 精英","male-qn-badao":"男声 · 霸道"},"default":"male-qn-qingse","x-order":2,"x-widget":"option_menu","x-icon":"voice","x-placement":"top","x-highlight":true},
       "speed":{"type":"number","title":"语速","enum":[0.8,1,1.15,1.2,1.5],"enumLabels":{"0.8":"0.8x","1":"1.0x","1.15":"1.15x","1.2":"1.2x","1.5":"1.5x"},"default":1.15,"x-order":3,"x-widget":"option_menu","x-icon":"speed"},
       "emotion":{"type":"string","title":"Emotion","enum":["auto","happy","sad","angry","fearful","disgusted","surprised","calm","neutral"],"enumLabels":{"auto":"自动","happy":"开心","sad":"悲伤","angry":"愤怒","fearful":"恐惧","disgusted":"厌恶","surprised":"惊讶","calm":"平静","neutral":"中性"},"default":"auto","x-order":4,"x-widget":"option_menu","x-icon":"emotion","x-omit-auto":true},
-      "format":{"type":"string","title":"输出格式","enum":["mp3","wav","flac","pcm"],"enumLabels":{"mp3":"MP3","wav":"WAV","flac":"FLAC","pcm":"PCM"},"default":"mp3","x-order":5,"x-widget":"option_menu","x-icon":"format","x-placement":"audio_top"}
+      "format":{"type":"string","title":"输出格式","enum":["mp3","wav","flac","pcm"],"enumLabels":{"mp3":"MP3","wav":"WAV","flac":"FLAC","pcm":"PCM"},"default":"mp3","x-order":5,"x-widget":"option_menu","x-icon":"format","x-placement":"top"}
     }
   }'::jsonb,
   '{"count":1,"voice_id":"male-qn-qingse","emotion":"auto","speed":1.15,"format":"mp3"}'::jsonb,

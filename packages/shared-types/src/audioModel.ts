@@ -5,6 +5,7 @@ import {
   enumLabel,
   parseCountOptions,
   parseUpstreamRuntime,
+  isTopPlacementField,
   schemaDefaultsFromFields,
   schemaFieldEntries,
   type SchemaFieldMeta,
@@ -35,6 +36,7 @@ export interface AudioRuntimeConfig {
 export {
   enumLabel,
   parseUpstreamRuntime,
+  isTopPlacementField,
   schemaDefaultsFromFields,
   schemaFieldEntries,
   type SchemaFieldMeta,

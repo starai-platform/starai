@@ -800,7 +800,7 @@ export default function ModelsPage() {
             "x-order": 2,
             "x-widget": "option_menu",
             "x-icon": "voice",
-            "x-placement": "audio_top",
+            "x-placement": "top",
             "x-highlight": true,
           },
           speed: {
@@ -904,12 +904,20 @@ export default function ModelsPage() {
     e.preventDefault();
     setErr("");
     let inputSchema: unknown, defaultParams: unknown, extraParams: unknown, priceRule: unknown, runtimeRule: unknown;
+    const parseJsonField = (label: string, text: string) => {
+      try {
+        return JSON.parse(text?.trim() || "{}");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "invalid JSON";
+        throw new Error(`${label} JSON 格式有误：${message}`);
+      }
+    };
     try {
-      inputSchema = JSON.parse(form.input_schema || "{}");
-      defaultParams = JSON.parse(form.default_params || "{}");
-      extraParams = JSON.parse(form.new_api_extra_params || "{}");
-      priceRule = JSON.parse(form.price_rule || "{}");
-      runtimeRule = JSON.parse(form.runtime_rule || "{}");
+      inputSchema = parseJsonField("input_schema", form.input_schema);
+      defaultParams = parseJsonField("default_params", form.default_params);
+      extraParams = parseJsonField("new_api_extra_params", form.new_api_extra_params);
+      priceRule = parseJsonField("price_rule", form.price_rule);
+      runtimeRule = parseJsonField("runtime_rule", form.runtime_rule);
     } catch {
       setErr("JSON 字段格式有误，请检查 input_schema / default_params / new_api_extra_params / price_rule / runtime_rule");
       return;

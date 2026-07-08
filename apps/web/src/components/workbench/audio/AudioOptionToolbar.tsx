@@ -5,15 +5,12 @@ import { AudioLines, ChevronDown, Compass, FileAudio, Gauge, Grid3X3, Sparkles, 
 import {
   DEFAULT_AUDIO_COUNT_OPTIONS,
   enumLabel,
+  isTopPlacementField,
   parseCountOptions,
   schemaFieldEntries,
   type AudioRuntimeConfig,
   type SchemaFieldMeta,
 } from "@starai/shared-types";
-
-function isAudioTopField(prop: SchemaFieldMeta) {
-  return prop["x-placement"] === "audio_top";
-}
 
 function iconFor(name?: string): ReactNode {
   switch (name) {
@@ -271,7 +268,7 @@ export function AudioOptionToolbar({
   audioConfig?: AudioRuntimeConfig;
 }) {
   const set = (key: string, val: unknown) => onChange({ ...values, [key]: val });
-  const entries = schemaFieldEntries(schema).filter(([, prop]) => !isAudioTopField(prop));
+  const entries = schemaFieldEntries(schema).filter(([, prop]) => !isTopPlacementField(prop));
   if (entries.length === 0) return null;
   return <>{entries.map(([key, prop]) => <span key={key}>{renderFieldControl(key, prop, values[key], set, audioConfig)}</span>)}</>;
 }
@@ -288,7 +285,7 @@ export function AudioTopControls({
   audioConfig?: AudioRuntimeConfig;
 }) {
   const set = (key: string, val: unknown) => onChange({ ...values, [key]: val });
-  const entries = schemaFieldEntries(schema).filter(([, prop]) => isAudioTopField(prop));
+  const entries = schemaFieldEntries(schema).filter(([, prop]) => isTopPlacementField(prop));
   if (entries.length === 0) return null;
   return <>{entries.map(([key, prop]) => <span key={key}>{renderFieldControl(key, prop, values[key], set, audioConfig)}</span>)}</>;
 }

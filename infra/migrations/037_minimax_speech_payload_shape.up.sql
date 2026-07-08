@@ -7,7 +7,7 @@ SET
       jsonb_set(
         input_schema,
         '{properties,voice_id}',
-        '{"type":"string","title":"Voice ID","enum":["male-qn-qingse","female-shaonv","female-yujie","male-qn-jingying","male-qn-badao"],"enumLabels":{"male-qn-qingse":"男声 · 青涩","female-shaonv":"女声 · 少女","female-yujie":"女声 · 御姐","male-qn-jingying":"男声 · 精英","male-qn-badao":"男声 · 霸道"},"default":"male-qn-qingse","x-order":2,"x-widget":"option_menu","x-icon":"voice","x-placement":"audio_top","x-highlight":true}'::jsonb,
+        '{"type":"string","title":"Voice ID","enum":["male-qn-qingse","female-shaonv","female-yujie","male-qn-jingying","male-qn-badao"],"enumLabels":{"male-qn-qingse":"男声 · 青涩","female-shaonv":"女声 · 少女","female-yujie":"女声 · 御姐","male-qn-jingying":"男声 · 精英","male-qn-badao":"男声 · 霸道"},"default":"male-qn-qingse","x-order":2,"x-widget":"option_menu","x-icon":"voice","x-placement":"top","x-highlight":true}'::jsonb,
         true
       ),
       '{properties,speed}',
@@ -15,7 +15,7 @@ SET
       true
     ),
     '{properties,format}',
-    '{"type":"string","title":"输出格式","enum":["mp3","wav","flac","pcm"],"enumLabels":{"mp3":"MP3","wav":"WAV","flac":"FLAC","pcm":"PCM"},"default":"mp3","x-order":5,"x-widget":"option_menu","x-icon":"format","x-placement":"audio_top"}'::jsonb,
+    '{"type":"string","title":"输出格式","enum":["mp3","wav","flac","pcm"],"enumLabels":{"mp3":"MP3","wav":"WAV","flac":"FLAC","pcm":"PCM"},"default":"mp3","x-order":5,"x-widget":"option_menu","x-icon":"format","x-placement":"top"}'::jsonb,
     true
   ),
   default_params = '{"count":1,"voice_id":"male-qn-qingse","emotion":"auto","speed":1.15,"format":"mp3"}'::jsonb,

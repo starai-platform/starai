@@ -372,6 +372,7 @@ export function AgentWorkspace({ code }: { code: string }) {
   const [styleAddOpen, setStyleAddOpen] = useState<"manual" | "smart" | null>(null);
   const [styleFilter, setStyleFilter] = useState<"all" | "system" | "mine">("all");
   const [activeComicFeature, setActiveComicFeature] = useState(0);
+  const [activeAgentFeature, setActiveAgentFeature] = useState(0);
   const [projectDraft, setProjectDraft] = useState({
     cover_url: "",
     name: "",
@@ -482,6 +483,15 @@ export function AgentWorkspace({ code }: { code: string }) {
     }, 3600);
     return () => window.clearInterval(timer);
   }, [isComicDrama]);
+
+  useEffect(() => {
+    if (isComicDrama || project) return;
+    const total = Math.max(1, Math.min(4, translatedSteps.length));
+    const timer = window.setInterval(() => {
+      setActiveAgentFeature((prev) => (prev + 1) % total);
+    }, 3600);
+    return () => window.clearInterval(timer);
+  }, [isComicDrama, project, translatedSteps.length]);
 
   const setComicDrawerCollapsed = (value: boolean) => {
     setProjectDrawerCollapsed(value);
@@ -907,8 +917,15 @@ export function AgentWorkspace({ code }: { code: string }) {
   }
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-[#EEF1F6] dark:bg-gray-950">
-      <div className="shrink-0 px-4 sm:px-6 py-3 flex items-center justify-between">
+    <div className="relative flex-1 flex flex-col min-h-0 overflow-hidden bg-[#eaf7fb] text-gray-900 dark:bg-[#05080f] dark:text-white">
+      {!project && (
+        <>
+          <div className="pointer-events-none absolute inset-0 opacity-80 [background-image:linear-gradient(rgba(15,23,42,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,.08)_1px,transparent_1px)] [background-size:40px_40px] dark:opacity-60 dark:[background-image:linear-gradient(rgba(34,211,238,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,.08)_1px,transparent_1px)]" />
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_70%_10%,rgba(34,211,238,.22),transparent_28%),radial-gradient(circle_at_12%_84%,rgba(20,184,166,.16),transparent_22%)] dark:bg-[radial-gradient(circle_at_76%_10%,rgba(20,184,166,.2),transparent_28%),radial-gradient(circle_at_14%_82%,rgba(6,182,212,.12),transparent_22%)]" />
+        </>
+      )}
+      {project && (
+      <div className="relative z-10 shrink-0 px-4 sm:px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <button onClick={resetTask} className="h-9 px-3 rounded-xl bg-primary text-dark text-sm font-semibold flex items-center gap-1.5"><Plus size={15} />{t("common.newTask")}</button>
           <div className="relative">
@@ -929,64 +946,28 @@ export function AgentWorkspace({ code }: { code: string }) {
           </div>
         </div>
       </div>
+      )}
 
-      <div className="flex-1 overflow-y-auto min-h-0 px-4 sm:px-6 py-4">
-        <div className="max-w-[1120px] mx-auto space-y-4">
+      <div className={(project ? "relative z-10 flex-1 overflow-y-auto min-h-0 px-4 sm:px-6 py-4" : "relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-5 lg:px-8 lg:py-4")}>
+        <div className={project ? "max-w-[1120px] mx-auto space-y-4" : "mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col"}>
           {!project && (
-            <div className={"rounded-3xl border border-white/60 bg-gradient-to-br px-6 py-6 text-center shadow-sm dark:bg-none dark:bg-gray-900 dark:border-white/10 dark:shadow-none sm:px-8 " + theme.gradient}>
-              <div className="mb-3 flex flex-wrap items-center justify-center gap-2">
-                {(display.hero_tags || ["AI Agent", "Step confirm", "Autopilot"]).map((tag) => (
-                  <span key={tag} className={"rounded-full px-2.5 py-1 text-[11px] font-medium " + theme.pill}>{td("agent." + workflow.code + ".tag." + tag, tag)}</span>
-                ))}
-              </div>
-              <div className="flex items-center justify-center gap-3">
-                <div className={"flex h-14 w-14 items-center justify-center rounded-2xl text-3xl " + theme.iconBg}>{workflow.icon || "\u{1F916}"}</div>
-                <div className="text-left">
-                  <h1 className="text-2xl font-bold text-gray-900 dark:text-white sm:text-3xl">{workflowName}</h1>
-                  {workflowDescription && <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{workflowDescription}</p>}
-                </div>
-              </div>
-            </div>
+            <AgentLanding
+              workflowCode={workflow.code}
+              workflowIcon={workflow.icon || "\u{1F916}"}
+              workflowName={workflowName}
+              workflowDescription={workflowDescription}
+              heroTags={display.hero_tags || ["AI Agent", "Step confirm", "Autopilot"]}
+              features={translatedSteps}
+              activeIndex={activeAgentFeature}
+              onSelect={setActiveAgentFeature}
+              theme={theme}
+              td={td}
+              generationType={generationType}
+            />
           )}
-          {!project && isComicDrama && (
-            <>
-              <ComicFeatureCards />
-              <ComicDramaFlow />
-            </>
-          )}
-          <div className={project ? "grid gap-4" : "grid gap-4 lg:grid-cols-[330px_1fr]"}>
-            {!project && (
-              <div className="space-y-3">
-                {translatedSteps.map((s, i) => {
-                  const active = i === 0;
-                  return (
-                    <div key={s.title + i} className={"soft-card border-2 p-4 " + (active ? "border-primary shadow-md" : "border-transparent")}>
-                      <div className="flex items-start gap-3">
-                        <div className={"flex h-9 w-9 items-center justify-center rounded-xl text-lg " + (active ? theme.iconBg : "bg-gray-50 text-gray-400 dark:bg-white/5 dark:text-gray-500")}>{s.icon || "•"}</div>
-                        <div>
-                          <div className="text-sm font-semibold text-gray-900 dark:text-white">{s.title}</div>
-                          {s.subtitle && <div className="mt-0.5 text-[11px] leading-relaxed text-gray-400">{s.subtitle}</div>}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
+          {project && (
+          <div className="grid gap-4">
             <div className="soft-card p-5 sm:p-6 min-h-[320px]">
-              {!project ? (
-                <div className="h-full flex flex-col items-center justify-center text-center">
-                  <div className="input-status-line">
-                    <span className="typing-status-text">
-                      {generationType === "video" ? t("workspace.waitVideoInput") : t("workspace.waitImageInput")}
-                    </span>
-                    <span className="input-status-hint">
-                      {t("agent.analysisHint")}
-                    </span>
-                  </div>
-                </div>
-              ) : (
                 <div className="space-y-5">
                   <div className="flex items-center justify-between">
                     <div>
@@ -1065,13 +1046,13 @@ export function AgentWorkspace({ code }: { code: string }) {
                     </div>
                   )}
                 </div>
-              )}
             </div>
           </div>
+          )}
         </div>
       </div>
 
-      <div className="shrink-0 px-3 sm:px-6 pb-5 sm:pb-6 pt-3 bg-[#EEF1F6] dark:bg-gray-950">
+      <div className="relative z-10 shrink-0 px-3 sm:px-6 pb-4 sm:pb-5 pt-2">
         <div className="max-w-[1120px] mx-auto">
           {error && <p className="text-sm text-red-500 mb-2 px-1">{error}</p>}
           <div className="soft-input overflow-hidden">
@@ -1244,6 +1225,132 @@ export function AgentWorkspace({ code }: { code: string }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function AgentLanding({
+  workflowCode,
+  workflowIcon,
+  workflowName,
+  workflowDescription,
+  heroTags,
+  features,
+  activeIndex,
+  onSelect,
+  theme,
+  td,
+  generationType,
+}: {
+  workflowCode: string;
+  workflowIcon: string;
+  workflowName: string;
+  workflowDescription: string;
+  heroTags: string[];
+  features: DisplayStep[];
+  activeIndex: number;
+  onSelect: (index: number) => void;
+  theme: { gradient: string; iconBg: string; pill: string; accent: string };
+  td: (key: string, fallback: string) => string;
+  generationType: "image" | "video";
+}) {
+  const safeFeatures = features.length
+    ? features
+    : [
+        { icon: "🔍", title: "智能分析", subtitle: "理解你的创作意图与商品卖点" },
+        { icon: "✅", title: "方案确认", subtitle: "生成前可确认提示词和创作方向" },
+        { icon: generationType === "video" ? "🎬" : "🖼️", title: generationType === "video" ? "视频生成" : "图片生成", subtitle: "按选定场景输出可用素材" },
+      ];
+  const active = safeFeatures[Math.min(activeIndex, safeFeatures.length - 1)] || safeFeatures[0];
+  const activeTags = active.tags?.length ? active.tags : heroTags.slice(0, 4);
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="shrink-0 pt-1 text-center sm:pt-3 lg:pt-4">
+        <div className={"mb-1.5 inline-flex items-center gap-2 rounded-full border border-white/60 px-3 py-1 text-[11px] font-semibold backdrop-blur dark:border-white/10 sm:px-4 sm:text-xs " + theme.pill}>
+          <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" />
+          {generationType === "video" ? "视频智能体" : "图片智能体"}
+        </div>
+        <div className="flex items-center justify-center gap-3">
+          <div className={"flex h-9 w-9 items-center justify-center rounded-2xl text-xl shadow-sm sm:h-11 sm:w-11 sm:text-2xl " + theme.iconBg}>{workflowIcon}</div>
+          <h1 className="text-xl font-black tracking-normal text-gray-900 dark:text-white sm:text-3xl">{workflowName}</h1>
+        </div>
+        {workflowDescription && <p className="mx-auto mt-2 max-w-2xl px-3 text-xs leading-5 text-gray-500 dark:text-gray-300 sm:text-sm">{workflowDescription}</p>}
+        <div className="mt-2 flex flex-wrap justify-center gap-1.5 sm:mt-3 sm:gap-2">
+          {heroTags.map((tag) => (
+            <span key={tag} className="rounded-full border border-gray-200 bg-white/55 px-2.5 py-0.5 text-[11px] text-gray-500 backdrop-blur dark:border-white/10 dark:bg-white/5 dark:text-gray-300 sm:px-3 sm:py-1 sm:text-xs">
+              {td("agent." + workflowCode + ".tag." + tag, tag)}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid min-h-0 flex-1 items-center gap-4 pt-4 sm:pt-5 lg:grid-cols-[300px_minmax(360px,640px)] lg:justify-center lg:gap-5 lg:pt-5">
+        <div className="mx-auto hidden w-full max-w-[300px] gap-3 lg:grid">
+          {safeFeatures.slice(0, 4).map((item, idx) => {
+            const selected = activeIndex === idx;
+            return (
+              <button
+                key={item.title + idx}
+                type="button"
+                onClick={() => onSelect(idx)}
+                className={
+                  "group rounded-2xl border p-4 text-left backdrop-blur transition duration-300 hover:-translate-y-1 hover:scale-[1.015] hover:shadow-xl hover:shadow-cyan-950/10 active:scale-[0.99] dark:hover:shadow-black/30 " +
+                  (selected ? "border-cyan-300 bg-white/75 shadow-lg shadow-cyan-950/5 dark:border-cyan-400/40 dark:bg-white/10" : "border-gray-200 bg-white/55 hover:border-cyan-200 hover:bg-white/70 dark:border-white/10 dark:bg-transparent dark:hover:border-cyan-400/25 dark:hover:bg-cyan-400/5")
+                }
+              >
+                <div className="flex items-center gap-3">
+                  <div className={"flex h-10 w-10 items-center justify-center rounded-xl text-lg transition duration-300 group-hover:rotate-3 group-hover:scale-110 " + (selected ? theme.iconBg : "bg-gray-500/10 text-gray-400 dark:bg-transparent dark:text-gray-300")}>
+                    {item.icon || "•"}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-bold text-gray-900 dark:text-white">{item.title}</div>
+                    {item.subtitle && <div className="mt-1 truncate text-xs text-gray-400">{item.subtitle}</div>}
+                  </div>
+                  {selected ? <span className="ml-auto text-cyan-500">›</span> : null}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="group mx-auto flex max-h-[330px] min-h-[260px] w-full max-w-[640px] flex-col justify-center overflow-y-auto rounded-3xl border border-cyan-300/70 bg-white/65 p-4 shadow-xl shadow-cyan-950/10 backdrop-blur-xl transition duration-300 hover:-translate-y-1 hover:border-cyan-400 hover:bg-white/75 hover:shadow-2xl hover:shadow-cyan-950/15 dark:border-cyan-400/30 dark:bg-transparent dark:shadow-black/30 dark:hover:bg-cyan-400/[0.04] sm:min-h-[300px] sm:p-6 lg:max-h-none lg:min-h-[330px] lg:p-7">
+          <div className="mb-4 flex items-center justify-between gap-3 lg:mb-5">
+            <span className="rounded-xl bg-cyan-500/10 px-3 py-2 text-sm font-black text-cyan-700 dark:text-cyan-200">{String(Math.min(activeIndex + 1, safeFeatures.length)).padStart(2, "0")}</span>
+            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-600 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-200">
+              {generationType === "video" ? "支持视频生成链路" : "支持图片生成链路"}
+            </span>
+          </div>
+          <div className="flex items-start gap-4 lg:gap-5">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-cyan-500/10 text-2xl text-cyan-600 transition duration-300 group-hover:rotate-3 group-hover:scale-110 dark:text-cyan-200 sm:h-14 sm:w-14 lg:h-16 lg:w-16">
+              {active.icon || workflowIcon}
+            </div>
+            <div className="min-w-0">
+              <h2 className="text-lg font-black tracking-normal text-gray-900 dark:text-white sm:text-xl lg:text-2xl">{active.title}</h2>
+              <p className="mt-2 max-w-[470px] text-xs leading-6 text-gray-500 dark:text-gray-300 sm:text-sm lg:mt-4 lg:leading-7">
+                {active.subtitle || "输入商品、素材或创意需求，系统会自动理解目标场景、生成策略和输出参数。"}
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2 lg:mt-5">
+                {activeTags.map((tag) => (
+                  <span key={tag} className="rounded-lg bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-700 dark:text-cyan-200">
+                    {td("agent." + workflowCode + ".tag." + tag, tag)}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="mt-4 flex justify-center gap-2 lg:mt-5">
+            {safeFeatures.slice(0, 4).map((feature, idx) => (
+              <button
+                key={feature.title + idx}
+                type="button"
+                onClick={() => onSelect(idx)}
+                aria-label={`切换到${feature.title}`}
+                className={(idx === activeIndex ? "h-3 w-9 bg-cyan-500 shadow-md shadow-cyan-500/30" : "h-3 w-3 bg-gray-300/70 hover:bg-cyan-300 dark:bg-white/20 dark:hover:bg-cyan-300/70") + " rounded-full transition-all duration-300 hover:scale-125"}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1528,47 +1635,6 @@ function ComicSettingsSummary({ settings, onOpen }: { settings: { duration_mode:
       <span className="h-3 w-px bg-gray-200 dark:bg-white/10" />
       <span>重试 {settings.max_retry}</span>
     </button>
-  );
-}
-
-function ComicDramaFlow() {
-  const nodes = ["意图分析", "创意方向", "创作大纲", "小说创作", "剧本转换", "主体创建", "分镜规划", "主体匹配", "关键帧", "生成视频", "视频合成"];
-  return (
-    <div className="rounded-2xl border border-cyan-100 bg-white/80 p-4 shadow-sm dark:border-cyan-400/15 dark:bg-white/5">
-      <div className="mb-3 flex flex-wrap items-center gap-2 text-xs font-semibold">
-        <span className="rounded-full bg-cyan-100 px-2.5 py-1 text-cyan-700 dark:bg-cyan-400/15 dark:text-cyan-200">01 创意阶段</span>
-        <span className="rounded-full bg-violet-100 px-2.5 py-1 text-violet-700 dark:bg-violet-400/15 dark:text-violet-200">02 编剧阶段</span>
-        <span className="rounded-full bg-amber-100 px-2.5 py-1 text-amber-700 dark:bg-amber-400/15 dark:text-amber-200">03 制作阶段</span>
-      </div>
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
-        {nodes.map((node, idx) => (
-          <div key={node} className="flex min-h-14 items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 dark:border-white/10 dark:bg-gray-950/40">
-            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-cyan-500/10 text-[11px] font-semibold text-cyan-700 dark:text-cyan-200">{idx + 1}</span>
-            <span className="text-xs font-medium text-gray-700 dark:text-gray-200">{node}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ComicFeatureCards() {
-  const items = [
-    { icon: "▦", title: "多图深度融合引擎", desc: "参考图、角色设定、分镜风格统一融合" },
-    { icon: "▤", title: "全流程精细管控", desc: "从创意到分镜、关键帧、视频合成逐步推进" },
-    { icon: "⌘", title: "多主体智能适配", desc: "角色、场景、画风保持一致" },
-    { icon: "⚡", title: "一键成片引擎", desc: "自动生成分段视频并合成为最终成片" },
-  ];
-  return (
-    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-      {items.map((item, idx) => (
-        <div key={item.title} className={"rounded-2xl border bg-white/85 p-4 shadow-sm dark:bg-white/5 " + (idx === 3 ? "border-amber-200 dark:border-amber-400/25" : "border-cyan-100 dark:border-cyan-400/15")}>
-          <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-cyan-500/10 text-lg font-semibold text-cyan-700 dark:text-cyan-200">{item.icon}</div>
-          <div className="text-sm font-semibold text-gray-900 dark:text-white">{item.title}</div>
-          <p className="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-300">{item.desc}</p>
-        </div>
-      ))}
-    </div>
   );
 }
 

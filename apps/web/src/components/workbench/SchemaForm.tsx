@@ -9,6 +9,8 @@ export interface SchemaProp {
   minimum?: number;
   maximum?: number;
   widget?: string;
+  "x-placement"?: string;
+  "x-order"?: number;
 }
 
 export interface JsonSchema {
@@ -46,11 +48,18 @@ interface Props {
   values: Record<string, unknown>;
   onChange: (next: Record<string, unknown>) => void;
   layout?: "inline" | "stacked";
+  placement?: "all" | "top" | "default";
 }
 
-export function SchemaForm({ schema, values, onChange, layout = "inline" }: Props) {
+function isTopField(prop: SchemaProp) {
+  return prop["x-placement"] === "top" || prop["x-placement"] === "audio_top";
+}
+
+export function SchemaForm({ schema, values, onChange, layout = "inline", placement = "all" }: Props) {
   const props = schemaProperties(schema);
-  const entries = Object.entries(props);
+  const entries = Object.entries(props)
+    .filter(([, prop]) => placement === "all" || (placement === "top" ? isTopField(prop) : !isTopField(prop)))
+    .sort((a, b) => (a[1]["x-order"] ?? 99) - (b[1]["x-order"] ?? 99));
   if (entries.length === 0) return null;
 
   const set = (key: string, value: unknown) => onChange({ ...values, [key]: value });

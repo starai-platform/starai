@@ -178,6 +178,55 @@ body {
       linear-gradient(135deg, #080d14, #0c1320 48%, #090f18);
     background-size: 58px 58px, 58px 58px, auto, auto, auto;
   }
+  .model-workspace.workspace-surface {
+    background:
+      linear-gradient(rgba(15, 23, 42, 0.08) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(15, 23, 42, 0.08) 1px, transparent 1px),
+      radial-gradient(circle at 70% 10%, rgba(34, 211, 238, 0.22), transparent 28%),
+      radial-gradient(circle at 12% 84%, rgba(20, 184, 166, 0.16), transparent 22%),
+      #eaf7fb;
+    background-size: 40px 40px, 40px 40px, auto, auto, auto;
+  }
+  .dark .model-workspace.workspace-surface {
+    background:
+      linear-gradient(rgba(34, 211, 238, 0.08) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(34, 211, 238, 0.08) 1px, transparent 1px),
+      radial-gradient(circle at 76% 10%, rgba(20, 184, 166, 0.2), transparent 28%),
+      radial-gradient(circle at 14% 82%, rgba(6, 182, 212, 0.12), transparent 22%),
+      #05080f;
+    background-size: 40px 40px, 40px 40px, auto, auto, auto;
+  }
+  .model-workspace .soft-card,
+  .model-workspace .soft-input,
+  .model-workspace .tech-card,
+  .model-workspace .result-scan {
+    transition:
+      transform 180ms ease,
+      box-shadow 180ms ease,
+      border-color 180ms ease,
+      background-color 180ms ease;
+  }
+  .model-workspace .soft-card:hover,
+  .model-workspace .tech-card:hover {
+    transform: translateY(-2px);
+    border-color: rgb(34 211 238 / 0.32);
+    box-shadow: 0 18px 40px rgb(15 23 42 / 0.1);
+  }
+  .dark .model-workspace .soft-card:hover,
+  .dark .model-workspace .tech-card:hover {
+    border-color: rgb(34 211 238 / 0.24);
+    box-shadow: 0 18px 44px rgb(0 0 0 / 0.28);
+  }
+  @media (max-width: 640px) {
+    .model-workspace .soft-card,
+    .model-workspace .soft-input {
+      border-radius: 1.125rem;
+    }
+    .model-workspace .soft-card:hover,
+    .model-workspace .tech-card:hover {
+      transform: translateY(-1px);
+    }
+  }
 }
 
 @keyframes scan-line {

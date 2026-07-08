@@ -14,9 +14,9 @@ INSERT INTO models (
   '{
     "type":"object",
     "properties":{
-      "model_version":{"type":"string","title":"模型版本","enum":["music-2.6","music-2.6-free"],"enumLabels":{"music-2.6":"Music-2.6","music-2.6-free":"Music-2.6 Free"},"default":"music-2.6","x-order":1,"x-widget":"option_menu","x-icon":"compass","x-placement":"audio_top","x-highlight":true},
+      "model_version":{"type":"string","title":"模型版本","enum":["music-2.6","music-2.6-free"],"enumLabels":{"music-2.6":"Music-2.6","music-2.6-free":"Music-2.6 Free"},"default":"music-2.6","x-order":1,"x-widget":"option_menu","x-icon":"compass","x-placement":"top","x-highlight":true},
       "output_format":{"type":"string","title":"返回格式","enum":["hex","url"],"enumLabels":{"hex":"Hex 数据","url":"临时 URL"},"default":"hex","x-order":2,"x-widget":"option_menu","x-icon":"format"},
-      "format":{"type":"string","title":"音频格式","enum":["mp3","wav","flac"],"enumLabels":{"mp3":"MP3","wav":"WAV","flac":"FLAC"},"default":"mp3","x-order":3,"x-widget":"option_menu","x-icon":"format","x-placement":"audio_top"},
+      "format":{"type":"string","title":"音频格式","enum":["mp3","wav","flac"],"enumLabels":{"mp3":"MP3","wav":"WAV","flac":"FLAC"},"default":"mp3","x-order":3,"x-widget":"option_menu","x-icon":"format","x-placement":"top"},
       "sample_rate":{"type":"number","title":"采样率","enum":[32000,44100],"enumLabels":{"32000":"32000 Hz","44100":"44100 Hz"},"default":44100,"x-order":4,"x-widget":"option_menu","x-icon":"audio"},
       "bitrate":{"type":"number","title":"码率","enum":[128000,256000,320000],"enumLabels":{"128000":"128 kbps","256000":"256 kbps","320000":"320 kbps"},"default":256000,"x-order":5,"x-widget":"option_menu","x-icon":"bitrate"},
       "is_instrumental":{"type":"boolean","title":"纯音乐","default":false,"x-order":6,"x-widget":"boolean_toggle","x-icon":"mode"},

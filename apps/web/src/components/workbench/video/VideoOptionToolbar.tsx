@@ -5,6 +5,7 @@ import { Clock, Grid3X3, Monitor, Sparkles, Target, Wand2 } from "lucide-react";
 import {
   DEFAULT_VIDEO_COUNT_OPTIONS,
   enumLabel,
+  isTopPlacementField,
   parseCountOptions,
   schemaFieldEntries,
   type SchemaFieldMeta,
@@ -242,7 +243,27 @@ export function VideoOptionToolbar({
 }) {
   const { t } = useI18n();
   const set = (key: string, val: unknown) => onChange({ ...values, [key]: val });
-  const entries = schemaFieldEntries(schema);
+  const entries = schemaFieldEntries(schema).filter(([, prop]) => !isTopPlacementField(prop));
+  if (entries.length === 0) return null;
+  return <>{entries.map(([key, prop]) => <span key={key}>{renderFieldControl(key, prop, values[key], set, t, videoConfig, countUnit)}</span>)}</>;
+}
+
+export function VideoTopControls({
+  schema,
+  values,
+  onChange,
+  videoConfig,
+  countUnit,
+}: {
+  schema: unknown;
+  values: Record<string, unknown>;
+  onChange: (next: Record<string, unknown>) => void;
+  videoConfig?: VideoRuntimeConfig;
+  countUnit?: string;
+}) {
+  const { t } = useI18n();
+  const set = (key: string, val: unknown) => onChange({ ...values, [key]: val });
+  const entries = schemaFieldEntries(schema).filter(([, prop]) => isTopPlacementField(prop));
   if (entries.length === 0) return null;
   return <>{entries.map(([key, prop]) => <span key={key}>{renderFieldControl(key, prop, values[key], set, t, videoConfig, countUnit)}</span>)}</>;
 }

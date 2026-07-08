@@ -41,7 +41,7 @@ import { PricingModal } from "@/components/workbench/PricingModal";
 import { AudioOptionToolbar, AudioTopControls } from "./audio/AudioOptionToolbar";
 import { AudioUploadButton } from "./audio/AudioUploadButton";
 import { VideoUploadArea } from "./video/VideoUploadArea";
-import { VideoOptionToolbar } from "./video/VideoOptionToolbar";
+import { VideoOptionToolbar, VideoTopControls } from "./video/VideoOptionToolbar";
 import { ImageGenerationToolbar, buildImageGenerationParams, normalizeTier } from "./ImageGenerationToolbar";
 import { GenerationLanguageMenu, buildLanguageParams, useGenerationLanguages } from "./GenerationLanguageMenu";
 
@@ -1510,9 +1510,9 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
   const badgeBottom = "bottom-28 lg:bottom-20";
 
   return (
-    <div className="workspace-surface flex flex-col h-full min-h-0">
+    <div className="model-workspace workspace-surface flex flex-col h-full min-h-0">
       {onOpenModelPicker && (
-        <div className="lg:hidden flex items-center gap-2 px-3 py-2.5 bg-white border-b border-gray-100 shrink-0 dark:bg-gray-900 dark:border-white/10">
+        <div className="lg:hidden flex items-center gap-2 px-3 py-2 bg-white/70 border-b border-white/60 shrink-0 backdrop-blur-xl dark:bg-white/[0.04] dark:border-white/10">
           <button
             type="button"
             onClick={onOpenModelPicker}
@@ -1538,7 +1538,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
         </div>
       )}
       {/* Top action bar */}
-      <div className="flex items-center justify-between gap-2 px-3 sm:px-5 py-1.5 sm:py-3 max-lg:border-b max-lg:border-gray-100/80 shrink-0 flex-wrap dark:border-white/10">
+      <div className="flex items-center justify-between gap-2 px-3 sm:px-5 py-1.5 sm:py-3 max-lg:border-b max-lg:border-white/60 shrink-0 flex-wrap bg-white/35 backdrop-blur-xl dark:bg-white/[0.02] dark:border-white/10">
         <div className="flex items-center gap-2 sm:gap-3 min-w-0">
           <button
             onClick={() => {
@@ -1659,12 +1659,12 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
       </div>
 
       {/* Scrollable main */}
-      <div className={`flex-1 px-4 sm:px-5 w-full ${hasConversation ? "overflow-y-auto pb-6" : "overflow-y-auto max-lg:overflow-y-auto pb-3"} min-h-0`}>
+      <div className={`flex-1 px-3 sm:px-5 w-full ${hasConversation ? "overflow-y-auto pb-5 sm:pb-6" : "overflow-y-auto max-lg:overflow-y-auto pb-2 sm:pb-3"} min-h-0`}>
         {messages.length === 0 && !taskOutput && !taskStatus ? (
-          <div className="min-h-full flex flex-col justify-center max-lg:justify-start max-lg:py-4">
-            <div className="w-full max-lg:pt-1">
+          <div className="min-h-full flex flex-col justify-center max-lg:justify-start max-lg:py-3">
+            <div className="w-full max-lg:pt-0">
               {/* Hero banner */}
-              <div className={clsx("soft-card w-full max-w-[980px] mx-auto p-4 sm:p-10 text-center mb-3 max-lg:mb-5", (isImage || isVideo) && "tech-card")}>
+              <div className={clsx("soft-card w-full max-w-[980px] mx-auto p-4 sm:p-10 text-center mb-3 max-lg:mb-3", (isImage || isVideo) && "tech-card")}>
                 <div className="tech-icon w-10 h-10 sm:w-14 sm:h-14 rounded-xl sm:rounded-2xl bg-white border border-gray-100 flex items-center justify-center text-xl sm:text-2xl mx-auto mb-3 sm:mb-4 overflow-hidden shadow-sm dark:bg-white/10 dark:border-white/10">
                   {model.icon_url ? (
                     // eslint-disable-next-line @next/next/no-img-element
@@ -1692,7 +1692,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
               </div>
 
               {(isImage || isVideo) && (
-                <div className="mx-auto mb-3 flex w-full max-w-[980px] justify-center max-lg:mb-4">
+                <div className="mx-auto mb-3 flex w-full max-w-[980px] justify-center max-lg:mb-3">
                   <div className="input-status-line">
                     <span className="typing-status-text">
                       {isVideo ? t("workspace.waitVideoInput") : t("workspace.waitImageInput")}
@@ -1706,7 +1706,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
 
               {/* Feature grid (multi-collab only) */}
               {isMultiCollab && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3 w-full max-w-[980px] mx-auto max-lg:mb-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3 w-full max-w-[980px] mx-auto max-lg:mb-1">
                   {(homeCards.length ? homeCards : []).map((f) => {
                     const title = td(`homeCard.${f.key}.title`, f.title);
                     const description = td(`homeCard.${f.key}.description`, f.description || "");
@@ -1924,7 +1924,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
       </div>
 
       {/* Input section */}
-      <div className="shrink-0 px-3 sm:px-5 pt-2 max-lg:pt-3 pb-6 sm:pb-6 max-lg:pb-8">
+      <div className="shrink-0 px-3 sm:px-5 pt-2 max-lg:pt-2 pb-4 sm:pb-6 max-lg:pb-4">
         <div className="w-full max-w-[980px] mx-auto">
           <div className="flex items-center justify-between text-xs text-gray-400 mb-2 px-1">
             <div className="flex items-center gap-1.5">
@@ -1941,6 +1941,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                 <div className="flex items-center gap-2 sm:gap-3">
                   <div className="flex-1 min-w-0 flex flex-wrap items-center gap-1.5 sm:gap-2">
                     <ChatTopTools value={bottom} onChange={setBottom} />
+                    <SchemaForm schema={model.input_schema} values={params} onChange={setParams} placement="top" />
                     {isMultiCollab && (
                       <div className="flex lg:hidden items-center gap-1 h-9 shrink-0">
                         {/* compact collaborator logos */}
@@ -1965,7 +1966,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                 {isImage ? (
                   <div className="flex flex-col gap-2.5">
                     <div className="flex items-center gap-2 sm:gap-3">
-                      <div className="flex-1 min-w-0">
+                      <div className="flex flex-1 min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
                         <ChatTopTools
                           value={bottom}
                           onChange={setBottom}
@@ -1975,6 +1976,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                           onReferenceImagesChange={setRefImages}
                           maxReferenceImages={maxRefImages}
                         />
+                        <SchemaForm schema={model.input_schema} values={params} onChange={setParams} placement="top" />
                       </div>
                       <InputToolbarMeta
                         onPricing={() => setPricingOpen(true)}
@@ -2024,7 +2026,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                 ) : isVideo ? (
                   <div className="flex flex-col gap-2.5">
                     <div className="flex items-center gap-2 sm:gap-3">
-                      <div className="flex-1 min-w-0">
+                      <div className="flex flex-1 min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
                         <ChatTopTools
                           value={bottom}
                           onChange={setBottom}
@@ -2035,6 +2037,12 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                             setVideoMedia((prev) => ({ ...prev, reference_images: imgs }))
                           }
                           maxReferenceImages={maxVideoAssetRefs}
+                        />
+                        <VideoTopControls
+                          schema={model.input_schema}
+                          values={params}
+                          onChange={setParams}
+                          videoConfig={videoConfig}
                         />
                       </div>
                       <InputToolbarMeta
@@ -2075,8 +2083,9 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                   </div>
                 ) : (
                   <>
+                    <SchemaForm schema={model.input_schema} values={params} onChange={setParams} placement="top" />
                     {hasSchemaFields && (
-                      <SchemaForm schema={model.input_schema} values={params} onChange={setParams} />
+                      <SchemaForm schema={model.input_schema} values={params} onChange={setParams} placement="default" />
                     )}
                     <div className="flex items-center gap-2 flex-wrap">
                       {refImages.map((img, i) => (

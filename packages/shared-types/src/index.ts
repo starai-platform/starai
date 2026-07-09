@@ -1,5 +1,7 @@
 ﻿export interface User {
   public_id: string;
+  email?: string;
+  auth_provider?: 'email' | 'google' | 'github' | string;
   nickname: string;
   avatar_url?: string;
   user_level: string;
@@ -1137,4 +1139,3 @@ export interface OperationLog {
 
 export * from "./videoModel";
 export * from "./audioModel";
-

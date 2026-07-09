@@ -47,6 +47,17 @@ export default function SettingsPage() {
 
   const loadTokens = () => api<{ items: ApiToken[] }>("/api/api-tokens").then((r) => setTokens(r.items || []));
 
+  const loginMethodLabel = (provider?: string) => {
+    switch ((provider || "email").toLowerCase()) {
+      case "google":
+        return "谷歌";
+      case "github":
+        return "GitHub";
+      default:
+        return "注册用户";
+    }
+  };
+
   const maskToken = (token?: string, prefix?: string) => {
     if (token) return `${token.slice(0, 14)}${"•".repeat(18)}${token.slice(-6)}`;
     return `${prefix || "sk-starai-"}${"•".repeat(10)}`;
@@ -154,9 +165,11 @@ export default function SettingsPage() {
       <section className="soft-card p-6 mb-6">
         <h2 className="font-semibold mb-4">{t("settings.profile")}</h2>
         <form onSubmit={saveProfile} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="md:col-span-2">
-            <label className="block text-sm text-gray-500 mb-1">{t("settings.accountId")}</label>
-            <div className="text-sm font-mono text-gray-700">{profile?.public_id || "—"}</div>
+          <div className="md:col-span-2 grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-1 rounded-2xl border border-gray-100 bg-gray-50/70 p-4 dark:border-white/10 dark:bg-white/5 sm:grid-cols-2">
+            <div className="text-sm text-gray-500">{t("settings.accountId")}</div>
+            <div className="text-right text-sm font-medium text-gray-800 dark:text-gray-100">{loginMethodLabel(profile?.auth_provider)}</div>
+            <div className="min-w-0 truncate font-mono text-sm text-gray-700 dark:text-gray-200" title={profile?.public_id || ""}>{profile?.public_id || "—"}</div>
+            <div className="min-w-0 truncate text-right text-sm text-gray-700 dark:text-gray-200" title={profile?.email || ""}>{profile?.email || "—"}</div>
           </div>
           <div>
             <label className="block text-sm text-gray-500 mb-1">{t("settings.nickname")}</label>

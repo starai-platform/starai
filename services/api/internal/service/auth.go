@@ -39,6 +39,8 @@ type AuthResult struct {
 
 type UserProfile struct {
 	PublicID       string  `json:"public_id"`
+	Email          string  `json:"email,omitempty"`
+	AuthProvider   string  `json:"auth_provider,omitempty"`
 	Nickname       string  `json:"nickname"`
 	Avatar         *string `json:"avatar_url,omitempty"`
 	Level          string  `json:"user_level"`
@@ -287,6 +289,34 @@ func (s *AuthService) GetMe(ctx context.Context, userID int64) (*UserProfile, er
 		return nil, err
 	}
 	p.Avatar = avatar
+
+	rows, err := s.db.Query(ctx, `SELECT provider, identifier FROM auth_identities WHERE user_id=$1 ORDER BY provider`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	providers := map[string]bool{}
+	for rows.Next() {
+		var provider, identifier string
+		if err := rows.Scan(&provider, &identifier); err != nil {
+			return nil, err
+		}
+		providers[provider] = true
+		if provider == "email" && p.Email == "" {
+			p.Email = identifier
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	switch {
+	case providers["google"]:
+		p.AuthProvider = "google"
+	case providers["github"]:
+		p.AuthProvider = "github"
+	default:
+		p.AuthProvider = "email"
+	}
 	return &p, nil
 }
 

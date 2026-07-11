@@ -1,0 +1,54 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: |
+            services/api/go.sum
+            services/worker/go.sum
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify migration pairs
+        run: node scripts/verify-migrations.js
+
+      - name: Test and vet API
+        working-directory: services/api
+        run: |
+          go test ./...
+          go vet ./...
+
+      - name: Test and vet Worker
+        working-directory: services/worker
+        run: |
+          go test ./...
+          go vet ./...
+
+      - name: Lint frontend
+        run: pnpm -r lint
+
+      - name: Build frontend
+        run: |
+          pnpm build:web
+          pnpm build:admin

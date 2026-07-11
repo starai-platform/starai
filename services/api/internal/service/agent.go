@@ -163,6 +163,8 @@ type ComicDramaProjectDTO struct {
 	Quality               string                 `json:"quality"`
 	LastWorkflowProjectID string                 `json:"last_workflow_project_id,omitempty"`
 	LastWorkflowStatus    string                 `json:"last_workflow_status,omitempty"`
+	Archived              bool                   `json:"archived"`
+	ArchivedAt            *string                `json:"archived_at,omitempty"`
 	CreatedAt             string                 `json:"created_at"`
 	UpdatedAt             string                 `json:"updated_at"`
 }
@@ -410,14 +412,18 @@ func (s *AgentService) comicDramaRuntimeConfigByCode(ctx context.Context, code s
 	return cfg
 }
 
-func (s *AgentService) ListComicDramaProjects(ctx context.Context, userID int64) ([]ComicDramaProjectDTO, error) {
+func (s *AgentService) ListComicDramaProjects(ctx context.Context, userID int64, includeArchived bool) ([]ComicDramaProjectDTO, error) {
+	archiveFilter := "AND p.archived_at IS NULL"
+	if includeArchived {
+		archiveFilter = ""
+	}
 	rows, err := s.db.Query(ctx, `
 		SELECT p.public_id, p.workflow_code, p.name, p.description, p.cover_url, p.style_snapshot, COALESCE(s.public_id,''), p.orientation, p.quality,
-		       COALESCE(wp.public_id,''), COALESCE(wp.status,''), p.created_at, p.updated_at
+		       COALESCE(wp.public_id,''), COALESCE(wp.status,''), p.archived_at, p.created_at, p.updated_at
 		FROM comic_drama_projects p
 		LEFT JOIN comic_drama_styles s ON s.id = p.style_id
 		LEFT JOIN workflow_projects wp ON wp.id = p.last_workflow_project_id
-		WHERE p.user_id=$1
+		WHERE p.user_id=$1 `+archiveFilter+`
 		ORDER BY p.updated_at DESC, p.created_at DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -437,7 +443,7 @@ func (s *AgentService) ListComicDramaProjects(ctx context.Context, userID int64)
 func (s *AgentService) GetComicDramaProject(ctx context.Context, userID int64, publicID string) (*ComicDramaProjectDTO, error) {
 	row := s.db.QueryRow(ctx, `
 		SELECT p.public_id, p.workflow_code, p.name, p.description, p.cover_url, p.style_snapshot, COALESCE(s.public_id,''), p.orientation, p.quality,
-		       COALESCE(wp.public_id,''), COALESCE(wp.status,''), p.created_at, p.updated_at
+		       COALESCE(wp.public_id,''), COALESCE(wp.status,''), p.archived_at, p.created_at, p.updated_at
 		FROM comic_drama_projects p
 		LEFT JOIN comic_drama_styles s ON s.id = p.style_id
 		LEFT JOIN workflow_projects wp ON wp.id = p.last_workflow_project_id
@@ -513,6 +519,60 @@ func (s *AgentService) UpdateComicDramaProject(ctx context.Context, userID int64
 	return s.GetComicDramaProject(ctx, userID, publicID)
 }
 
+func (s *AgentService) ArchiveComicDramaProject(ctx context.Context, userID int64, publicID string, archived bool) error {
+	var value interface{}
+	if archived {
+		value = time.Now()
+	}
+	tag, err := s.db.Exec(ctx, `UPDATE comic_drama_projects SET archived_at=$1, updated_at=now() WHERE public_id=$2 AND user_id=$3`, value, publicID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+func (s *AgentService) DeleteComicDramaProject(ctx context.Context, userID int64, publicID string) error {
+	tag, err := s.db.Exec(ctx, `
+		DELETE FROM comic_drama_projects p
+		WHERE p.public_id=$1 AND p.user_id=$2
+		  AND NOT EXISTS (
+		    SELECT 1 FROM workflow_projects wp
+		    WHERE wp.id=p.last_workflow_project_id AND wp.status IN ('pending','running','waiting_confirm')
+		  )`, publicID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errors.New("项目不存在或仍有任务正在执行")
+	}
+	return nil
+}
+
+func (s *AgentService) CloneComicDramaProject(ctx context.Context, userID int64, publicID string) (*ComicDramaProjectDTO, error) {
+	project, err := s.GetComicDramaProject(ctx, userID, publicID)
+	if err != nil {
+		return nil, err
+	}
+	return s.CreateComicDramaProject(ctx, userID, ComicDramaProjectInput{
+		Name: project.Name + " 副本", Description: project.Description, CoverURL: project.CoverURL,
+		StyleID: project.StyleID, Orientation: project.Orientation, Quality: project.Quality, WorkflowCode: project.WorkflowCode,
+	})
+}
+
+func (s *AgentService) DeleteComicDramaStyle(ctx context.Context, userID int64, publicID string) error {
+	tag, err := s.db.Exec(ctx, `DELETE FROM comic_drama_styles WHERE public_id=$1 AND user_id=$2 AND source='user'`, publicID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errors.New("自定义风格不存在或不可删除")
+	}
+	return nil
+}
+
 func (s *AgentService) attachWorkflowToComicProject(ctx context.Context, userID, workflowProjectID int64, inputs map[string]interface{}) {
 	publicID := stringValue(inputs["comic_project_id"])
 	if publicID == "" {
@@ -525,7 +585,8 @@ func scanComicDramaProject(row pgx.Row) (*ComicDramaProjectDTO, error) {
 	var item ComicDramaProjectDTO
 	var styleRaw []byte
 	var created, updated time.Time
-	if err := row.Scan(&item.PublicID, &item.WorkflowCode, &item.Name, &item.Description, &item.CoverURL, &styleRaw, &item.StyleID, &item.Orientation, &item.Quality, &item.LastWorkflowProjectID, &item.LastWorkflowStatus, &created, &updated); err != nil {
+	var archivedAt *time.Time
+	if err := row.Scan(&item.PublicID, &item.WorkflowCode, &item.Name, &item.Description, &item.CoverURL, &styleRaw, &item.StyleID, &item.Orientation, &item.Quality, &item.LastWorkflowProjectID, &item.LastWorkflowStatus, &archivedAt, &created, &updated); err != nil {
 		return nil, err
 	}
 	_ = json.Unmarshal(styleRaw, &item.Style)
@@ -534,6 +595,11 @@ func scanComicDramaProject(row pgx.Row) (*ComicDramaProjectDTO, error) {
 	}
 	item.CreatedAt = created.Format(time.RFC3339)
 	item.UpdatedAt = updated.Format(time.RFC3339)
+	item.Archived = archivedAt != nil
+	if archivedAt != nil {
+		value := archivedAt.Format(time.RFC3339)
+		item.ArchivedAt = &value
+	}
 	return &item, nil
 }
 
@@ -775,9 +841,118 @@ func (s *AgentService) RetryProject(ctx context.Context, userID int64, publicID 
 		}
 		return err
 	}
-	s.db.Exec(ctx, `UPDATE workflow_projects SET status='pending', error_message=NULL, updated_at=now() WHERE id=$1`, projectID)
-	s.db.Exec(ctx, `DELETE FROM workflow_node_runs WHERE project_id=$1`, projectID)
-	return queue.EnqueueWorkflowTask(s.queue, queue.WorkflowTaskPayload{ProjectID: projectID, UserID: userID})
+	if _, err := s.db.Exec(ctx, `UPDATE workflow_projects SET status='pending', error_message=NULL, finished_at=NULL, updated_at=now() WHERE id=$1`, projectID); err != nil {
+		_ = s.billing.Unfreeze(ctx, userID, estimated, "workflow", publicID)
+		return err
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM workflow_node_runs WHERE project_id=$1`, projectID); err != nil {
+		_ = s.billing.Unfreeze(ctx, userID, estimated, "workflow", publicID)
+		return err
+	}
+	if err := queue.EnqueueWorkflowTask(s.queue, queue.WorkflowTaskPayload{ProjectID: projectID, UserID: userID}); err != nil {
+		_, _ = s.db.Exec(ctx, `UPDATE workflow_projects SET status='failed', error_message='重试入队失败', finished_at=now(), updated_at=now() WHERE id=$1`, projectID)
+		_ = s.billing.Unfreeze(ctx, userID, estimated, "workflow", publicID)
+		return err
+	}
+	return nil
+}
+
+func (s *AgentService) RetryProjectNode(ctx context.Context, userID int64, publicID, nodeID string) error {
+	nodeID = strings.TrimSpace(nodeID)
+	allowed := map[string]bool{"comic_plan": true, "keyframes": true, "video_segments": true, "compose": true, "generate": true}
+	if !allowed[nodeID] {
+		return errors.New("该节点不支持单独重试")
+	}
+	var projectID int64
+	var status string
+	var raw []byte
+	if err := s.db.QueryRow(ctx, `SELECT id, status, outputs FROM workflow_projects WHERE public_id=$1 AND user_id=$2`, publicID, userID).Scan(&projectID, &status, &raw); err != nil {
+		return err
+	}
+	if status != "failed" {
+		return errors.New("仅失败的项目可重试节点")
+	}
+	var failed bool
+	if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workflow_node_runs WHERE project_id=$1 AND node_id=$2 AND status='failed')`, projectID, nodeID).Scan(&failed); err != nil {
+		return err
+	}
+	if !failed && nodeID != "compose" {
+		return errors.New("未找到失败的节点记录")
+	}
+	outputs := map[string]interface{}{}
+	_ = json.Unmarshal(raw, &outputs)
+	pruneWorkflowOutputsForRetry(outputs, nodeID)
+	if _, err := s.db.Exec(ctx, `UPDATE workflow_projects SET outputs=$1, updated_at=now() WHERE id=$2`, mustAgentJSON(outputs), projectID); err != nil {
+		return err
+	}
+	return s.RetryProject(ctx, userID, publicID)
+}
+
+func (s *AgentService) ReplaceComicProjectMedia(ctx context.Context, userID int64, publicID, kind string, index int, rawURL string) error {
+	if kind != "keyframes" && kind != "segments" {
+		return errors.New("素材类型无效")
+	}
+	var projectID int64
+	var status string
+	var raw []byte
+	if err := s.db.QueryRow(ctx, `SELECT id, status, outputs FROM workflow_projects WHERE public_id=$1 AND user_id=$2`, publicID, userID).Scan(&projectID, &status, &raw); err != nil {
+		return err
+	}
+	if status != "failed" && status != "waiting_confirm" {
+		return errors.New("仅失败或待确认项目可替换素材")
+	}
+	outputs := map[string]interface{}{}
+	_ = json.Unmarshal(raw, &outputs)
+	items, ok := outputs[kind].([]interface{})
+	if !ok || index >= len(items) {
+		return errors.New("素材序号不存在")
+	}
+	item, ok := items[index].(map[string]interface{})
+	if !ok {
+		return errors.New("素材数据格式无效")
+	}
+	field := "image_url"
+	if kind == "segments" {
+		field = "video_url"
+	}
+	item[field] = strings.TrimSpace(rawURL)
+	item["manual_replacement"] = true
+	item["status"] = "succeeded"
+	items[index] = item
+	outputs[kind] = items
+	if comic, ok := outputs["comic_drama"].(map[string]interface{}); ok {
+		comic[kind] = items
+		outputs["comic_drama"] = comic
+	}
+	_, err := s.db.Exec(ctx, `UPDATE workflow_projects SET outputs=$1, updated_at=now() WHERE id=$2`, mustAgentJSON(outputs), projectID)
+	return err
+}
+
+func pruneWorkflowOutputsForRetry(outputs map[string]interface{}, nodeID string) {
+	switch nodeID {
+	case "comic_plan":
+		for _, key := range []string{"comic_drama", "analysis", "keyframes", "segments", "final_video_url", "thumbnail", "media_tasks", "current_step"} {
+			delete(outputs, key)
+		}
+	case "keyframes":
+		for _, key := range []string{"keyframes", "segments", "final_video_url", "thumbnail", "media_tasks"} {
+			delete(outputs, key)
+		}
+		outputs["current_step"] = "keyframes"
+	case "video_segments":
+		for _, key := range []string{"segments", "final_video_url", "thumbnail", "media_tasks"} {
+			delete(outputs, key)
+		}
+		outputs["current_step"] = "video_segments"
+	case "compose":
+		for _, key := range []string{"final_video_url", "thumbnail", "media_tasks"} {
+			delete(outputs, key)
+		}
+		outputs["current_step"] = "compose"
+	case "generate":
+		delete(outputs, "media_tasks")
+		outputs["current_step"] = "generate"
+	}
 }
 
 // ---------- admin ----------

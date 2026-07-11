@@ -42,19 +42,54 @@ interface TranslationImportStats {
 interface ConfigItem {
   key: string;
   label: string;
-  type: "text" | "number" | "checkbox" | "password" | "textarea";
+  type: "text" | "number" | "checkbox" | "password" | "textarea" | "select";
   hint?: string;
+  options?: { value: string; label: string }[];
 }
 
 const BASE_ITEMS: ConfigItem[] = [
   { key: "payment_enabled", label: "在线支付", type: "checkbox" },
   { key: "card_recharge_enabled", label: "卡密充值", type: "checkbox" },
+  { key: "payment_provider", label: "支付渠道", type: "select", options: [
+    { value: "disabled", label: "关闭" },
+    { value: "stripe", label: "Stripe Checkout" },
+    { value: "paypal", label: "PayPal Checkout" },
+    { value: "generic", label: "通用 HMAC 网关" },
+  ], hint: "先保存并验证渠道参数，最后再开启在线支付。" },
+  { key: "payment_currency", label: "收款币种", type: "text", hint: "三位 ISO 币种代码，例如 USD、EUR、JPY。必须与支付商账户支持的币种一致。" },
+  { key: "payment_product_name", label: "支付商品名称", type: "text", hint: "显示在 Stripe / PayPal 收银台，例如 StarAI Credits。" },
+  { key: "payment_success_url", label: "支付成功返回地址", type: "text", hint: "必须是完整 http(s) 地址，可使用 {order_no}，例如 https://example.com/app/wallet?payment=success&order={order_no}" },
+  { key: "payment_cancel_url", label: "取消支付返回地址", type: "text", hint: "必须是完整 http(s) 地址，例如 https://example.com/app/wallet?payment=cancel" },
+  { key: "payment_checkout_url_template", label: "收银台 URL 模板", type: "text", hint: "必须包含 {order_no}，可选使用 {amount}，例如 https://pay.example.com/checkout?order={order_no}&amount={amount}" },
+  { key: "payment_webhook_secret", label: "支付回调密钥", type: "password", hint: "至少 16 位随机字符。网关回调需提供 X-Payment-Timestamp 和 X-Payment-Signature。" },
+  { key: "stripe_secret_key", label: "Stripe Secret Key", type: "password", hint: "Stripe 后台的 sk_test_ / sk_live_ 密钥；建议先使用测试模式。" },
+  { key: "stripe_webhook_secret", label: "Stripe Webhook Secret", type: "password", hint: "为 /api/payment/webhooks/stripe 创建 endpoint 后获得的 whsec_ 密钥。" },
+  { key: "paypal_mode", label: "PayPal 环境", type: "select", options: [{ value: "sandbox", label: "Sandbox 测试" }, { value: "live", label: "Live 正式" }] },
+  { key: "paypal_client_id", label: "PayPal Client ID", type: "password" },
+  { key: "paypal_client_secret", label: "PayPal Client Secret", type: "password" },
+  { key: "paypal_webhook_id", label: "PayPal Webhook ID", type: "password", hint: "不是 URL。为 /api/payment/webhooks/paypal 创建 webhook 后获得的 ID。" },
+  { key: "paypal_brand_name", label: "PayPal 收银台品牌名", type: "text" },
+  { key: "payment_order_expire_minutes", label: "订单有效期（分钟）", type: "number", hint: "允许 5–1440 分钟，默认 30 分钟。" },
+  { key: "payment_min_amount", label: "最低充值金额", type: "number" },
+  { key: "payment_max_amount", label: "最高充值金额", type: "number" },
 ];
 
 const MEMBER_ITEMS: ConfigItem[] = [
   { key: "site_base_url", label: "前台站点地址", type: "text", hint: "OAuth 登录完成后的前台地址，例如 https://starai.example.com" },
   { key: "signup_bonus", label: "注册赠送算力", type: "number", hint: "新用户注册赠送的算力，0 表示不赠送。" },
   { key: "image_captcha_enabled", label: "启用图形验证码", type: "checkbox", hint: "关闭后，前台登录和注册/邮箱验证码获取不再显示或校验图形验证码。" },
+];
+
+const SAFETY_ITEMS: ConfigItem[] = [
+  { key: "content_safety_enabled", label: "启用平台关键词拦截", type: "checkbox", hint: "默认关闭。启用后在请求发送至上游模型前检查用户文本。" },
+  { key: "content_safety_blocked_terms", label: "拦截词表（JSON 数组）", type: "textarea", hint: '例如 ["词条一", "词条二"]。系统只记录命中词的 SHA-256，不保存被拦截的用户原文。' },
+];
+
+const DYNAMIC_I18N_ITEMS: ConfigItem[] = [
+  { key: "i18n_source_locale", label: "动态内容源语言", type: "text", hint: "模型和工作流后台原文使用的语言，默认 zh-CN。" },
+  { key: "i18n_target_locales", label: "自动生成目标语言（JSON 数组）", type: "textarea", hint: '["en-US","ja-JP","ko-KR","vi-VN"]' },
+  { key: "i18n_translation_model_code", label: "自动翻译模型编码", type: "text", hint: "填写已启用的对话模型 code。留空时只生成待翻译记录。" },
+  { key: "i18n_auto_translate_enabled", label: "模型/工作流保存后自动翻译", type: "checkbox", hint: "开启后只翻译新增或原文发生变化的字段，不会重复翻译未变化内容。" },
 ];
 
 const STORAGE_ITEMS: ConfigItem[] = [
@@ -251,6 +286,8 @@ export default function SystemConfigPage() {
   const [translationMsg, setTranslationMsg] = useState("");
   const [translationSaving, setTranslationSaving] = useState(false);
   const [translationFilling, setTranslationFilling] = useState(false);
+  const [translationAI, setTranslationAI] = useState(false);
+  const [translationModelTesting, setTranslationModelTesting] = useState(false);
   const [translationSourceLabels, setTranslationSourceLabels] = useState<TranslationSourceLabels>({});
   const [versionOpen, setVersionOpen] = useState(false);
   const [appVersion, setAppVersion] = useState("");
@@ -466,6 +503,37 @@ export default function SystemConfigPage() {
     }
   };
 
+  const autoTranslateUI = async () => {
+    const locale = translationLocale || "en-US";
+    if (locale === "zh-CN") { setTranslationErr("中文是源语言，不需要生成中文译文"); return; }
+    const modelCode = String(configs.i18n_translation_model_code || "").trim();
+    if (!modelCode) { setTranslationErr("请先在模型与工作流自动翻译中填写翻译模型编码"); return; }
+    setTranslationAI(true); setTranslationErr(""); setTranslationMsg("");
+    try {
+      const dynamicLabels = await loadDynamicTranslationLabels();
+      const keys = Array.from(new Set<string>([...UI_TRANSLATION_KEYS, ...Object.keys(dynamicLabels), ...Object.keys(translationSourceLabels)]));
+      const items = keys.map((key) => ({ key, source_text: dynamicLabels[key] || translationSourceLabels[key] || zhLabelForTranslationKey(key) })).filter((item) => item.source_text && item.source_text !== item.key);
+      const result = await adminApi<{ generated: number; skipped: number; missing: number; translations: Record<string, string> }>("/ui-translations/auto-translate", {
+        method: "POST", body: JSON.stringify({ locale, model_code: modelCode, items }),
+      });
+      const generatedRows = Object.entries(result.translations || {}).map(([key, value]) => ({ locale, key, value, enabled: true }));
+      setTranslationRows((current) => mergeTranslationRows(current, generatedRows));
+      setTranslationMsg(`AI 已生成 ${result.generated} 条，保留已有翻译 ${result.skipped} 条，仍缺失 ${result.missing} 条；结果已自动保存。`);
+    } catch (err) { setTranslationErr(err instanceof Error ? err.message : "AI 生成 UI 翻译失败"); }
+    finally { setTranslationAI(false); }
+  };
+
+  const testTranslationModel = async () => {
+    const modelCode = String(configs.i18n_translation_model_code || "").trim();
+    if (!modelCode) { setSaveErr("请先填写自动翻译模型编码"); return; }
+    setTranslationModelTesting(true); setSaveErr(""); setSaveMsg("");
+    try {
+      const result = await adminApi<{ translation: string }>("/content-translations/test-model", { method: "POST", body: JSON.stringify({ model_code: modelCode }) });
+      setSaveMsg(`翻译模型连接正常：${result.translation}`);
+    } catch (err) { setSaveErr(err instanceof Error ? err.message : "翻译模型测试失败"); }
+    finally { setTranslationModelTesting(false); }
+  };
+
   const exportTranslations = () => {
     const targetLocale = translationLocale || "en-US";
     const sourceRows = translationRows.filter((row) => row.locale === targetLocale);
@@ -530,6 +598,13 @@ export default function SystemConfigPage() {
   const storageProvider = String(configs.storage_provider ?? "local");
   const storagePreset = STORAGE_PRESETS.find((p) => p.value === storageProvider) || STORAGE_PRESETS[0];
   const storageUsesEnv = storageProvider === "local" || storageProvider === "minio";
+  const activePaymentProvider = String(configs.payment_provider ?? "disabled").toLowerCase();
+  const visiblePaymentItems = BASE_ITEMS.filter((item) => {
+    if (item.key.startsWith("stripe_")) return activePaymentProvider === "stripe";
+    if (item.key.startsWith("paypal_")) return activePaymentProvider === "paypal";
+    if (item.key === "payment_checkout_url_template" || item.key === "payment_webhook_secret") return activePaymentProvider === "generic";
+    return true;
+  });
 
   const setField = (key: string, value: unknown) => {
     setConfigs((prev) => ({ ...prev, [key]: value }));
@@ -580,9 +655,17 @@ export default function SystemConfigPage() {
           <input type="checkbox" checked={!!configs[item.key]} onChange={(e) => setField(item.key, e.target.checked)} className="rounded" />
           <span className="text-sm text-gray-700">启用</span>
         </label>
+      ) : item.type === "select" ? (
+        <select
+          value={String(configs[item.key] ?? "")}
+          onChange={(e) => setField(item.key, e.target.value)}
+          className="mt-1 w-full rounded-lg border bg-white px-3 py-2 text-sm focus:border-primary focus:outline-none"
+        >
+          {(item.options || []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
       ) : item.type === "textarea" ? (
         <textarea
-          value={String(configs[item.key] ?? "")}
+          value={Array.isArray(configs[item.key]) ? JSON.stringify(configs[item.key], null, 2) : String(configs[item.key] ?? "")}
           onChange={(e) => setField(item.key, e.target.value)}
           className="mt-1 min-h-40 w-full rounded-lg border px-3 py-2 text-sm leading-6 focus:border-primary focus:outline-none"
         />
@@ -823,6 +906,9 @@ export default function SystemConfigPage() {
                 <input value={translationSearch} onChange={(e) => setTranslationSearch(e.target.value)} placeholder="搜索 key / 翻译内容" className="min-w-[220px] flex-1 rounded-xl border px-3 py-2 text-sm" />
                 <button type="button" disabled={translationFilling} onClick={fillMissingTranslationKeys} className="rounded-xl border px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50">
                   {translationFilling ? "补齐中..." : "补齐内置/业务 key 空项"}
+                </button>
+                <button type="button" disabled={translationAI || translationLocale === "zh-CN"} onClick={autoTranslateUI} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-medium text-violet-700 hover:bg-violet-100 disabled:opacity-50">
+                  {translationAI ? "AI 翻译中..." : "AI 生成当前语言缺失项"}
                 </button>
                 <button type="button" onClick={cleanupCurrentTranslations} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700 hover:bg-amber-100">
                   清理错误覆盖
@@ -1187,14 +1273,31 @@ export default function SystemConfigPage() {
 
         <section className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm shadow-gray-950/5">
           <div className="mb-4 text-sm font-semibold text-gray-900">基础配置</div>
+          <p className="mb-4 text-xs leading-relaxed text-gray-400">
+            真实支付默认关闭。Stripe 回调地址为 /api/payment/webhooks/stripe，PayPal 回调地址为 /api/payment/webhooks/paypal，通用网关回调地址为 /api/payment/webhooks/generic。
+          </p>
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {BASE_ITEMS.map((item) => renderItem(item))}
+            {visiblePaymentItems.map((item) => renderItem(item))}
           </div>
         </section>
 
         <section className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm shadow-gray-950/5">
           <div className="mb-4 text-sm font-semibold text-gray-900">登录与注册</div>
           <div className="grid grid-cols-1 gap-4">{MEMBER_ITEMS.map((item) => renderItem(item))}</div>
+        </section>
+
+        <section className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm shadow-gray-950/5">
+          <div className="mb-4 text-sm font-semibold text-gray-900">内容安全</div>
+          <div className="grid grid-cols-1 gap-4">{SAFETY_ITEMS.map((item) => renderItem(item))}</div>
+        </section>
+
+        <section className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm shadow-gray-950/5">
+          <div className="mb-1 text-sm font-semibold text-gray-900">模型与工作流自动翻译</div>
+          <p className="mb-4 text-xs leading-relaxed text-gray-400">动态业务内容保存到独立翻译表，不再写入前端 dictionaries.ts。可在“内容翻译”页面审核和批量补齐。</p>
+          <div className="grid grid-cols-1 gap-4">{DYNAMIC_I18N_ITEMS.map((item) => renderItem(item))}</div>
+          <button type="button" disabled={translationModelTesting} onClick={testTranslationModel} className="mt-4 rounded-xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-medium text-violet-700 disabled:opacity-50">
+            {translationModelTesting ? "测试中..." : "测试翻译模型连接"}
+          </button>
         </section>
 
         <section className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm shadow-gray-950/5 xl:col-span-2">

@@ -25,7 +25,19 @@ paths:
       summary: Redeem card
   /api/payment/orders:
     post:
-      summary: Create payment order (blocked when payment_enabled=false)
+      summary: Create a mock-paid or external pending payment order
+  /api/payment/orders/{order_no}:
+    get:
+      summary: Get the authenticated user's payment order status
+  /api/payment/webhooks/generic:
+    post:
+      summary: Confirm a generic external payment using timestamped HMAC-SHA256
+  /api/payment/webhooks/stripe:
+    post:
+      summary: Receive and verify Stripe Checkout events
+  /api/payment/webhooks/paypal:
+    post:
+      summary: Receive and verify PayPal Orders/Capture events
   /admin/api/login:
     post:
       summary: Admin login

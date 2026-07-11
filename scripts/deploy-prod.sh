@@ -8,12 +8,19 @@ ENV_FILE="${ENV_FILE:-.env.production}"
 COMPOSE_FILE="${COMPOSE_FILE:-infra/docker/docker-compose.prod.yml}"
 BUILD_SERVICES="${BUILD_SERVICES:-api worker web admin}"
 RUN_MIGRATIONS="${RUN_MIGRATIONS:-auto}"
-STOP_SERVICES_BEFORE_BUILD="${STOP_SERVICES_BEFORE_BUILD:-1}"
+STOP_SERVICES_BEFORE_BUILD="${STOP_SERVICES_BEFORE_BUILD:-0}"
 NO_CACHE_SERVICES="${NO_CACHE_SERVICES:-}"
 IMPORT_SETTINGS_PACK="${IMPORT_SETTINGS_PACK:-0}"
 SETTINGS_PACK="${SETTINGS_PACK:-}"
 PRUNE_BUILD_CACHE="${PRUNE_BUILD_CACHE:-1}"
 BUILD_CACHE_KEEP_STORAGE="${BUILD_CACHE_KEEP_STORAGE:-4GB}"
+AUTO_ROLLBACK="${AUTO_ROLLBACK:-1}"
+ROLLBACK_STATE="$(mktemp)"
+
+cleanup_deploy_state() {
+  rm -f "$ROLLBACK_STATE"
+}
+trap cleanup_deploy_state EXIT
 
 # 4C8G VPS can be killed by parallel Docker/Next/Go builds. Keep deploys
 # predictable by default; override these env vars only on larger machines.
@@ -100,7 +107,11 @@ if [ "$app_env" = "production" ]; then
       exit 1
       ;;
     change-me-in-production-starai-jwt-secret|replace_with_a_long_random_secret|dev-jwt-secret-starai)
-      warn "JWT_SECRET is using a default value. Anyone who knows this open-source default may forge user tokens. Change it before public production use."
+      warn "============================================================"
+      warn "JWT_SECRET 仍为公开默认值，公网部署后用户令牌可能被伪造。"
+      warn "本次一键部署将继续；正式运营前建议替换为随机长密钥。"
+      warn "可生成密钥：openssl rand -hex 32"
+      warn "============================================================"
       ;;
   esac
   case "$admin_jwt_secret" in
@@ -109,7 +120,11 @@ if [ "$app_env" = "production" ]; then
       exit 1
       ;;
     change-me-admin-jwt-secret|replace_with_another_long_random_secret|dev-admin-jwt-secret)
-      warn "ADMIN_JWT_SECRET is using a default value. Anyone who knows this open-source default may forge admin tokens. Change it before public production use."
+      warn "============================================================"
+      warn "ADMIN_JWT_SECRET 仍为公开默认值，公网部署后管理员令牌可能被伪造。"
+      warn "本次一键部署将继续；正式运营前建议替换为另一条随机长密钥。"
+      warn "可生成密钥：openssl rand -hex 32"
+      warn "============================================================"
       ;;
   esac
 fi
@@ -119,6 +134,41 @@ docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config >/dev/null
 
 echo "==> Starting PostgreSQL and Redis"
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d postgres redis
+
+echo "==> Saving current application images for rollback"
+for service in $BUILD_SERVICES; do
+  container_id="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q "$service" || true)"
+  if [ -z "$container_id" ]; then
+    continue
+  fi
+  image_id="$(docker inspect -f '{{.Image}}' "$container_id" 2>/dev/null || true)"
+  image_ref="$(docker inspect -f '{{.Config.Image}}' "$container_id" 2>/dev/null || true)"
+  if [ -z "$image_id" ] || [ -z "$image_ref" ]; then
+    continue
+  fi
+  rollback_ref="starai-local-rollback-${service}:latest"
+  docker tag "$image_id" "$rollback_ref"
+  printf '%s|%s|%s\n' "$service" "$image_ref" "$rollback_ref" >> "$ROLLBACK_STATE"
+  echo "  saved $service image=$image_id"
+done
+
+rollback_application_images() {
+  if [ "$AUTO_ROLLBACK" != "1" ] && [ "$AUTO_ROLLBACK" != "true" ]; then
+    echo "Automatic application rollback is disabled (AUTO_ROLLBACK=$AUTO_ROLLBACK)." >&2
+    return 0
+  fi
+  if [ ! -s "$ROLLBACK_STATE" ]; then
+    echo "No previous application images were available for rollback." >&2
+    return 0
+  fi
+  echo "==> Rolling back application images (database migrations are not reversed)" >&2
+  while IFS='|' read -r service image_ref rollback_ref; do
+    [ -n "$service" ] || continue
+    docker tag "$rollback_ref" "$image_ref"
+    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --no-build --force-recreate "$service" || true
+    echo "  restored $service from $rollback_ref" >&2
+  done < "$ROLLBACK_STATE"
+}
 
 if [ "$STOP_SERVICES_BEFORE_BUILD" = "1" ] || [ "$STOP_SERVICES_BEFORE_BUILD" = "true" ]; then
   echo "==> Stopping target services before build to free memory: $BUILD_SERVICES"
@@ -176,6 +226,34 @@ fi
 
 echo "==> Starting application services"
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --force-recreate $BUILD_SERVICES
+
+echo "==> Waiting for application health checks"
+for service in $BUILD_SERVICES; do
+  container_id="$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q "$service" || true)"
+  if [ -z "$container_id" ]; then
+    echo "Service $service did not start." >&2
+    rollback_application_images
+    exit 1
+  fi
+  healthy=false
+  for _ in $(seq 1 30); do
+    status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id" 2>/dev/null || true)"
+    if [ "$status" = "healthy" ] || [ "$status" = "running" ]; then
+      healthy=true
+      break
+    fi
+    if [ "$status" = "unhealthy" ] || [ "$status" = "exited" ] || [ "$status" = "dead" ]; then
+      break
+    fi
+    sleep 2
+  done
+  if [ "$healthy" != "true" ]; then
+    echo "Service $service failed its health check. Existing data volumes were not removed." >&2
+    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=80 "$service" >&2 || true
+    rollback_application_images
+    exit 1
+  fi
+done
 
 echo "==> Current status"
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps

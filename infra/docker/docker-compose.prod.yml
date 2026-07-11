@@ -1,4 +1,4 @@
-name: starai
+name: ${COMPOSE_PROJECT_NAME:-starai}
 
 x-default-logging: &default-logging
   driver: json-file
@@ -43,18 +43,24 @@ services:
     restart: unless-stopped
     logging: *default-logging
     env_file:
-      - ../../.env.production
+      - ${STARAI_ENV_FILE:-../../.env.production}
     environment:
       LOCAL_STORAGE_DIR: ${LOCAL_STORAGE_DIR:-/app/data/uploads}
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${API_BIND_PORT:-8080}:8080"
     volumes:
-      - ../../data/uploads:/app/data/uploads
+      - ${UPLOADS_HOST_DIR:-../../data/uploads}:/app/data/uploads
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
 
   worker:
     build:
@@ -63,16 +69,22 @@ services:
     restart: unless-stopped
     logging: *default-logging
     env_file:
-      - ../../.env.production
+      - ${STARAI_ENV_FILE:-../../.env.production}
     environment:
       LOCAL_STORAGE_DIR: ${LOCAL_STORAGE_DIR:-/app/data/uploads}
     volumes:
-      - ../../data/uploads:/app/data/uploads
+      - ${UPLOADS_HOST_DIR:-../../data/uploads}:/app/data/uploads
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
 
   web:
     build:
@@ -85,9 +97,15 @@ services:
     environment:
       NODE_ENV: production
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${WEB_BIND_PORT:-3000}:3000"
     depends_on:
       - api
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
 
   admin:
     build:
@@ -102,16 +120,22 @@ services:
       NODE_ENV: production
       ADMIN_ASSET_PREFIX: ${ADMIN_ASSET_PREFIX:-/admin-assets}
     ports:
-      - "127.0.0.1:3001:3001"
+      - "127.0.0.1:${ADMIN_BIND_PORT:-3001}:3001"
     depends_on:
       - api
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3001/admin/login"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
 
   migrate:
     build:
       context: ../../services/api
       dockerfile: Dockerfile
     env_file:
-      - ../../.env.production
+      - ${STARAI_ENV_FILE:-../../.env.production}
     logging: *default-logging
     command: ["/migrate", "up"]
     volumes:
@@ -121,6 +145,24 @@ services:
         condition: service_healthy
     profiles:
       - tools
+
+  mock-new-api:
+    build:
+      context: ../../services/mock-new-api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      PORT: 3002
+      MOCK_FAILURE_RATE: "0"
+    profiles:
+      - preprod
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
 
 volumes:
   postgres_data:

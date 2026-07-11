@@ -117,10 +117,14 @@ func processCustomWorkflow(ctx context.Context, pool *pgxpool.Pool, baseURL, tok
 		}
 	}
 
-	pool.Exec(ctx, `
-		UPDATE workflow_projects SET status='succeeded', outputs=$1, actual_cost=$2, finished_at=now(), updated_at=now() WHERE id=$3`,
-		mustJSON(outputs), totalCost, p.ProjectID)
-	chargeBilling(ctx, pool, p.UserID, estimated, totalCost, "workflow", publicID, "workflow_usage", "智能体工作流")
+	if err := chargeBilling(ctx, pool, p.UserID, estimated, totalCost, "workflow", publicID, "workflow_usage", "智能体工作流"); err != nil {
+		return fmt.Errorf("workflow %s billing: %w", publicID, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE workflow_projects SET status='succeeded', outputs=$1, actual_cost=$2, error_message=NULL, finished_at=now(), updated_at=now() WHERE id=$3`,
+		mustJSON(outputs), totalCost, p.ProjectID); err != nil {
+		return fmt.Errorf("workflow %s finalize: %w", publicID, err)
+	}
 	log.Printf("Workflow project %s completed (cost=%.4f)", publicID, totalCost)
 	return nil
 }
@@ -297,6 +301,14 @@ func processComicDramaWorkflow(ctx context.Context, pool *pgxpool.Pool, baseURL,
 		totalCost += cost
 		out := map[string]interface{}{"keyframes": items, "cost": cost}
 		if errMsg != "" {
+			keyframes = mapSliceToInterfaces(items)
+			outputs["keyframes"] = keyframes
+			if comic, ok := mapAny(outputs["comic_drama"]); ok {
+				comic["keyframes"] = items
+				outputs["comic_drama"] = comic
+			}
+			outputs["current_step"] = "keyframes"
+			saveWorkflowOutputs(ctx, pool, p.ProjectID, outputs)
 			pool.Exec(ctx, `UPDATE workflow_node_runs SET status='failed', output=$1, error=$2, duration_ms=$3 WHERE id=$4`, mustJSON(out), errMsg, duration, nodeRunID)
 			return failWorkflow(ctx, pool, p, publicID, estimated, errMsg)
 		}
@@ -320,6 +332,14 @@ func processComicDramaWorkflow(ctx context.Context, pool *pgxpool.Pool, baseURL,
 		totalCost += cost
 		out := map[string]interface{}{"segments": items, "cost": cost}
 		if errMsg != "" {
+			segments = mapSliceToInterfaces(items)
+			outputs["segments"] = segments
+			if comic, ok := mapAny(outputs["comic_drama"]); ok {
+				comic["segments"] = items
+				outputs["comic_drama"] = comic
+			}
+			outputs["current_step"] = "video_segments"
+			saveWorkflowOutputs(ctx, pool, p.ProjectID, outputs)
 			pool.Exec(ctx, `UPDATE workflow_node_runs SET status='failed', output=$1, error=$2, duration_ms=$3 WHERE id=$4`, mustJSON(out), errMsg, duration, nodeRunID)
 			return failWorkflow(ctx, pool, p, publicID, estimated, errMsg)
 		}
@@ -1349,10 +1369,14 @@ func runAgentMediaTasks(ctx context.Context, pool *pgxpool.Pool, baseURL, token 
 func completeSimpleAgentWorkflow(ctx context.Context, pool *pgxpool.Pool, p WorkflowTaskPayload, publicID string, estimated float64, outputs map[string]interface{}) error {
 	saveWorkflowOutputs(ctx, pool, p.ProjectID, outputs)
 	actual := simpleAgentActualCost(ctx, pool, p.ProjectID, outputs)
-	pool.Exec(ctx, `
-		UPDATE workflow_projects SET status='succeeded', outputs=$1, actual_cost=$2, finished_at=now(), updated_at=now() WHERE id=$3`,
-		mustJSON(outputs), actual, p.ProjectID)
-	chargeBilling(ctx, pool, p.UserID, estimated, actual, "workflow", publicID, "workflow_usage", "智能体工作流")
+	if err := chargeBilling(ctx, pool, p.UserID, estimated, actual, "workflow", publicID, "workflow_usage", "智能体工作流"); err != nil {
+		return fmt.Errorf("workflow %s billing: %w", publicID, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE workflow_projects SET status='succeeded', outputs=$1, actual_cost=$2, error_message=NULL, finished_at=now(), updated_at=now() WHERE id=$3`,
+		mustJSON(outputs), actual, p.ProjectID); err != nil {
+		return fmt.Errorf("workflow %s finalize: %w", publicID, err)
+	}
 	log.Printf("Workflow project %s completed (cost=%.4f)", publicID, actual)
 	return nil
 }
@@ -1862,7 +1886,9 @@ func firstNonEmpty(values ...string) string {
 
 func failWorkflow(ctx context.Context, pool *pgxpool.Pool, p WorkflowTaskPayload, publicID string, estimated float64, msg string) error {
 	pool.Exec(ctx, `UPDATE workflow_projects SET status='failed', error_message=$1, finished_at=now(), updated_at=now() WHERE id=$2`, msg, p.ProjectID)
-	unfreezeBilling(ctx, pool, p.UserID, estimated, "workflow", publicID)
+	if err := unfreezeBilling(ctx, pool, p.UserID, estimated, "workflow", publicID); err != nil {
+		return fmt.Errorf("workflow %s release billing: %w", publicID, err)
+	}
 	log.Printf("Workflow project %s failed: %s", publicID, msg)
 	return nil
 }

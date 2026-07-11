@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { SystemConfig } from "@starai/shared-types";
 import { clsx } from "clsx";
+import { useI18n } from "@/i18n/I18nProvider";
 
 type BrandData = Pick<
   SystemConfig,
@@ -94,9 +95,10 @@ export function SiteBrand({
   subtitleClassName?: string;
   badgeClassName?: string;
 }) {
+  const { ts } = useI18n();
   const { site_name, site_logo, site_description } = useSiteBranding();
   const siteName = site_name || DEFAULT_BRANDING.site_name || "StarAI";
-  const siteSubtitle = subtitle ?? site_description ?? "";
+  const siteSubtitle = ts(subtitle ?? site_description ?? "");
 
   return (
     <Link href={href} className={clsx("flex min-w-0 items-center gap-2.5", className)}>

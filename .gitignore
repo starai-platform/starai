@@ -24,6 +24,7 @@ bin/
 .env.*
 !.env.example
 !.env.local
+!.env.preprod.example
 
 # Logs and local runtime files
 *.log

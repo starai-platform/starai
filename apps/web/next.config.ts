@@ -3,6 +3,12 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   output: "standalone",
   transpilePackages: ["@starai/shared-types"],
+  images: {
+    remotePatterns: [
+      { protocol: "https", hostname: "**" },
+      { protocol: "http", hostname: "**" },
+    ],
+  },
   async headers() {
     const noStoreHeaders = [
       { key: "Cache-Control", value: "no-store, no-cache, must-revalidate, proxy-revalidate" },

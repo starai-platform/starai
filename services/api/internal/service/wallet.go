@@ -367,56 +367,12 @@ func (s *WalletService) ListRechargeRecords(ctx context.Context, userID int64, p
 
 func (s *WalletService) RedeemCard(ctx context.Context, userID int64, code string) (float64, error) {
 	return s.RedeemCardAtomic(ctx, userID, code)
-
-	code = strings.TrimSpace(strings.ToUpper(code))
-	if code == "" {
-		return 0, errors.New("卡密不能为空")
-	}
-	hash := util.HashCardCode(code)
-
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback(ctx)
-
-	var cardID int64
-	var value float64
-	var status string
-	err = tx.QueryRow(ctx,
-		`SELECT id, value, status FROM recharge_cards WHERE code_hash=$1 FOR UPDATE`, hash,
-	).Scan(&cardID, &value, &status)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, errors.New("卡密无效")
-		}
-		return 0, err
-	}
-	if status != "unused" {
-		return 0, errors.New("卡密已使用或已失效")
-	}
-	_, err = tx.Exec(ctx,
-		`UPDATE recharge_cards SET status='used', used_by=$1, used_at=now() WHERE id=$2`,
-		userID, cardID)
-	if err != nil {
-		return 0, err
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return 0, err
-	}
-	if err = s.billing.Credit(ctx, userID, value, "card_recharge", "card", hash, "卡密充值"); err != nil {
-		return 0, err
-	}
-	if err = s.billing.AwardReferralOnRecharge(ctx, userID, value, "card", hash); err != nil {
-		return 0, err
-	}
-	return value, nil
 }
 
 func (s *WalletService) RedeemCardAtomic(ctx context.Context, userID int64, code string) (float64, error) {
 	code = strings.TrimSpace(strings.ToUpper(code))
 	if code == "" {
-		return 0, errors.New("card code is required")
+		return 0, errors.New("卡密不能为空")
 	}
 	hash := util.HashCardCode(code)
 
@@ -435,12 +391,12 @@ func (s *WalletService) RedeemCardAtomic(ctx context.Context, userID int64, code
 	).Scan(&cardID, &value, &status)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, errors.New("invalid card code")
+			return 0, errors.New("卡密无效")
 		}
 		return 0, err
 	}
 	if status != "unused" {
-		return 0, errors.New("card code is already used or disabled")
+		return 0, errors.New("卡密已使用或已失效")
 	}
 
 	var balance float64

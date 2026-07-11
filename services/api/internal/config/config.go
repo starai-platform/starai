@@ -14,6 +14,7 @@ type Config struct {
 	AppEnv                string
 	BaseURL               string
 	LocalStoragePublicURL string
+	TrustedProxies        string
 
 	MinioEndpoint  string
 	MinioAccessKey string
@@ -38,6 +39,7 @@ func Load() *Config {
 		AppEnv:                 getEnv("APP_ENV", "development"),
 		BaseURL:                getEnv("BASE_URL", ""),
 		LocalStoragePublicURL:  getEnv("LOCAL_STORAGE_PUBLIC_URL", ""),
+		TrustedProxies:         getEnv("TRUSTED_PROXIES", "127.0.0.1,::1,172.16.0.0/12"),
 		MinioEndpoint:          getEnv("MINIO_ENDPOINT", "localhost:9000"),
 		MinioAccessKey:         getEnv("MINIO_ACCESS_KEY", "starai"),
 		MinioSecretKey:         getEnv("MINIO_SECRET_KEY", "starai123"),

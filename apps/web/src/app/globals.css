@@ -367,3 +367,74 @@ body {
   --tw-shadow: 0 0 #0000;
   --tw-shadow-colored: 0 0 #0000;
 }
+
+.agent-showcase {
+  display: grid;
+  grid-template-columns: minmax(0, 640px);
+  gap: 1.25rem;
+  width: 100%;
+  max-width: 640px;
+  margin-inline: auto;
+  min-width: 0;
+  overflow: visible;
+}
+
+.agent-feature-list {
+  display: none;
+}
+
+@media (min-width: 1800px) {
+  .agent-showcase {
+    grid-template-columns: minmax(0, 300px) minmax(0, 640px);
+    grid-template-rows: max-content;
+    align-content: center;
+    max-width: 960px;
+  }
+
+  .agent-feature-list {
+    display: grid;
+    width: 300px !important;
+    min-width: 0 !important;
+    max-width: 300px !important;
+    overflow: visible;
+    justify-self: end;
+  }
+
+  .agent-feature-list > button {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+
+  .agent-showcase > .agent-feature-card,
+  .agent-showcase > .comic-feature-card {
+    width: 640px !important;
+    min-width: 0 !important;
+    max-width: 640px !important;
+    justify-self: start;
+  }
+
+  .agent-showcase > .comic-feature-card {
+    align-self: stretch;
+    height: auto;
+    max-height: none;
+  }
+}
+@media (max-height: 800px) {
+  .agent-feature-card {
+    min-height: 180px !important;
+    max-height: 190px !important;
+    padding: 1rem !important;
+  }
+
+  .comic-feature-card {
+    max-height: 190px;
+    padding: 1rem !important;
+  }
+}
+
+@media (min-width: 1800px) and (max-height: 800px) {
+  .agent-showcase > .comic-feature-card {
+    max-height: none;
+  }
+}

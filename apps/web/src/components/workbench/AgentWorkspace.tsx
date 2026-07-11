@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowUp, Check, Download, Folder, HelpCircle, History, ImageIcon, LayoutGrid, Loader2, Plus, RefreshCw, Settings2, Sparkles, Star, Wand2, X } from "lucide-react";
-import { api, uploadAsset } from "@/lib/api";
+import Image from "next/image";
+import { Archive, ArrowUp, Check, Copy, Download, Folder, HelpCircle, History, ImageIcon, Loader2, Plus, RefreshCw, Settings2, Star, Trash2, Wand2, X } from "lucide-react";
+import { api, apiForLocale, uploadAsset } from "@/lib/api";
 import type { Model } from "@starai/shared-types";
 import {
   buildVideoTaskParams,
@@ -27,6 +28,7 @@ type DisplayConfig = {
   hero_tags?: string[];
   feature_tags?: string[];
   steps?: DisplayStep[];
+  timeline?: string[];
   input?: { image_label?: string; placeholder?: string; modes?: string[] };
   help?: string;
 };
@@ -36,6 +38,7 @@ type Workflow = {
   description?: string;
   icon?: string;
   category?: string;
+  nodes?: Array<{ id: string; name: string; type: string }>;
   input_schema?: Record<string, unknown>;
   display_config?: DisplayConfig;
   runtime_config?: {
@@ -102,6 +105,8 @@ type ComicProject = {
   last_workflow_status?: string;
   created_at: string;
   updated_at?: string;
+  archived?: boolean;
+  archived_at?: string;
 };
 
 const STATUS_LABEL_KEY: Record<string, string> = {
@@ -120,49 +125,6 @@ const IMAGE_SCENES = [
   { code: "product_video", label: "\u5546\u54c1\u89c6\u9891", kind: "video" },
   { code: "image_to_video", label: "\u56fe\u751f\u89c6\u9891", kind: "video" },
   { code: "ai_comic_drama", label: "AI漫剧", kind: "video" },
-] as const;
-
-const COMIC_FEATURES = [
-  {
-    icon: LayoutGrid,
-    title: "多图深度融合引擎",
-    desc: "9宫格 · 融合图 · 多角度",
-    badge: "01",
-    badgeTone: "cyan",
-    highlight: "每一步均可人工干预",
-    body: "上传 1～9 张参考图，AI 自动解析构图、色彩、角色特征与空间关系，自动识别融合图、九宫格、多角度等图片类型，智能规划最优叙事结构与视觉节奏。",
-    tags: ["融合图识别", "九宫格解析", "多角度匹配", "自适应构图"],
-  },
-  {
-    icon: Sparkles,
-    title: "全流程精细管控",
-    desc: "逐步确认 · 人工干预 · AI托管",
-    badge: "02",
-    badgeTone: "emerald",
-    highlight: "全流程可控",
-    body: "从创意方向、故事大纲、剧本转换到分镜规划，每个关键节点都能暂停确认；也可以切换智能托管，让系统自动跑完整条流水线。",
-    tags: ["创意确认", "剧本转换", "分镜规划", "智能托管"],
-  },
-  {
-    icon: Wand2,
-    title: "多主体智能适配",
-    desc: "多角色 · 多场景 · 一致性",
-    badge: "03",
-    badgeTone: "violet",
-    highlight: "角色与场景保持一致",
-    body: "自动识别剧情中的多个角色和主体，统一人物特征、服饰、场景风格与镜头逻辑，减少多镜头生成时的角色漂移和画风跳变。",
-    tags: ["角色追踪", "主体识别", "跨场景一致", "智能构图"],
-  },
-  {
-    icon: ArrowUp,
-    title: "一键成片引擎",
-    desc: "参考图到视频 · 全自动流水线",
-    badge: "04",
-    badgeTone: "amber",
-    highlight: "最终合成为单个视频",
-    body: "根据分镜自动生成关键帧，再调用视频模型生成分段视频，最后使用合成链路输出一个完整 MP4，同时保留分镜、关键帧和分段素材。",
-    tags: ["关键帧", "分段视频", "自动合成", "MP4输出"],
-  },
 ] as const;
 
 function textOf(v: unknown) {
@@ -249,7 +211,7 @@ function clientScenePrompt(code: string, label: string, generationType: "image" 
 }
 
 export function AgentWorkspace({ code }: { code: string }) {
-  const { t, td } = useI18n();
+  const { t, td, locale } = useI18n();
   const router = useRouter();
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [generationModel, setGenerationModel] = useState<Model | null>(null);
@@ -291,31 +253,45 @@ export function AgentWorkspace({ code }: { code: string }) {
     setError("");
     setMode("auto");
     setSelectedScene("main_image");
-    api<Workflow>(`/api/agents/${code}`)
+  }, [code]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    apiForLocale<Workflow>(`/api/agents/${code}`, locale, { signal: controller.signal })
       .then((wf) => {
+        if (controller.signal.aborted) return;
         setWorkflow(wf);
         setCount(Math.max(1, Number(wf.runtime_config?.default_count || 1)));
         const modelCode = wf.runtime_config?.generation_model_code;
         if (modelCode) {
-          api<Model>(`/api/models/${modelCode}`)
+          apiForLocale<Model>(`/api/models/${modelCode}`, locale, { signal: controller.signal })
             .then((m) => {
+              if (controller.signal.aborted) return;
               setGenerationModel(m);
               setParams({ ...schemaDefaultsFromFields(m.input_schema), ...(m.default_params || {}) });
               if (typeof m.default_params?.channel_key === "string") {
                 setBottom((prev) => ({ ...prev, channel_key: String(m.default_params.channel_key) }));
               }
             })
-            .catch(() => setGenerationModel(null));
+            .catch((error) => {
+              if (error?.name !== "AbortError") setGenerationModel(null);
+            });
         } else {
           setGenerationModel(null);
           setParams({});
         }
       })
-      .catch(() => setWorkflow(null));
+      .catch((error) => {
+        if (error?.name !== "AbortError") setWorkflow(null);
+      });
     return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
+      controller.abort();
     };
-  }, [code]);
+  }, [code, locale]);
+
+  useEffect(() => () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+  }, []);
 
   const display = workflow?.display_config || {};
   const isComicDrama = workflow?.runtime_config?.agent_mode === "comic_drama" || workflow?.runtime_config?.preset_code === "ai_comic_drama";
@@ -364,6 +340,7 @@ export function AgentWorkspace({ code }: { code: string }) {
     dialogue_model_codes: [] as string[],
   });
   const [comicProjects, setComicProjects] = useState<ComicProject[]>([]);
+	const [showArchivedProjects, setShowArchivedProjects] = useState(false);
   const [activeComicProject, setActiveComicProject] = useState<ComicProject | null>(null);
   const [comicStyles, setComicStyles] = useState<ComicStyle[]>([]);
   const [projectDrawerCollapsed, setProjectDrawerCollapsed] = useState(false);
@@ -447,11 +424,11 @@ export function AgentWorkspace({ code }: { code: string }) {
     }
   }, [workflow]);
 
-  const loadComicProjects = async () => {
+  const loadComicProjects = async (includeArchived = showArchivedProjects) => {
     try {
-      const res = await api<{ items: ComicProject[] }>("/api/comic-drama/projects");
+      const res = await api<{ items: ComicProject[] }>(`/api/comic-drama/projects${includeArchived ? "?include_archived=true" : ""}`);
       setComicProjects(res.items || []);
-      setActiveComicProject((prev) => prev || res.items?.[0] || null);
+      setActiveComicProject((prev) => (prev && res.items?.some((item) => item.public_id === prev.public_id) ? prev : res.items?.[0] || null));
     } catch {
       setComicProjects([]);
     }
@@ -474,15 +451,18 @@ export function AgentWorkspace({ code }: { code: string }) {
     loadComicStyles();
     const stored = typeof window !== "undefined" ? window.localStorage.getItem("comicProjectDrawerCollapsed") : null;
     if (stored === "1") setProjectDrawerCollapsed(true);
+		// Load once when entering comic mode; the loaders intentionally use the current view state.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isComicDrama]);
 
   useEffect(() => {
     if (!isComicDrama) return;
+    const featureCount = Math.max(1, translatedSteps.length);
     const timer = window.setInterval(() => {
-      setActiveComicFeature((prev) => (prev + 1) % COMIC_FEATURES.length);
+      setActiveComicFeature((prev) => (prev + 1) % featureCount);
     }, 3600);
     return () => window.clearInterval(timer);
-  }, [isComicDrama]);
+  }, [isComicDrama, translatedSteps.length]);
 
   useEffect(() => {
     if (isComicDrama || project) return;
@@ -593,7 +573,7 @@ export function AgentWorkspace({ code }: { code: string }) {
       if (isComicDrama) loadComicProjects();
       startPolling(p.public_id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "鍚姩澶辫触");
+      setError(err instanceof Error ? err.message : "启动失败");
     } finally {
       setSubmitting(false);
     }
@@ -618,7 +598,12 @@ export function AgentWorkspace({ code }: { code: string }) {
 
   const retry = async () => {
     if (!project) return;
-    await api(`/api/agent-projects/${project.public_id}/retry`, { method: "POST" });
+		const failedNode = [...(project.node_runs || [])].reverse().find((node) => node.status === "failed");
+		if (failedNode) {
+			await api(`/api/agent-projects/${project.public_id}/retry-node`, { method: "POST", body: JSON.stringify({ node_id: failedNode.node_id }) });
+		} else {
+			await api(`/api/agent-projects/${project.public_id}/retry`, { method: "POST" });
+		}
     startPolling(project.public_id);
   };
 
@@ -708,6 +693,46 @@ export function AgentWorkspace({ code }: { code: string }) {
     }
   };
 
+	const runComicAction = async (action: () => Promise<void>, fallback: string) => {
+		setError("");
+		try {
+			await action();
+		} catch (err) {
+			setError(err instanceof Error ? err.message : fallback);
+		}
+	};
+
+	const archiveComicProject = async (item: ComicProject) => runComicAction(async () => {
+		await api(`/api/comic-drama/projects/${item.public_id}/archive`, { method: "PATCH", body: JSON.stringify({ archived: !item.archived }) });
+		if (activeComicProject?.public_id === item.public_id) setActiveComicProject(null);
+		await loadComicProjects();
+	}, t("comic.archiveFailed"));
+
+	const cloneComicProject = async (item: ComicProject) => runComicAction(async () => {
+		const cloned = await api<ComicProject>(`/api/comic-drama/projects/${item.public_id}/clone`, { method: "POST" });
+		setShowArchivedProjects(false);
+		await loadComicProjects(false);
+		setActiveComicProject(cloned);
+	}, t("comic.cloneFailed"));
+
+	const deleteComicProject = async (item: ComicProject) => {
+		if (!window.confirm(t("comic.confirmDeleteProject", { name: item.name }))) return;
+		await runComicAction(async () => {
+			await api(`/api/comic-drama/projects/${item.public_id}`, { method: "DELETE" });
+			if (activeComicProject?.public_id === item.public_id) setActiveComicProject(null);
+			await loadComicProjects();
+		}, t("comic.deleteProjectFailed"));
+	};
+
+	const deleteComicStyle = async (style: ComicStyle) => {
+		if (!window.confirm(t("comic.confirmDeleteStyle", { name: style.name }))) return;
+		await runComicAction(async () => {
+			await api(`/api/comic-drama/styles/${style.public_id}`, { method: "DELETE" });
+			if (projectDraft.style_id === style.public_id) setProjectDraft((prev) => ({ ...prev, style_id: "" }));
+			await loadComicStyles();
+		}, t("comic.deleteStyleFailed"));
+	};
+
   const handleUpload = async (file?: File | null) => {
     if (!file) return;
     setUploading(true);
@@ -716,14 +741,14 @@ export function AgentWorkspace({ code }: { code: string }) {
       const asset = await uploadAsset(file, { name: file.name, kind: "image", asset_type: "prop" });
       setProductImage({ url: asset.url, name: asset.name || file.name, public_id: asset.public_id });
     } catch (err) {
-      const message = err instanceof Error && err.message ? err.message : "缃戠粶杩炴帴澶辫触";
+      const message = err instanceof Error && err.message ? err.message : "网络连接失败";
       setError(t("agent.uploadFailed") + message);
     } finally {
       setUploading(false);
     }
   };
 
-  if (!workflow) return <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">鍔犺浇涓?..</div>;
+  if (!workflow) return <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">加载中...</div>;
 
   if (isComicDrama) {
     const activeStyle = comicStyles.find((item) => item.public_id === projectDraft.style_id) || comicStyles.find((item) => item.public_id === activeComicProject?.style_id);
@@ -752,40 +777,48 @@ export function AgentWorkspace({ code }: { code: string }) {
             <>
               <div className="p-4">
                 <button type="button" onClick={() => setProjectModalOpen(true)} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-gray-200 bg-gray-50 text-sm font-semibold text-gray-700 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-gray-200 dark:hover:bg-white/10">
-                  <Plus size={16} /> 新建项目
+                  <Plus size={16} /> {t("comic.newProject")}
                 </button>
+						<button type="button" onClick={() => { const next = !showArchivedProjects; setShowArchivedProjects(next); void loadComicProjects(next); }} className="mt-2 w-full text-center text-xs text-gray-400 hover:text-cyan-600">{showArchivedProjects ? t("comic.hideArchived") : t("comic.showArchived")}</button>
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
                 {comicProjects.length === 0 ? (
                   <div className="flex h-full min-h-[260px] flex-col items-center justify-center text-center text-gray-400">
                     <Folder size={48} strokeWidth={1.5} />
-                    <div className="mt-4 text-sm">创建你的第一个漫剧项目</div>
+                    <div className="mt-4 text-sm">{t("comic.emptyProjects")}</div>
                   </div>
                 ) : (
                   <div className="space-y-2">
                     {comicProjects.map((item) => {
                       const active = activeComicProject?.public_id === item.public_id;
                       return (
-                        <button
+                        <div
                           key={item.public_id}
-                          type="button"
+									role="button"
+									tabIndex={0}
                           onClick={() => setActiveComicProject(item)}
+									onKeyDown={(event) => { if (event.key === "Enter") setActiveComicProject(item); }}
                           className={"w-full rounded-2xl border p-3 text-left transition " + (active ? "border-cyan-300 bg-cyan-50 shadow-sm dark:border-cyan-400/40 dark:bg-cyan-400/10" : "border-gray-100 bg-white/70 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:hover:bg-white/10")}
                         >
                           <div className="flex items-center gap-3">
                             <div className="h-12 w-16 shrink-0 overflow-hidden rounded-xl bg-gray-100 dark:bg-white/10">
-                              {item.cover_url ? <img src={item.cover_url} alt="" className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center text-gray-400"><ImageIcon size={18} /></div>}
+                              {item.cover_url ? <Image src={item.cover_url} alt="" width={128} height={96} sizes="64px" className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center text-gray-400"><ImageIcon size={18} /></div>}
                             </div>
                             <div className="min-w-0">
                               <div className="truncate text-sm font-semibold text-gray-900 dark:text-white">{item.name}</div>
                               <div className="mt-1 flex items-center gap-2 text-[11px] text-gray-400">
-                                <span>{item.orientation === "portrait" ? "竖屏" : "横屏"}</span>
+                                <span>{item.orientation === "portrait" ? t("comic.portrait") : t("comic.landscape")}</span>
                                 <span>{item.quality}</span>
                                 {item.last_workflow_status ? <span>{t(STATUS_LABEL_KEY[item.last_workflow_status] || item.last_workflow_status)}</span> : null}
                               </div>
                             </div>
                           </div>
-                        </button>
+									<div className="mt-2 flex justify-end gap-1 border-t border-gray-100 pt-2 dark:border-white/10">
+										<button type="button" title={t("comic.cloneProject")} onClick={(event) => { event.stopPropagation(); void cloneComicProject(item); }} className="rounded-lg p-1.5 text-gray-400 hover:bg-cyan-50 hover:text-cyan-600"><Copy size={13} /></button>
+										<button type="button" title={item.archived ? t("comic.restoreProject") : t("comic.archiveProject")} onClick={(event) => { event.stopPropagation(); void archiveComicProject(item); }} className="rounded-lg p-1.5 text-gray-400 hover:bg-amber-50 hover:text-amber-600"><Archive size={13} /></button>
+										<button type="button" title={t("comic.deleteProject")} onClick={(event) => { event.stopPropagation(); void deleteComicProject(item); }} className="rounded-lg p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600"><Trash2 size={13} /></button>
+									</div>
+								</div>
                       );
                     })}
                   </div>
@@ -793,71 +826,83 @@ export function AgentWorkspace({ code }: { code: string }) {
               </div>
               <div className="border-t border-gray-100 p-4 dark:border-white/10">
                 <button type="button" onClick={() => setSettingsOpen(true)} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-cyan-200 bg-cyan-50 text-sm font-semibold text-cyan-700 dark:border-cyan-400/20 dark:bg-cyan-400/10 dark:text-cyan-200">
-                  <Settings2 size={16} /> 智能引擎
+                  <Settings2 size={16} /> {t("comic.smartEngine")}
                 </button>
               </div>
             </>
           )}
         </aside>
 
-        <main className="relative flex min-w-0 flex-1 flex-col overflow-y-auto lg:overflow-hidden" onMouseEnter={() => !projectDrawerCollapsed && setComicDrawerCollapsed(true)}>
+        <main className="relative flex min-w-0 flex-1 flex-col overflow-y-auto" onMouseEnter={() => !projectDrawerCollapsed && setComicDrawerCollapsed(true)}>
           <div className="pointer-events-none absolute inset-0 opacity-80 [background-image:linear-gradient(rgba(15,23,42,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,.08)_1px,transparent_1px)] [background-size:40px_40px] dark:opacity-60 dark:[background-image:linear-gradient(rgba(34,211,238,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,.08)_1px,transparent_1px)]" />
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_70%_10%,rgba(34,211,238,.24),transparent_28%),radial-gradient(circle_at_12%_84%,rgba(20,184,166,.18),transparent_22%)] dark:bg-[radial-gradient(circle_at_76%_10%,rgba(20,184,166,.22),transparent_28%),radial-gradient(circle_at_14%_82%,rgba(6,182,212,.14),transparent_22%)]" />
-          <div className="relative z-10 flex min-h-full flex-1 flex-col px-3 py-3 pb-4 sm:px-5 lg:min-h-0 lg:px-8 lg:py-4">
+          <div className="relative z-10 flex min-h-0 flex-1 flex-col px-3 py-3 pb-4 sm:px-5 lg:min-h-[700px] lg:px-8 lg:py-4">
             <div className="shrink-0 pt-1 text-center sm:pt-3 lg:pt-4">
               <div className="mb-1.5 inline-flex items-center gap-2 rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1 text-[11px] font-semibold text-cyan-700 dark:border-cyan-400/20 dark:bg-cyan-400/10 dark:text-cyan-200 sm:px-4 sm:text-xs">
-                <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" /> 超级智能体
+                <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" /> {t("comic.superAgent")}
               </div>
               <div className="flex items-center justify-center gap-3">
                 <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-cyan-500/10 text-xl sm:h-11 sm:w-11 sm:text-2xl">🎨</div>
-                <h1 className="text-xl font-black tracking-normal text-gray-900 dark:text-white sm:text-3xl">{workflowName || "AI 漫剧"}</h1>
+                <h1 title={workflowName || t("comic.defaultName")} className="max-w-[min(78vw,960px)] truncate text-xl font-black tracking-normal text-gray-900 dark:text-white sm:text-3xl">{workflowName || t("comic.defaultName")}</h1>
               </div>
-              <div className="mt-2 flex flex-wrap justify-center gap-1.5 sm:mt-3 sm:gap-2">
-                {["多图深度融合", "全流程可控", "多主体适配", "一键成片"].map((tag) => (
-                  <span key={tag} className="rounded-full border border-gray-200 bg-white/55 px-2.5 py-0.5 text-[11px] text-gray-500 backdrop-blur dark:border-white/10 dark:bg-white/5 dark:text-gray-300 sm:px-3 sm:py-1 sm:text-xs">{tag}</span>
+              {workflowDescription ? (
+                <p
+                  title={workflowDescription}
+                  className="mx-auto mt-2 line-clamp-2 max-w-3xl px-3 text-xs leading-5 text-gray-500 dark:text-gray-300 sm:text-sm sm:leading-6"
+                >
+                  {workflowDescription}
+                </p>
+              ) : null}
+              <div className="mt-2 hidden flex-wrap justify-center gap-1.5 sm:mt-3 sm:flex sm:gap-2">
+				{[t("comic.tagFusion"), t("comic.tagControl"), t("comic.tagMultiSubject"), t("comic.tagOneClick")].map((tag) => (
+                  <span key={tag} title={tag} className="max-w-[180px] truncate rounded-full border border-gray-200 bg-white/55 px-2.5 py-0.5 text-[11px] text-gray-500 backdrop-blur dark:border-white/10 dark:bg-white/5 dark:text-gray-300 sm:px-3 sm:py-1 sm:text-xs">{tag}</span>
                 ))}
               </div>
             </div>
 
-            <div className="grid min-h-0 flex-1 grid-rows-[1fr_auto] gap-4 pt-4 lg:grid-rows-[1fr_auto_auto] lg:gap-3 lg:pt-4">
-              <div className="hidden min-h-0 items-center gap-3 lg:grid lg:grid-cols-[300px_minmax(360px,640px)] lg:justify-center">
-                <ComicFeatureSelector activeIndex={activeComicFeature} onSelect={setActiveComicFeature} />
-                <ComicFeatureHero activeIndex={activeComicFeature} onSelect={setActiveComicFeature} />
+            <div className="flex min-h-0 flex-1 flex-col gap-3 pt-4">
+              <div className="agent-showcase min-h-[260px] flex-1 items-center">
+                <ComicFeatureSelector features={translatedSteps} activeIndex={activeComicFeature} onSelect={setActiveComicFeature} />
+                <ComicFeatureHero features={translatedSteps} activeIndex={activeComicFeature} onSelect={setActiveComicFeature} />
               </div>
-              <div className="flex min-h-[230px] items-center lg:min-h-0 lg:block">
-                <ComicTimeline compact />
+              <div className="shrink-0">
+                <ComicTimeline
+                  nodes={display.timeline?.length ? display.timeline : (workflow.nodes || []).map((node) => node.name)}
+                  mobileNodes={(workflow.nodes || []).map((node) => node.name)}
+                  compact
+                />
               </div>
-              <div className="mx-auto w-full max-w-5xl">
+              <div className="mx-auto mt-auto w-full max-w-5xl shrink-0">
                 {error && <div className="mb-2 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-200">{error}</div>}
                 {project && (
                   <div className="mb-2 flex items-center justify-between rounded-2xl border border-cyan-100 bg-white/70 px-4 py-2 text-xs text-gray-500 shadow-sm backdrop-blur dark:border-cyan-400/15 dark:bg-white/5 dark:text-gray-300">
                     <span>{projectStage(project, allMediaTasks, generationType, true)} · {totalProgress}%</span>
-                    {finalVideoURL ? <a href={finalVideoURL} target="_blank" rel="noreferrer" className="font-semibold text-cyan-600 dark:text-cyan-200">查看成片</a> : null}
+					{finalVideoURL ? <a href={finalVideoURL} target="_blank" rel="noreferrer" className="font-semibold text-cyan-600 dark:text-cyan-200">{t("comic.viewFinal")}</a> : null}
                   </div>
                 )}
                 <div className="rounded-3xl border border-gray-200 bg-white/90 shadow-xl shadow-cyan-950/10 backdrop-blur dark:border-white/10 dark:bg-[#1b1d22]/95 dark:shadow-black/30">
                   <div className="flex min-h-[92px] gap-3 p-3 sm:min-h-[104px] sm:p-4">
                     <label className="flex h-14 w-12 shrink-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-gray-200 bg-gray-50 text-[10px] text-gray-400 hover:border-cyan-300 hover:bg-cyan-50 dark:border-white/10 dark:bg-white/5 dark:hover:bg-cyan-400/10 sm:h-20 sm:w-16">
-                      {productImage ? <img src={productImage.url} alt="" className="h-full w-full rounded-xl object-cover" /> : comicUploading || uploading ? <Loader2 size={18} className="animate-spin" /> : <><Plus size={18} /><span>参考图</span></>}
+					{productImage ? <Image src={productImage.url} alt="" width={128} height={128} sizes="64px" className="h-full w-full rounded-xl object-cover" /> : comicUploading || uploading ? <Loader2 size={18} className="animate-spin" /> : <><Plus size={18} /><span>{t("comic.referenceImage")}</span></>}
                       <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" disabled={uploading} onChange={(e) => { handleUpload(e.target.files?.[0]); e.currentTarget.value = ""; }} />
                     </label>
-                    <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="描述你想要生成的视频内容..." className="min-h-[68px] flex-1 resize-none bg-transparent text-sm leading-6 text-gray-700 outline-none placeholder:text-gray-400 dark:text-gray-100 dark:placeholder:text-gray-500 sm:min-h-[86px]" />
+					<textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder={t("comic.videoPlaceholder")} className="min-h-[68px] flex-1 resize-none bg-transparent text-sm leading-6 text-gray-700 outline-none placeholder:text-gray-400 dark:text-gray-100 dark:placeholder:text-gray-500 sm:min-h-[86px]" />
                     <button onClick={run} disabled={submitting || project?.status === "running" || project?.status === "pending"} className="mt-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-cyan-500 text-white shadow-lg shadow-cyan-500/25 transition hover:bg-cyan-400 disabled:opacity-40">
                       {submitting ? <Loader2 size={18} className="animate-spin" /> : <ArrowUp size={18} />}
                     </button>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 border-t border-gray-100 px-3 py-3 dark:border-white/10 sm:px-4">
                     <button type="button" onClick={() => setStyleModalOpen(true)} className="flex h-9 items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 px-3 text-xs font-semibold text-gray-700 dark:border-white/10 dark:bg-white/5 dark:text-gray-200">
-                      <Star size={14} className="text-cyan-500" /> {activeComicProject?.style?.name || activeStyle?.name || "选择风格"}
+					<Star size={14} className="text-cyan-500" /> {activeComicProject?.style?.name || activeStyle?.name || t("comic.selectStyle")}
                     </button>
                     <button type="button" onClick={() => setProjectModalOpen(true)} className="flex h-9 items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 px-3 text-xs font-semibold text-gray-700 dark:border-white/10 dark:bg-white/5 dark:text-gray-200">
-                      <Folder size={14} /> {activeComicProject?.name || "新建项目"}
+					<Folder size={14} /> {activeComicProject?.name || t("comic.selectProject")}
                     </button>
                     <span className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-600 dark:border-white/10 dark:bg-white/5 dark:text-gray-300">{projectQuality}</span>
-                    <span className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-600 dark:border-white/10 dark:bg-white/5 dark:text-gray-300">{projectOrientation === "portrait" ? "竖屏" : "横屏"}</span>
+					<span className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-600 dark:border-white/10 dark:bg-white/5 dark:text-gray-300">{projectOrientation === "portrait" ? t("comic.portrait") : t("comic.landscape")}</span>
                     <div className="mx-auto flex w-full max-w-[260px] items-center justify-center rounded-full bg-gray-100 p-1 dark:bg-white/10 sm:ml-auto sm:mr-0 sm:w-auto sm:max-w-none">
-                      <button type="button" onClick={() => setMode("step")} className={"flex-1 rounded-full px-4 py-2 text-center text-xs font-semibold sm:flex-none " + (mode === "step" ? "bg-cyan-500 text-white shadow" : "text-gray-500 dark:text-gray-300")}>逐步确认</button>
-                      <button type="button" onClick={() => setMode("auto")} className={"flex-1 rounded-full px-4 py-2 text-center text-xs font-semibold sm:flex-none " + (mode === "auto" ? "bg-gray-900 text-white shadow dark:bg-white dark:text-gray-900" : "text-gray-500 dark:text-gray-300")}>智能托管</button>
+					<button type="button" onClick={() => setMode("step")} className={"flex-1 rounded-full px-4 py-2 text-center text-xs font-semibold sm:flex-none " + (mode === "step" ? "bg-cyan-500 text-white shadow" : "text-gray-500 dark:text-gray-300")}>{t("agent.stepConfirm")}</button>
+					<button type="button" onClick={() => setMode("auto")} className={"flex-1 rounded-full px-4 py-2 text-center text-xs font-semibold sm:flex-none " + (mode === "auto" ? "bg-gray-900 text-white shadow dark:bg-white dark:text-gray-900" : "text-gray-500 dark:text-gray-300")}>{t("agent.autopilot")}</button>
                     </div>
                   </div>
                 </div>
@@ -892,6 +937,7 @@ export function AgentWorkspace({ code }: { code: string }) {
               setStyleModalOpen(false);
               setStyleAddOpen(mode);
             }}
+				onDelete={(style) => void deleteComicStyle(style)}
           />
         )}
         {styleAddOpen && (
@@ -952,7 +998,6 @@ export function AgentWorkspace({ code }: { code: string }) {
         <div className={project ? "max-w-[1120px] mx-auto space-y-4" : "mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col"}>
           {!project && (
             <AgentLanding
-              workflowCode={workflow.code}
               workflowIcon={workflow.icon || "\u{1F916}"}
               workflowName={workflowName}
               workflowDescription={workflowDescription}
@@ -961,7 +1006,6 @@ export function AgentWorkspace({ code }: { code: string }) {
               activeIndex={activeAgentFeature}
               onSelect={setActiveAgentFeature}
               theme={theme}
-              td={td}
               generationType={generationType}
             />
           )}
@@ -1120,7 +1164,7 @@ export function AgentWorkspace({ code }: { code: string }) {
                   {productImage ? (
                     <div className="group/img relative w-16 h-16 rounded-2xl overflow-hidden border-2 border-white shadow-lg bg-gray-100 shrink-0">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={productImage.url} alt={productImage.name} className="w-full h-full object-cover" />
+                      <Image src={productImage.url} alt={productImage.name} width={128} height={128} sizes="64px" className="w-full h-full object-cover" />
                       <button type="button" onClick={() => setProductImage(null)} className="absolute right-0.5 top-0.5 w-5 h-5 rounded-full bg-black/70 text-white flex items-center justify-center opacity-0 group-hover/img:opacity-100 transition" title={t("common.remove")}>
                         <X size={12} />
                       </button>
@@ -1230,7 +1274,6 @@ export function AgentWorkspace({ code }: { code: string }) {
 }
 
 function AgentLanding({
-  workflowCode,
   workflowIcon,
   workflowName,
   workflowDescription,
@@ -1239,10 +1282,8 @@ function AgentLanding({
   activeIndex,
   onSelect,
   theme,
-  td,
   generationType,
 }: {
-  workflowCode: string;
   workflowIcon: string;
   workflowName: string;
   workflowDescription: string;
@@ -1251,41 +1292,41 @@ function AgentLanding({
   activeIndex: number;
   onSelect: (index: number) => void;
   theme: { gradient: string; iconBg: string; pill: string; accent: string };
-  td: (key: string, fallback: string) => string;
   generationType: "image" | "video";
 }) {
+  const { ts } = useI18n();
   const safeFeatures = features.length
     ? features
     : [
-        { icon: "🔍", title: "智能分析", subtitle: "理解你的创作意图与商品卖点" },
-        { icon: "✅", title: "方案确认", subtitle: "生成前可确认提示词和创作方向" },
-        { icon: generationType === "video" ? "🎬" : "🖼️", title: generationType === "video" ? "视频生成" : "图片生成", subtitle: "按选定场景输出可用素材" },
+        { icon: "🔍", title: ts("智能分析"), subtitle: ts("理解你的创作意图与商品卖点") },
+        { icon: "✅", title: ts("方案确认"), subtitle: ts("生成前可确认提示词和创作方向") },
+        { icon: generationType === "video" ? "🎬" : "🖼️", title: generationType === "video" ? ts("视频生成") : ts("图片生成"), subtitle: ts("按选定场景输出可用素材") },
       ];
   const active = safeFeatures[Math.min(activeIndex, safeFeatures.length - 1)] || safeFeatures[0];
   const activeTags = active.tags?.length ? active.tags : heroTags.slice(0, 4);
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pb-2">
       <div className="shrink-0 pt-1 text-center sm:pt-3 lg:pt-4">
         <div className={"mb-1.5 inline-flex items-center gap-2 rounded-full border border-white/60 px-3 py-1 text-[11px] font-semibold backdrop-blur dark:border-white/10 sm:px-4 sm:text-xs " + theme.pill}>
           <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" />
-          {generationType === "video" ? "视频智能体" : "图片智能体"}
+          {generationType === "video" ? ts("视频智能体") : ts("图片智能体")}
         </div>
         <div className="flex items-center justify-center gap-3">
           <div className={"flex h-9 w-9 items-center justify-center rounded-2xl text-xl shadow-sm sm:h-11 sm:w-11 sm:text-2xl " + theme.iconBg}>{workflowIcon}</div>
-          <h1 className="text-xl font-black tracking-normal text-gray-900 dark:text-white sm:text-3xl">{workflowName}</h1>
+          <h1 title={workflowName} className="max-w-[min(78vw,960px)] truncate text-xl font-black tracking-normal text-gray-900 dark:text-white sm:text-3xl">{workflowName}</h1>
         </div>
         {workflowDescription && <p className="mx-auto mt-2 max-w-2xl px-3 text-xs leading-5 text-gray-500 dark:text-gray-300 sm:text-sm">{workflowDescription}</p>}
         <div className="mt-2 flex flex-wrap justify-center gap-1.5 sm:mt-3 sm:gap-2">
           {heroTags.map((tag) => (
-            <span key={tag} className="rounded-full border border-gray-200 bg-white/55 px-2.5 py-0.5 text-[11px] text-gray-500 backdrop-blur dark:border-white/10 dark:bg-white/5 dark:text-gray-300 sm:px-3 sm:py-1 sm:text-xs">
-              {td("agent." + workflowCode + ".tag." + tag, tag)}
+            <span key={tag} title={tag} className="max-w-[180px] truncate rounded-full border border-gray-200 bg-white/55 px-2.5 py-0.5 text-[11px] text-gray-500 backdrop-blur dark:border-white/10 dark:bg-white/5 dark:text-gray-300 sm:px-3 sm:py-1 sm:text-xs">
+              {tag}
             </span>
           ))}
         </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 items-center gap-4 pt-4 sm:pt-5 lg:grid-cols-[300px_minmax(360px,640px)] lg:justify-center lg:gap-5 lg:pt-5">
-        <div className="mx-auto hidden w-full max-w-[300px] gap-3 lg:grid">
+      <div className="agent-showcase min-h-0 flex-1 items-center pt-4 sm:pt-5 lg:pt-5">
+        <div className="agent-feature-list mx-auto w-full max-w-[300px] gap-3">
           {safeFeatures.slice(0, 4).map((item, idx) => {
             const selected = activeIndex === idx;
             return (
@@ -1294,7 +1335,7 @@ function AgentLanding({
                 type="button"
                 onClick={() => onSelect(idx)}
                 className={
-                  "group rounded-2xl border p-4 text-left backdrop-blur transition duration-300 hover:-translate-y-1 hover:scale-[1.015] hover:shadow-xl hover:shadow-cyan-950/10 active:scale-[0.99] dark:hover:shadow-black/30 " +
+                  "group w-full min-w-0 max-w-full overflow-hidden box-border rounded-2xl border p-4 text-left backdrop-blur transition duration-300 hover:-translate-y-1 hover:scale-[1.015] hover:shadow-xl hover:shadow-cyan-950/10 active:scale-[0.99] dark:hover:shadow-black/30 " +
                   (selected ? "border-cyan-300 bg-white/75 shadow-lg shadow-cyan-950/5 dark:border-cyan-400/40 dark:bg-white/10" : "border-gray-200 bg-white/55 hover:border-cyan-200 hover:bg-white/70 dark:border-white/10 dark:bg-transparent dark:hover:border-cyan-400/25 dark:hover:bg-cyan-400/5")
                 }
               >
@@ -1303,8 +1344,8 @@ function AgentLanding({
                     {item.icon || "•"}
                   </div>
                   <div className="min-w-0">
-                    <div className="truncate text-sm font-bold text-gray-900 dark:text-white">{item.title}</div>
-                    {item.subtitle && <div className="mt-1 truncate text-xs text-gray-400">{item.subtitle}</div>}
+                    <div title={item.title} className="truncate text-sm font-bold text-gray-900 dark:text-white">{item.title}</div>
+                    {item.subtitle && <div title={item.subtitle} className="mt-1 truncate text-xs text-gray-400">{item.subtitle}</div>}
                   </div>
                   {selected ? <span className="ml-auto text-cyan-500">›</span> : null}
                 </div>
@@ -1313,11 +1354,11 @@ function AgentLanding({
           })}
         </div>
 
-        <div className="group mx-auto flex max-h-[330px] min-h-[260px] w-full max-w-[640px] flex-col justify-center overflow-y-auto rounded-3xl border border-cyan-300/70 bg-white/65 p-4 shadow-xl shadow-cyan-950/10 backdrop-blur-xl transition duration-300 hover:-translate-y-1 hover:border-cyan-400 hover:bg-white/75 hover:shadow-2xl hover:shadow-cyan-950/15 dark:border-cyan-400/30 dark:bg-transparent dark:shadow-black/30 dark:hover:bg-cyan-400/[0.04] sm:min-h-[300px] sm:p-6 lg:max-h-none lg:min-h-[330px] lg:p-7">
+        <div className="agent-feature-card group mx-auto flex max-h-[330px] min-h-[260px] w-full max-w-[640px] flex-col justify-center overflow-y-auto rounded-3xl border border-cyan-300/70 bg-white/65 p-4 shadow-xl shadow-cyan-950/10 backdrop-blur-xl transition duration-300 hover:-translate-y-1 hover:border-cyan-400 hover:bg-white/75 hover:shadow-2xl hover:shadow-cyan-950/15 dark:border-cyan-400/30 dark:bg-transparent dark:shadow-black/30 dark:hover:bg-cyan-400/[0.04] sm:min-h-[300px] sm:p-6 lg:max-h-none lg:min-h-[330px] lg:p-7">
           <div className="mb-4 flex items-center justify-between gap-3 lg:mb-5">
             <span className="rounded-xl bg-cyan-500/10 px-3 py-2 text-sm font-black text-cyan-700 dark:text-cyan-200">{String(Math.min(activeIndex + 1, safeFeatures.length)).padStart(2, "0")}</span>
             <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-600 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-200">
-              {generationType === "video" ? "支持视频生成链路" : "支持图片生成链路"}
+              {generationType === "video" ? ts("支持视频生成链路") : ts("支持图片生成链路")}
             </span>
           </div>
           <div className="flex items-start gap-4 lg:gap-5">
@@ -1325,14 +1366,14 @@ function AgentLanding({
               {active.icon || workflowIcon}
             </div>
             <div className="min-w-0">
-              <h2 className="text-lg font-black tracking-normal text-gray-900 dark:text-white sm:text-xl lg:text-2xl">{active.title}</h2>
-              <p className="mt-2 max-w-[470px] text-xs leading-6 text-gray-500 dark:text-gray-300 sm:text-sm lg:mt-4 lg:leading-7">
-                {active.subtitle || "输入商品、素材或创意需求，系统会自动理解目标场景、生成策略和输出参数。"}
+              <h2 title={active.title} className="line-clamp-2 text-lg font-black tracking-normal text-gray-900 dark:text-white sm:text-xl lg:text-2xl">{active.title}</h2>
+              <p title={active.subtitle || undefined} className="mt-2 line-clamp-3 max-w-[470px] text-xs leading-6 text-gray-500 dark:text-gray-300 sm:text-sm lg:mt-4 lg:leading-7">
+                {active.subtitle || ts("输入商品、素材或创意需求，系统会自动理解目标场景、生成策略和输出参数。")}
               </p>
               <div className="mt-3 flex flex-wrap gap-2 lg:mt-5">
                 {activeTags.map((tag) => (
-                  <span key={tag} className="rounded-lg bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-700 dark:text-cyan-200">
-                    {td("agent." + workflowCode + ".tag." + tag, tag)}
+                  <span key={tag} title={tag} className="max-w-[170px] truncate rounded-lg bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-700 dark:text-cyan-200">
+                    {tag}
                   </span>
                 ))}
               </div>
@@ -1344,7 +1385,7 @@ function AgentLanding({
                 key={feature.title + idx}
                 type="button"
                 onClick={() => onSelect(idx)}
-                aria-label={`切换到${feature.title}`}
+                aria-label={`${ts("切换到")} ${feature.title}`}
                 className={(idx === activeIndex ? "h-3 w-9 bg-cyan-500 shadow-md shadow-cyan-500/30" : "h-3 w-3 bg-gray-300/70 hover:bg-cyan-300 dark:bg-white/20 dark:hover:bg-cyan-300/70") + " rounded-full transition-all duration-300 hover:scale-125"}
               />
             ))}
@@ -1388,21 +1429,20 @@ function SceneOptionMenu({ scenes, value, onChange }: { scenes: string[]; value:
   );
 }
 
-function ComicFeatureSelector({ activeIndex, onSelect }: { activeIndex: number; onSelect: (index: number) => void }) {
+function ComicFeatureSelector({ features, activeIndex, onSelect }: { features: DisplayStep[]; activeIndex: number; onSelect: (index: number) => void }) {
   return (
-    <div className="mx-auto hidden w-full max-w-[300px] gap-3 lg:grid">
-      {COMIC_FEATURES.map((item, idx) => {
-        const Icon = item.icon;
+    <div className="agent-feature-list mx-auto w-full max-w-[300px] gap-3">
+      {features.map((item, idx) => {
         const active = activeIndex === idx;
         return (
-        <button key={item.title} type="button" onClick={() => onSelect(idx)} className={"group rounded-2xl border p-4 text-left backdrop-blur transition duration-300 hover:-translate-y-1 hover:scale-[1.015] hover:shadow-xl hover:shadow-cyan-950/10 active:scale-[0.99] dark:hover:shadow-black/30 " + (active ? "border-cyan-300 bg-white/75 shadow-lg shadow-cyan-950/5 dark:border-cyan-400/40 dark:bg-white/10" : "border-gray-200 bg-white/55 hover:border-cyan-200 hover:bg-white/70 dark:border-white/10 dark:bg-transparent dark:hover:border-cyan-400/25 dark:hover:bg-cyan-400/5")}>
+        <button key={item.title} type="button" onClick={() => onSelect(idx)} className={"group w-full min-w-0 max-w-full overflow-hidden box-border rounded-2xl border p-4 text-left backdrop-blur transition duration-300 hover:-translate-y-1 hover:scale-[1.015] hover:shadow-xl hover:shadow-cyan-950/10 active:scale-[0.99] dark:hover:shadow-black/30 " + (active ? "border-cyan-300 bg-white/75 shadow-lg shadow-cyan-950/5 dark:border-cyan-400/40 dark:bg-white/10" : "border-gray-200 bg-white/55 hover:border-cyan-200 hover:bg-white/70 dark:border-white/10 dark:bg-transparent dark:hover:border-cyan-400/25 dark:hover:bg-cyan-400/5")}>
           <div className="flex items-center gap-3">
-            <div className={"flex h-10 w-10 items-center justify-center rounded-xl transition duration-300 group-hover:rotate-3 group-hover:scale-110 " + (active ? "bg-cyan-500/15 text-cyan-600 dark:text-cyan-200" : "bg-gray-500/10 text-gray-400 dark:bg-transparent dark:text-gray-300")}>
-              <Icon size={20} />
+            <div className={"flex h-10 w-10 items-center justify-center rounded-xl text-lg transition duration-300 group-hover:rotate-3 group-hover:scale-110 " + (active ? "bg-cyan-500/15 text-cyan-600 dark:text-cyan-200" : "bg-gray-500/10 text-gray-400 dark:bg-transparent dark:text-gray-300")}>
+              {item.icon || "•"}
             </div>
             <div className="min-w-0">
-              <div className="truncate text-sm font-bold text-gray-900 dark:text-white">{item.title}</div>
-              <div className="mt-1 truncate text-xs text-gray-400">{item.desc}</div>
+              <div title={item.title} className="truncate text-sm font-bold text-gray-900 dark:text-white">{item.title}</div>
+              {item.subtitle ? <div title={item.subtitle} className="mt-1 truncate text-xs text-gray-400">{item.subtitle}</div> : null}
             </div>
             {active ? <span className="ml-auto text-cyan-500">›</span> : null}
           </div>
@@ -1413,38 +1453,37 @@ function ComicFeatureSelector({ activeIndex, onSelect }: { activeIndex: number; 
   );
 }
 
-function ComicFeatureHero({ activeIndex, onSelect }: { activeIndex: number; onSelect: (index: number) => void }) {
-  const item = COMIC_FEATURES[activeIndex] || COMIC_FEATURES[0];
-  const Icon = item.icon;
+function ComicFeatureHero({ features, activeIndex, onSelect }: { features: DisplayStep[]; activeIndex: number; onSelect: (index: number) => void }) {
+  const { t } = useI18n();
+  const item = features[activeIndex] || features[0];
+  if (!item) return null;
   return (
-    <div className="group mx-auto w-full max-w-[640px] rounded-3xl border border-cyan-300/70 bg-white/65 p-4 shadow-xl shadow-cyan-950/10 backdrop-blur-xl transition duration-300 hover:-translate-y-1 hover:border-cyan-400 hover:bg-white/75 hover:shadow-2xl hover:shadow-cyan-950/15 dark:border-cyan-400/30 dark:bg-transparent dark:shadow-black/30 dark:hover:bg-cyan-400/[0.04] sm:p-6 lg:p-7">
+    <div className="comic-feature-card group mx-auto flex w-full max-w-[640px] flex-col overflow-y-auto rounded-3xl border border-cyan-300/70 bg-white/65 p-4 shadow-xl shadow-cyan-950/10 backdrop-blur-xl transition duration-300 hover:-translate-y-1 hover:border-cyan-400 hover:bg-white/75 hover:shadow-2xl hover:shadow-cyan-950/15 dark:border-cyan-400/30 dark:bg-transparent dark:shadow-black/30 dark:hover:bg-cyan-400/[0.04] sm:p-6 lg:p-7">
       <div className="mb-4 flex items-center justify-between lg:mb-5">
-        <span className="rounded-xl bg-cyan-500/10 px-3 py-2 text-sm font-black text-cyan-700 dark:text-cyan-200">{item.badge}</span>
-        <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-600 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-200">{item.highlight}</span>
+        <span className="rounded-xl bg-cyan-500/10 px-3 py-2 text-sm font-black text-cyan-700 dark:text-cyan-200">{String(activeIndex + 1).padStart(2, "0")}</span>
+        <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-600 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-200">{item.tags?.[0] || t("comic.tagControl")}</span>
       </div>
       <div className="flex items-start gap-4 lg:gap-5">
-        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-cyan-500/10 text-cyan-600 transition duration-300 group-hover:rotate-3 group-hover:scale-110 dark:text-cyan-200 sm:h-14 sm:w-14 lg:h-16 lg:w-16">
-          <Icon size={28} />
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-cyan-500/10 text-2xl text-cyan-600 transition duration-300 group-hover:rotate-3 group-hover:scale-110 dark:text-cyan-200 sm:h-14 sm:w-14 lg:h-16 lg:w-16">
+          {item.icon || "•"}
         </div>
         <div>
-          <h2 className="text-lg font-black tracking-normal text-gray-900 dark:text-white sm:text-xl lg:text-2xl">{item.title}</h2>
-          <p className="mt-2 max-w-[460px] text-xs leading-6 text-gray-500 dark:text-gray-300 sm:text-sm lg:mt-4 lg:leading-7">
-            {item.body}
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2 lg:mt-5">
+          <h2 title={item.title} className="line-clamp-2 text-lg font-black tracking-normal text-gray-900 dark:text-white sm:text-xl lg:text-2xl">{item.title}</h2>
+          {item.subtitle ? <p title={item.subtitle} className="mt-2 line-clamp-3 max-w-[460px] text-xs leading-6 text-gray-500 dark:text-gray-300 sm:text-sm lg:mt-4 lg:leading-7">{item.subtitle}</p> : null}
+          {item.tags?.length ? <div className="mt-3 flex flex-wrap gap-2 lg:mt-5">
             {item.tags.map((tag) => (
-              <span key={tag} className="rounded-lg bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-700 dark:text-cyan-200">{tag}</span>
+              <span key={tag} title={tag} className="max-w-[170px] truncate rounded-lg bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-700 dark:text-cyan-200">{tag}</span>
             ))}
-          </div>
+          </div> : null}
         </div>
       </div>
-      <div className="mt-4 flex justify-center gap-2 lg:mt-5">
-        {COMIC_FEATURES.map((feature, idx) => (
+      <div className="mt-auto flex justify-center gap-2 pt-4 lg:pt-5">
+        {features.map((feature, idx) => (
           <button
             key={feature.title}
             type="button"
             onClick={() => onSelect(idx)}
-            aria-label={`切换到${feature.title}`}
+            aria-label={`${t("common.select")} ${feature.title}`}
             className={(idx === activeIndex ? "h-3 w-9 bg-cyan-500 shadow-md shadow-cyan-500/30" : "h-3 w-3 bg-gray-300/70 hover:bg-cyan-300 dark:bg-white/20 dark:hover:bg-cyan-300/70") + " rounded-full transition-all duration-300 hover:scale-125"}
           />
         ))}
@@ -1453,25 +1492,27 @@ function ComicFeatureHero({ activeIndex, onSelect }: { activeIndex: number; onSe
   );
 }
 
-function ComicTimeline({ compact = false }: { compact?: boolean }) {
-  const nodes = ["意图分析", "创意方向", "创作大纲", "小说创作", "剧本转换", "主体创建", "分镜规划", "主体匹配", "分镜脚本", "关键帧", "生成视频", "视频合成"];
+function ComicTimeline({ nodes, mobileNodes, compact = false }: { nodes: string[]; mobileNodes?: string[]; compact?: boolean }) {
+  const { t } = useI18n();
+  const visibleNodes = nodes.filter(Boolean);
+  const compactNodes = (mobileNodes?.filter(Boolean).length ? mobileNodes.filter(Boolean) : visibleNodes.slice(0, 4)).slice(0, 4);
+  if (!visibleNodes.length) return null;
+  const activeIndex = Math.min(visibleNodes.length - 1, Math.floor(visibleNodes.length / 2));
+  const compactActiveIndex = Math.min(compactNodes.length - 1, Math.floor(compactNodes.length / 2));
+  const tone = (idx: number) => idx < visibleNodes.length / 3 ? "cyan" : idx < visibleNodes.length * 2 / 3 ? "violet" : "amber";
   return (
-    <div className={"mx-auto w-full max-w-7xl lg:-mt-3 lg:mb-5 " + (compact ? "py-1" : "py-4")}>
-      <div className="mb-2 flex flex-wrap justify-center gap-2 text-[11px] font-semibold lg:justify-around">
-        <span className="rounded-full bg-cyan-500/10 px-3 py-1 text-cyan-700 dark:text-cyan-200">01 创意阶段</span>
-        <span className="rounded-full bg-violet-500/10 px-3 py-1 text-violet-700 dark:text-violet-200">02 编剧阶段</span>
-        <span className="rounded-full bg-amber-500/10 px-3 py-1 text-amber-700 dark:text-amber-200">03 制作阶段</span>
+    <div className={"mx-auto w-full max-w-7xl lg:mb-5 " + (compact ? "py-1" : "py-4")}>
+      <div className="mb-2 hidden flex-wrap justify-center gap-2 text-[11px] font-semibold sm:flex lg:justify-around">
+        <span className="rounded-full bg-cyan-500/10 px-3 py-1 text-cyan-700 dark:text-cyan-200">01 {t("comic.stageCreative")}</span>
+        <span className="rounded-full bg-violet-500/10 px-3 py-1 text-violet-700 dark:text-violet-200">02 {t("comic.stageScript")}</span>
+        <span className="rounded-full bg-amber-500/10 px-3 py-1 text-amber-700 dark:text-amber-200">03 {t("comic.stageProduction")}</span>
       </div>
-      <div className="relative grid grid-cols-4 gap-x-2 gap-y-5 px-1 py-2 lg:hidden">
-        <div className="pointer-events-none absolute left-[12.5%] right-[12.5%] top-[31px] h-px bg-gradient-to-r from-cyan-400 via-violet-400 to-violet-400" />
-        <div className="pointer-events-none absolute left-[12.5%] right-[12.5%] top-[104px] h-px bg-gradient-to-r from-violet-400 via-violet-400 to-amber-400" />
-        <div className="pointer-events-none absolute left-[12.5%] right-[12.5%] top-[177px] h-px bg-gradient-to-r from-amber-400 via-amber-400 to-amber-400" />
-        <div className="pointer-events-none absolute right-[12.5%] top-[31px] h-[73px] w-px bg-violet-400" />
-        <div className="pointer-events-none absolute left-[12.5%] top-[104px] h-[73px] w-px bg-violet-400" />
-        {nodes.map((node, idx) => (
-          <div key={node} className="relative z-10 flex min-h-[52px] flex-col items-center justify-start gap-1.5">
-            <span className={"h-6 w-6 rounded-full border-4 bg-white shadow-sm dark:bg-gray-950 " + (idx < 4 ? "border-cyan-400" : idx < 9 ? "border-violet-400" : "border-amber-400")} />
-            <span className={"w-full rounded-lg px-1 py-1 text-center text-[10px] font-semibold leading-tight " + (node === "分镜规划" ? "bg-white/80 text-gray-900 shadow-sm dark:bg-white/10 dark:text-white" : "text-gray-500 dark:text-gray-300")}>
+      <div className="relative grid grid-cols-4 gap-x-1 px-1 py-1 lg:hidden">
+        <div className="pointer-events-none absolute left-[12.5%] right-[12.5%] top-[13px] h-px bg-gradient-to-r from-cyan-400 via-violet-400 to-amber-400" />
+        {compactNodes.map((node, idx) => (
+          <div key={node} className="relative z-10 flex min-w-0 flex-col items-center justify-start gap-1">
+            <span className={"h-6 w-6 rounded-full border-4 bg-white shadow-sm dark:bg-gray-950 " + (idx < 2 ? "border-cyan-400" : idx === 2 ? "border-violet-400" : "border-amber-400")} />
+            <span title={node} className={"line-clamp-2 w-full px-0.5 text-center text-[9px] font-semibold leading-tight sm:text-[10px] " + (idx === compactActiveIndex ? "text-gray-900 dark:text-white" : "text-gray-500 dark:text-gray-300")}>
               {node}
             </span>
           </div>
@@ -1479,10 +1520,10 @@ function ComicTimeline({ compact = false }: { compact?: boolean }) {
       </div>
       <div className="relative hidden items-center justify-between gap-2 lg:flex">
         <div className="absolute left-4 right-4 top-3 h-px bg-gradient-to-r from-cyan-400 via-violet-400 to-amber-400" />
-        {nodes.map((node, idx) => (
+        {visibleNodes.map((node, idx) => (
           <div key={node} className="relative z-10 flex min-w-0 flex-1 flex-col items-center gap-2">
-            <span className={"h-6 w-6 rounded-full border-4 bg-white dark:bg-gray-950 " + (idx < 4 ? "border-cyan-400" : idx < 9 ? "border-violet-400" : "border-amber-400")} />
-            <span className={"max-w-full truncate text-[11px] " + (node === "分镜规划" ? "font-black text-gray-900 dark:text-white" : "text-gray-400")}>{node}</span>
+            <span className={"h-6 w-6 rounded-full border-4 bg-white dark:bg-gray-950 " + (tone(idx) === "cyan" ? "border-cyan-400" : tone(idx) === "violet" ? "border-violet-400" : "border-amber-400")} />
+            <span title={node} className={"max-w-full truncate text-[11px] " + (idx === activeIndex ? "font-black text-gray-900 dark:text-white" : "text-gray-400")}>{node}</span>
           </div>
         ))}
       </div>
@@ -1527,7 +1568,7 @@ function ComicProjectModal({
         </div>
         <div className="max-h-[72vh] overflow-y-auto p-6">
           <label className="mx-auto mb-5 flex h-36 w-64 cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-gray-300 bg-gray-50 text-sm text-gray-400 hover:border-cyan-300 hover:bg-cyan-50 dark:border-white/10 dark:bg-white/5">
-            {draft.cover_url ? <img src={draft.cover_url} alt="" className="h-full w-full rounded-2xl object-cover" /> : uploading ? <Loader2 className="animate-spin" /> : <><ImageIcon size={30} /><span>点击上传封面</span></>}
+            {draft.cover_url ? <Image src={draft.cover_url} alt="" width={512} height={288} sizes="256px" className="h-full w-full rounded-2xl object-cover" /> : uploading ? <Loader2 className="animate-spin" /> : <><ImageIcon size={30} /><span>点击上传封面</span></>}
             <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" onChange={(e) => { onUpload(e.target.files?.[0]); e.currentTarget.value = ""; }} />
           </label>
           <div className="space-y-4">
@@ -1559,7 +1600,8 @@ function ComicProjectModal({
   );
 }
 
-function ComicStyleModal({ styles, selectedId, filter, onFilter, onSelect, onClose, onConfirm, onAdd }: { styles: ComicStyle[]; selectedId: string; filter: "all" | "system" | "mine"; onFilter: (v: "all" | "system" | "mine") => void; onSelect: (id: string) => void; onClose: () => void; onConfirm: () => void; onAdd: (mode: "smart" | "manual") => void }) {
+function ComicStyleModal({ styles, selectedId, filter, onFilter, onSelect, onClose, onConfirm, onAdd, onDelete }: { styles: ComicStyle[]; selectedId: string; filter: "all" | "system" | "mine"; onFilter: (v: "all" | "system" | "mine") => void; onSelect: (id: string) => void; onClose: () => void; onConfirm: () => void; onAdd: (mode: "smart" | "manual") => void; onDelete: (style: ComicStyle) => void }) {
+	const { t } = useI18n();
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/35 p-4 backdrop-blur-sm" onClick={onClose}>
       <div className="w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-2xl dark:border dark:border-white/10 dark:bg-gray-900" onClick={(e) => e.stopPropagation()}>
@@ -1572,7 +1614,7 @@ function ComicStyleModal({ styles, selectedId, filter, onFilter, onSelect, onClo
           <div className="ml-auto flex gap-2"><button onClick={() => onAdd("smart")} className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-600 dark:border-violet-400/20 dark:bg-violet-400/10 dark:text-violet-200">新增风格 - 智能识别</button><button onClick={() => onAdd("manual")} className="rounded-xl border border-orange-200 bg-orange-50 px-4 py-2 text-sm font-semibold text-orange-600 dark:border-orange-400/20 dark:bg-orange-400/10 dark:text-orange-200">新增风格 - 手动添加</button></div>
         </div>
         <div className="grid max-h-[56vh] gap-4 overflow-y-auto p-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {styles.map((style) => <button key={style.public_id} onClick={() => onSelect(style.public_id)} className={"overflow-hidden rounded-2xl border bg-white text-left shadow-sm transition dark:bg-white/5 " + (selectedId === style.public_id ? "border-orange-300 ring-2 ring-orange-200 dark:border-orange-400/50" : "border-gray-200 hover:border-orange-200 dark:border-white/10")}><div className="aspect-[1.55] bg-gray-100 dark:bg-white/10">{style.cover_url ? <img src={style.cover_url} alt="" className="h-full w-full object-cover" /> : null}</div><div className="p-3"><div className="truncate text-sm font-semibold text-gray-900 dark:text-white">{style.name}</div><div className="mt-1 text-[11px] text-gray-400">{style.source === "system" ? "系统" : "我的"}</div></div></button>)}
+			{styles.map((style) => <div key={style.public_id} className="relative"><button onClick={() => onSelect(style.public_id)} className={"w-full overflow-hidden rounded-2xl border bg-white text-left shadow-sm transition dark:bg-white/5 " + (selectedId === style.public_id ? "border-orange-300 ring-2 ring-orange-200 dark:border-orange-400/50" : "border-gray-200 hover:border-orange-200 dark:border-white/10")}><div className="aspect-[1.55] bg-gray-100 dark:bg-white/10">{style.cover_url ? <Image src={style.cover_url} alt="" width={480} height={310} sizes="(max-width: 640px) 50vw, 25vw" className="h-full w-full object-cover" /> : null}</div><div className="p-3"><div className="truncate text-sm font-semibold text-gray-900 dark:text-white">{style.name}</div><div className="mt-1 text-[11px] text-gray-400">{style.source === "system" ? "系统" : "我的"}</div></div></button>{style.source !== "system" ? <button type="button" title={t("comic.deleteStyle")} onClick={() => onDelete(style)} className="absolute right-2 top-2 rounded-lg bg-black/60 p-1.5 text-white hover:bg-red-500"><Trash2 size={13} /></button> : null}</div>)}
         </div>
         <div className="flex justify-between border-t border-gray-100 p-5 dark:border-white/10"><span className="text-sm text-gray-400">{selectedId ? "已选择风格" : "尚未选择风格"}</span><div className="flex gap-2"><button onClick={onClose} className="rounded-xl border border-gray-200 px-5 py-2 text-sm text-gray-600 dark:border-white/10 dark:text-gray-300">取消</button><button onClick={onConfirm} className="rounded-xl bg-orange-400 px-5 py-2 text-sm font-semibold text-white">确认选择</button></div></div>
       </div>
@@ -1587,7 +1629,7 @@ function ComicStyleAddModal({ mode, draft, uploading, submitting, onChange, onUp
       <div className="w-full max-w-lg overflow-hidden rounded-3xl bg-white shadow-2xl dark:border dark:border-white/10 dark:bg-gray-900" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-gray-100 p-5 dark:border-white/10"><div className="text-lg font-bold text-gray-900 dark:text-white">新增风格</div><button onClick={onClose} className="flex h-10 w-10 items-center justify-center rounded-xl bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-300"><X size={18} /></button></div>
         <div className="space-y-4 p-6">
-          <label className="block text-sm text-gray-600 dark:text-gray-300">参考图 <span className="text-red-500">*</span><div className="mt-2 flex h-48 cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-gray-300 bg-gray-50 text-gray-400 dark:border-white/10 dark:bg-white/5">{draft.cover_url ? <img src={draft.cover_url} alt="" className="h-full w-full rounded-2xl object-cover" /> : uploading ? <Loader2 className="animate-spin" /> : <><Plus size={28} /><span>点击选择图片</span></>}<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" onChange={(e) => { onUpload(e.target.files?.[0]); e.currentTarget.value = ""; }} /></div></label>
+          <label className="block text-sm text-gray-600 dark:text-gray-300">参考图 <span className="text-red-500">*</span><div className="mt-2 flex h-48 cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-gray-300 bg-gray-50 text-gray-400 dark:border-white/10 dark:bg-white/5">{draft.cover_url ? <Image src={draft.cover_url} alt="" width={640} height={384} sizes="512px" className="h-full w-full rounded-2xl object-cover" /> : uploading ? <Loader2 className="animate-spin" /> : <><Plus size={28} /><span>点击选择图片</span></>}<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" onChange={(e) => { onUpload(e.target.files?.[0]); e.currentTarget.value = ""; }} /></div></label>
           <label className="block text-sm text-gray-600 dark:text-gray-300">风格名称 <input value={draft.name} onChange={(e) => update({ name: e.target.value })} placeholder="给这个风格起个名字" className="mt-2 w-full rounded-xl border border-gray-200 px-3 py-3 text-sm outline-none focus:border-orange-300 dark:border-white/10 dark:bg-white/5 dark:text-white" /></label>
           <label className="block text-sm text-gray-600 dark:text-gray-300">风格提示词 <textarea value={draft.prompt} onChange={(e) => update({ prompt: e.target.value })} placeholder={mode === "smart" ? "可留空，系统会根据参考图生成基础风格说明" : "例如：动漫风格，新海诚画风，赛璐璐上色..."} className="mt-2 h-28 w-full resize-none rounded-xl border border-gray-200 px-3 py-3 text-sm outline-none focus:border-orange-300 dark:border-white/10 dark:bg-white/5 dark:text-white" /></label>
         </div>
@@ -1673,7 +1715,7 @@ function ComicProjectPanel({ project }: { project: Project }) {
               <div className="aspect-video bg-gray-100 dark:bg-gray-950">
                 {textOf(item.image_url) ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={textOf(item.image_url)} alt="" className="h-full w-full object-cover" />
+                  <Image src={textOf(item.image_url)} alt="" width={640} height={360} sizes="(max-width: 768px) 100vw, 50vw" className="h-full w-full object-cover" />
                 ) : (
                   <div className="flex h-full items-center justify-center text-xs text-gray-400">关键帧生成中</div>
                 )}
@@ -1811,7 +1853,7 @@ function MediaTaskGrid({ tasks, generationType, onMore }: { tasks: MediaTask[]; 
                   {t("common.download")}
                 </a>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={preview.url} alt="" className="max-h-[88vh] w-full object-contain" />
+                <Image src={preview.url} alt="" width={1600} height={900} sizes="100vw" className="max-h-[88vh] w-full object-contain" />
               </div>
             )}
           </div>
@@ -1865,7 +1907,7 @@ function MediaResultCard({
           <div className="relative h-full w-full">
             <button type="button" onClick={() => onPreview(url, "image")} className="h-full w-full">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={url} alt="" onError={() => setImageFailed(true)} className="w-full h-full object-contain" />
+              <Image src={url} alt="" width={1280} height={720} sizes="(max-width: 768px) 100vw, 50vw" onError={() => setImageFailed(true)} className="w-full h-full object-contain" />
             </button>
             <a
               href={url}

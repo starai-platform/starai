@@ -8,6 +8,7 @@ interface Order {
   order_no: string;
   channel: string;
   amount: number;
+  currency: string;
   compute_credited: number;
   status: string;
   paid_at?: string;
@@ -61,6 +62,7 @@ export default function OrdersPage() {
           <option value="paid">paid</option>
           <option value="pending">pending</option>
           <option value="failed">failed</option>
+          <option value="expired">expired</option>
         </select>
         <span className="text-xs text-gray-400">共 {filtered.length} 笔</span>
       </div>
@@ -83,7 +85,7 @@ export default function OrdersPage() {
                 <td className="px-4 py-3 font-mono text-xs">{o.order_no}</td>
                 <td className="px-4 py-3">{o.nickname || o.user_public_id}</td>
                 <td className="px-4 py-3">{o.channel}</td>
-                <td className="px-4 py-3">¥{o.amount.toFixed(2)}</td>
+                <td className="px-4 py-3">{o.amount.toFixed(2)} {o.currency || ""}</td>
                 <td className="px-4 py-3">{o.compute_credited.toFixed(2)}</td>
                 <td className="px-4 py-3">
                   <span className={o.status === "paid" ? "text-green-600" : "text-gray-500"}>{o.status}</span>

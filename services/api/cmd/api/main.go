@@ -16,6 +16,7 @@ import (
 	"github.com/starai/api/internal/db"
 	"github.com/starai/api/internal/handler"
 	"github.com/starai/api/internal/mailer"
+	"github.com/starai/api/internal/middleware"
 	"github.com/starai/api/internal/queue"
 	"github.com/starai/api/internal/runtime"
 	"github.com/starai/api/internal/service"
@@ -23,7 +24,7 @@ import (
 )
 
 func main() {
-	_ = godotenv.Load()
+	_ = godotenv.Load("../../.env.local", "../../.env", ".env.local", ".env")
 	cfg := config.Load()
 	ctx := context.Background()
 
@@ -49,6 +50,7 @@ func main() {
 	authSvc := service.NewAuthService(pool, billingSvc, cfg.JWTSecret)
 	walletSvc := service.NewWalletService(pool, billingSvc)
 	modelSvc := service.NewModelService(pool)
+	contentI18nSvc := service.NewContentI18nService(pool)
 	rtClient := runtime.NewClient(cfg.NewAPIBaseURL, cfg.NewAPIToken, cfg.NewAPITimeoutSec, cfg.NewAPIStreamTimeoutSec)
 	opsSvc := service.NewOpsService(pool, billingSvc, cfg.AdminJWT)
 	chatSvc := service.NewChatService(pool, modelSvc, billingSvc, rtClient, opsSvc)
@@ -58,6 +60,11 @@ func main() {
 	paymentSvc := service.NewPaymentService(pool, billingSvc)
 	gallerySvc := service.NewGalleryService(pool)
 	agentSvc := service.NewAgentService(pool, billingSvc, qClient)
+	if count, syncErr := contentI18nSvc.SyncCatalog(ctx, modelSvc, agentSvc); syncErr != nil {
+		log.Printf("warning: dynamic content translation catalog sync failed: %v", syncErr)
+	} else {
+		log.Printf("dynamic content translation catalog synced: %d entities", count)
+	}
 	homeSvc := service.NewHomeService(pool)
 	presetSvc := service.NewPresetService(pool)
 	assetSvc := service.NewAssetService(pool)
@@ -112,13 +119,24 @@ func main() {
 	}
 	startExpiredWorksCleaner(ctx, worksSvc, storageClient)
 
-	h := handler.New(cfg, authSvc, walletSvc, modelSvc, chatSvc, taskSvc, worksSvc, adminSvc, billingSvc, paymentSvc, opsSvc, gallerySvc, agentSvc, cacheClient, storageClient, homeSvc, presetSvc, assetSvc, roleTplSvc, oauthSvc, captchaSvc, emailOTPSvc)
+	h := handler.New(cfg, authSvc, walletSvc, modelSvc, chatSvc, taskSvc, worksSvc, adminSvc, billingSvc, paymentSvc, opsSvc, gallerySvc, agentSvc, cacheClient, storageClient, homeSvc, presetSvc, assetSvc, roleTplSvc, oauthSvc, captchaSvc, emailOTPSvc, contentI18nSvc)
 
-	r := gin.Default()
+	r := gin.New()
+	trustedProxies := []string{}
+	for _, proxy := range strings.Split(cfg.TrustedProxies, ",") {
+		if proxy = strings.TrimSpace(proxy); proxy != "" {
+			trustedProxies = append(trustedProxies, proxy)
+		}
+	}
+	if err := r.SetTrustedProxies(trustedProxies); err != nil {
+		log.Fatalf("trusted proxies: %v", err)
+	}
+	r.Use(gin.Recovery())
+	r.Use(middleware.RequestID(), middleware.RequestLog(), middleware.Metrics())
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:3000", "http://localhost:3001"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "X-Locale", "Accept-Language"},
 		AllowCredentials: true,
 	}))
 	if localRoot == "" {
@@ -133,6 +151,7 @@ func main() {
 		r.Static("/uploads-local", localRoot)
 	}
 	h.RegisterRoutes(r)
+	h.StartContentTranslationBackfill()
 
 	port := cfg.APIPort
 	if port == "" {

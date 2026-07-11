@@ -176,15 +176,39 @@ func buildReply(model string, messages []message) string {
 	var systemParts []string
 	lastUser := ""
 	isSummary := false
+	isTranslation := false
 	for _, m := range messages {
 		switch m.Role {
 		case "system":
 			systemParts = append(systemParts, m.Content)
+			if strings.Contains(m.Content, `"translations"`) && strings.Contains(m.Content, "Return only") {
+				isTranslation = true
+			}
 			if strings.Contains(m.Content, "多模型协作的总结模型") {
 				isSummary = true
 			}
 		case "user":
 			lastUser = m.Content
+		}
+	}
+	if isTranslation {
+		start := strings.Index(lastUser, "[")
+		if start >= 0 {
+			var rows []map[string]interface{}
+			if json.Unmarshal([]byte(lastUser[start:]), &rows) == nil {
+				translations := map[string]string{}
+				for _, row := range rows {
+					key := fmt.Sprint(row["key"])
+					if key == "<nil>" || key == "" {
+						key = fmt.Sprint(row["id"])
+					}
+					if key != "<nil>" && key != "" {
+						translations[key] = "Translated: " + fmt.Sprint(row["text"])
+					}
+				}
+				encoded, _ := json.Marshal(map[string]interface{}{"translations": translations})
+				return string(encoded)
+			}
 		}
 	}
 

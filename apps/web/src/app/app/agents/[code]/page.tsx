@@ -2,8 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { api } from "@/lib/api";
+import { api, apiForLocale } from "@/lib/api";
 import { SchemaForm, schemaDefaults } from "@/components/workbench/SchemaForm";
+import { useI18n } from "@/i18n/I18nProvider";
 
 interface Workflow {
   code: string;
@@ -33,13 +34,14 @@ interface Project {
   node_runs: NodeRun[];
 }
 
-const STATUS_LABEL: Record<string, string> = {
-  pending: "排队中", running: "执行中", succeeded: "已完成", failed: "失败",
+const STATUS_KEY: Record<string, string> = {
+  pending: "status.pending", running: "status.running", succeeded: "status.succeeded", failed: "status.failed",
 };
 
 export default function AgentWorkspacePage() {
   const params = useParams();
   const router = useRouter();
+  const { t, locale } = useI18n();
   const code = params?.code as string;
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [form, setForm] = useState<Record<string, unknown>>({});
@@ -49,17 +51,26 @@ export default function AgentWorkspacePage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    if (code)
-      api<Workflow>(`/api/agents/${code}`)
+    const controller = new AbortController();
+    if (code) {
+      apiForLocale<Workflow>(`/api/agents/${code}`, locale, { signal: controller.signal })
         .then((wf) => {
+          if (controller.signal.aborted) return;
           setWorkflow(wf);
           setForm(schemaDefaults(wf.input_schema));
         })
-        .catch(() => setWorkflow(null));
+        .catch((error) => {
+          if (error?.name !== "AbortError") setWorkflow(null);
+        });
+    }
     return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
+      controller.abort();
     };
-  }, [code]);
+  }, [code, locale]);
+
+  useEffect(() => () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+  }, []);
 
   const startPolling = (publicId: string) => {
     if (pollRef.current) clearInterval(pollRef.current);
@@ -87,7 +98,7 @@ export default function AgentWorkspacePage() {
       setProject(p);
       startPolling(p.public_id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "启动失败");
+      setError(err instanceof Error ? err.message : t("agentRun.startFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -100,14 +111,14 @@ export default function AgentWorkspacePage() {
   };
 
   if (!workflow) {
-    return <div className="flex-1 p-8 text-center text-gray-400">加载中...</div>;
+    return <div className="flex-1 p-8 text-center text-gray-400">{t("common.loading")}</div>;
   }
 
   return (
     <div className="flex-1 overflow-y-auto p-8">
       <div className="max-w-3xl mx-auto">
         <button onClick={() => router.push("/app/agents")} className="text-sm text-gray-400 hover:text-gray-600 mb-4">
-          ← 返回智能体
+          ← {t("agentRun.back")}
         </button>
 
         <div className="flex items-center gap-3 mb-6">
@@ -128,19 +139,19 @@ export default function AgentWorkspacePage() {
             disabled={submitting || (project?.status === "running" || project?.status === "pending")}
             className="px-6 py-2.5 rounded-xl bg-primary text-dark font-semibold text-sm disabled:opacity-50"
           >
-            {submitting ? "启动中..." : "开始生成"}
+            {submitting ? t("agentRun.starting") : t("agentRun.start")}
           </button>
         </div>
 
         {project && (
           <div className="soft-card p-5">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="font-semibold">执行进度</h2>
+              <h2 className="font-semibold">{t("agentRun.progress")}</h2>
               <span className={`text-sm font-medium ${
                 project.status === "succeeded" ? "text-emerald-600" :
                 project.status === "failed" ? "text-red-500" : "text-amber-600"
               }`}>
-                {STATUS_LABEL[project.status] || project.status}
+                {STATUS_KEY[project.status] ? t(STATUS_KEY[project.status]) : project.status}
               </span>
             </div>
 
@@ -154,7 +165,7 @@ export default function AgentWorkspacePage() {
                       n.status === "failed" ? "text-red-500" :
                       n.status === "running" ? "text-amber-600" : "text-gray-400"
                     }`}>
-                      {STATUS_LABEL[n.status] || n.status}
+                      {STATUS_KEY[n.status] ? t(STATUS_KEY[n.status]) : n.status}
                     </span>
                   </div>
                   {n.error && <p className="text-xs text-red-500 mt-2">{n.error}</p>}
@@ -173,12 +184,12 @@ export default function AgentWorkspacePage() {
             </div>
 
             {project.status === "succeeded" && (
-              <div className="text-xs text-gray-400 mt-4">本次消耗 {project.actual_cost.toFixed(2)} 算力</div>
+              <div className="text-xs text-gray-400 mt-4">{t("agentRun.cost", { amount: project.actual_cost.toFixed(2) })}</div>
             )}
             {project.status === "failed" && (
               <div className="mt-4">
                 <p className="text-sm text-red-500 mb-2">{project.error_message}</p>
-                <button onClick={retry} className="px-4 py-2 rounded-xl bg-gray-900 text-white text-sm">重试</button>
+                <button onClick={retry} className="px-4 py-2 rounded-xl bg-gray-900 text-white text-sm">{t("common.retry")}</button>
               </div>
             )}
           </div>

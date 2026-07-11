@@ -38,6 +38,7 @@ ARCHIVE="$OUT_DIR/starai-full-backup-$STAMP.tar.gz"
 DB_DUMP="$WORK_DIR/starai-full.dump"
 UPLOADS_TGZ="$WORK_DIR/uploads.tar.gz"
 META_FILE="$WORK_DIR/README.txt"
+CHECKSUM_FILE="$WORK_DIR/SHA256SUMS"
 
 cleanup() {
   rm -rf "$WORK_DIR"
@@ -102,7 +103,9 @@ cp "$ENV_FILE" "$WORK_DIR/env.production"
   echo "- Do not commit it to GitHub."
 } > "$META_FILE"
 
-tar -czf "$ARCHIVE" -C "$WORK_DIR" starai-full.dump uploads.tar.gz env.production README.txt
+(cd "$WORK_DIR" && sha256sum starai-full.dump uploads.tar.gz env.production README.txt > SHA256SUMS)
+
+tar -czf "$ARCHIVE" -C "$WORK_DIR" starai-full.dump uploads.tar.gz env.production README.txt SHA256SUMS
 
 echo "Full backup created: $ARCHIVE"
 echo "Do not commit this archive to GitHub."

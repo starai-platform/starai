@@ -48,7 +48,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
+if tar -tzf "$PACK_FILE" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+  echo "Backup contains an unsafe archive path." >&2
+  exit 1
+fi
 tar -xzf "$PACK_FILE" -C "$TMP_DIR"
+
+if [ -f "$TMP_DIR/SHA256SUMS" ]; then
+  echo "==> Verifying backup checksums"
+  (cd "$TMP_DIR" && sha256sum -c SHA256SUMS)
+else
+  echo "WARNING: This is a legacy backup without SHA256SUMS; integrity cannot be verified." >&2
+fi
 
 if [ ! -f "$TMP_DIR/starai-full.dump" ]; then
   echo "starai-full.dump not found in backup." >&2

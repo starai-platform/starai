@@ -29,7 +29,7 @@ type AdminClaims struct {
 
 func UserAuth(secret string, blacklist TokenBlacklist) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		token := extractToken(c)
+		token := extractToken(c, "starai_session")
 		if token == "" {
 			util.Unauthorized(c, "未登录")
 			c.Abort()
@@ -57,7 +57,7 @@ func UserAuth(secret string, blacklist TokenBlacklist) gin.HandlerFunc {
 
 func AdminAuth(secret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		token := extractToken(c)
+		token := extractToken(c, "starai_admin_session")
 		if token == "" {
 			util.Unauthorized(c, "未登录")
 			c.Abort()
@@ -79,10 +79,32 @@ func AdminAuth(secret string) gin.HandlerFunc {
 	}
 }
 
-func extractToken(c *gin.Context) string {
+func RequireAdminRole(roles ...string) gin.HandlerFunc {
+	allowed := make(map[string]struct{}, len(roles))
+	for _, role := range roles {
+		if role = strings.TrimSpace(role); role != "" {
+			allowed[role] = struct{}{}
+		}
+	}
+	return func(c *gin.Context) {
+		if _, ok := allowed[c.GetString("admin_role")]; !ok {
+			util.Fail(c, 403, 403, "当前管理员无权执行此操作")
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+func extractToken(c *gin.Context, cookieName string) string {
 	auth := c.GetHeader("Authorization")
 	if strings.HasPrefix(auth, "Bearer ") {
 		return strings.TrimPrefix(auth, "Bearer ")
 	}
-	return c.Query("token")
+	if cookieName != "" {
+		if token, err := c.Cookie(cookieName); err == nil {
+			return strings.TrimSpace(token)
+		}
+	}
+	return ""
 }

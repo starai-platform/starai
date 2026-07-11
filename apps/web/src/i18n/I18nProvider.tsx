@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { UILanguage, UITranslationOverride, User } from "@starai/shared-types";
-import { api } from "@/lib/api";
+import { api, hasUserSession } from "@/lib/api";
 import { useAuthStore } from "@/store/auth";
 import { DEFAULT_UI_LANGUAGES, dictionaries, SUPPORTED_UI_LOCALES, type TranslationKey } from "./dictionaries";
 
@@ -19,11 +19,22 @@ type I18nContextValue = {
   setLocale: (code: string, options?: { persistUser?: boolean }) => void;
   t: (key: TranslationKey | string, vars?: Record<string, string | number>) => string;
   td: (key: string, fallback: string, vars?: Record<string, string | number>) => string;
+  ts: (source: string) => string;
   formatDate: (value: string | number | Date) => string;
   formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string;
 };
 
 const I18nContext = createContext<I18nContextValue | null>(null);
+
+function sourceTranslationKey(value: string) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `source.${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
 const BUILTIN_LANGUAGE_META: Record<string, Pick<UILanguage, "short" | "name" | "flag">> = {
   "zh-CN": { short: "ZH", name: "\u4e2d\u6587\uff08\u7b80\u4f53\uff09", flag: "\u{1F1E8}\u{1F1F3}" },
   "en-US": { short: "EN", name: "English", flag: "\u{1F1FA}\u{1F1F8}" },
@@ -491,7 +502,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
       setLocaleState(next);
       localStorage.setItem("site_locale", next);
       updateStoredUserLocale(next);
-      if (options.persistUser !== false && localStorage.getItem("token")) {
+      if (options.persistUser !== false && hasUserSession()) {
         api<User>("/api/me/profile", { method: "PATCH", body: JSON.stringify({ locale: next }) }).catch(() => {});
       }
       window.dispatchEvent(new CustomEvent("starai:ui-locale-change", { detail: { locale: next } }));
@@ -502,15 +513,20 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   const t = useCallback(
     (key: TranslationKey | string, vars?: Record<string, string | number>) => {
       const overrideCurrent = usableTranslation(overrides[locale]?.[key as string]);
-      const current = usableTranslation(dictionaries[locale]?.[key as TranslationKey]);
       const extraCurrent = usableTranslation(EXTRA_BUILTIN_TRANSLATIONS[locale]?.[key as string]);
+      const rawCurrent = usableTranslation(dictionaries[locale]?.[key as TranslationKey]);
+      const rawEnglish = usableTranslation(dictionaries["en-US"]?.[key as TranslationKey]);
+      // The initial ja/ko/vi catalogs were bootstrapped from English. Treat an
+      // unchanged English value as a placeholder so a real built-in/admin
+      // translation can win, instead of making the language switch look inert.
+      const current = locale !== "en-US" && locale !== "zh-CN" && rawCurrent === rawEnglish ? "" : rawCurrent;
       const overrideEn = usableTranslation(overrides["en-US"]?.[key as string]);
-      const fallbackEn = usableTranslation(dictionaries["en-US"]?.[key as TranslationKey]);
+      const fallbackEn = rawEnglish;
       const extraEn = usableTranslation(EXTRA_BUILTIN_TRANSLATIONS["en-US"]?.[key as string]);
       const overrideZh = usableTranslation(overrides["zh-CN"]?.[key as string]);
       const fallbackZh = usableTranslation(dictionaries["zh-CN"]?.[key as TranslationKey]);
       const extraZh = usableTranslation(EXTRA_BUILTIN_TRANSLATIONS["zh-CN"]?.[key as string]);
-      return interpolate(String(overrideCurrent || current || extraCurrent || overrideEn || fallbackEn || extraEn || overrideZh || fallbackZh || extraZh || key), vars);
+      return interpolate(String(overrideCurrent || extraCurrent || current || overrideEn || extraEn || fallbackEn || overrideZh || extraZh || fallbackZh || key), vars);
     },
     [locale, overrides]
   );
@@ -518,16 +534,21 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   const td = useCallback(
     (key: string, fallback: string, vars?: Record<string, string | number>) => {
       const ownOverride = usableTranslation(overrides[locale]?.[key]);
-      const ownBuiltin = usableTranslation(dictionaries[locale]?.[key as TranslationKey]);
       const ownExtra = usableTranslation(EXTRA_BUILTIN_TRANSLATIONS[locale]?.[key]);
-      const ownValue = ownOverride || ownBuiltin || ownExtra;
+      const rawBuiltin = usableTranslation(dictionaries[locale]?.[key as TranslationKey]);
+      const englishBuiltin = usableTranslation(dictionaries["en-US"]?.[key as TranslationKey]);
+      const ownBuiltin = locale !== "en-US" && locale !== "zh-CN" && rawBuiltin === englishBuiltin ? "" : rawBuiltin;
+      const ownValue = ownOverride || ownExtra || ownBuiltin;
       if (ownValue) return interpolate(ownValue, vars);
-      if (locale === "zh-CN") return interpolate(fallback, vars);
-      const value = t(key, vars);
-      return value === key ? interpolate(fallback, vars) : value;
+      return interpolate(fallback, vars);
     },
-    [locale, overrides, t]
+    [locale, overrides]
   );
+
+  const ts = useCallback((source: string) => {
+    if (locale === "zh-CN" || !source.trim()) return source;
+    return usableTranslation(overrides[locale]?.[sourceTranslationKey(source.trim())]) || source;
+  }, [locale, overrides]);
 
   const value = useMemo<I18nContextValue>(() => {
     const language = languages.find((item) => item.code === locale) || languages[0] || DEFAULT_UI_LANGUAGES[0];
@@ -538,10 +559,11 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
       setLocale,
       t,
       td,
+      ts,
       formatDate: (input) => new Intl.DateTimeFormat(locale).format(new Date(input)),
       formatNumber: (input, options) => new Intl.NumberFormat(locale, options).format(input),
     };
-  }, [languages, locale, setLocale, t, td]);
+  }, [languages, locale, setLocale, t, td, ts]);
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }

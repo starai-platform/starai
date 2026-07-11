@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -12,14 +11,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"golang.org/x/crypto/bcrypt"
 )
 
 func main() {
-	_ = godotenv.Load()
+	_ = godotenv.Load("../../.env.local", "../../.env", ".env.local", ".env")
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		dbURL = "postgres://starai:starai@localhost:5432/starai?sslmode=disable"
@@ -42,22 +40,22 @@ func main() {
 	if action == "up" {
 		for _, f := range listMigrations(migrationsDir, ".up.sql", false) {
 			name := filepath.Base(f)
-			if isApplied(ctx, pool, name) {
+			checksum, err := fileChecksum(f)
+			if err != nil {
+				log.Fatalf("checksum %s: %v", f, err)
+			}
+			if isApplied(ctx, pool, name, checksum) {
 				fmt.Printf("skip %s (already applied)\n", name)
 				continue
 			}
-			if err := runSQLFile(pool, f); err != nil {
-				if isAlreadyAppliedErr(err) {
-					fmt.Printf("skip %s (detected already applied)\n", name)
-					markApplied(ctx, pool, name)
-					continue
-				}
+			if err := applyMigration(pool, f, name, checksum); err != nil {
 				log.Fatalf("exec %s: %v", f, err)
 			}
-			markApplied(ctx, pool, name)
 			fmt.Printf("applied %s\n", name)
 		}
-		seedCredentials(pool)
+		if err := seedCredentials(pool); err != nil {
+			log.Fatalf("seed development credentials: %v", err)
+		}
 		fmt.Println("Migrations applied successfully")
 		return
 	}
@@ -76,10 +74,9 @@ func main() {
 			unmarkApplied(ctx, pool, upName)
 			continue
 		}
-		if err := runSQLFile(pool, downPath); err != nil {
+		if err := rollbackMigration(pool, downPath, upName); err != nil {
 			log.Fatalf("exec %s: %v", downPath, err)
 		}
-		unmarkApplied(ctx, pool, upName)
 		fmt.Printf("rolled back %s\n", downName)
 	}
 	fmt.Println("Migrations rolled back")
@@ -120,55 +117,83 @@ func findMigrationsDir() string {
 	return "infra/migrations"
 }
 
-func runSQLFile(pool *pgxpool.Pool, path string) error {
+func applyMigration(pool *pgxpool.Pool, path, filename, checksum string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
-	_, err = pool.Exec(context.Background(), string(data))
-	return err
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, string(data)); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO schema_migrations (filename, checksum) VALUES ($1,$2)`, filename, checksum); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
-func isAlreadyAppliedErr(err error) bool {
-	var pe *pgconn.PgError
-	if errors.As(err, &pe) {
-		switch pe.Code {
-		case "42P07": // relation already exists
-			return true
-		case "42710": // duplicate_object
-			return true
-		case "42701": // duplicate_column
-			return true
-		}
+func rollbackMigration(pool *pgxpool.Pool, path, filename string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "already exists") || strings.Contains(msg, "duplicate")
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, string(data)); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM schema_migrations WHERE filename=$1`, filename); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func fileChecksum(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func ensureSchemaMigrations(ctx context.Context, pool *pgxpool.Pool) {
 	_, err := pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			filename TEXT PRIMARY KEY,
+			checksum TEXT,
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-		)`)
+		);
+		ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT`)
 	if err != nil {
 		log.Fatalf("ensure schema_migrations: %v", err)
 	}
 }
 
-func isApplied(ctx context.Context, pool *pgxpool.Pool, filename string) bool {
-	var ok bool
-	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE filename=$1)`, filename).Scan(&ok); err != nil {
+func isApplied(ctx context.Context, pool *pgxpool.Pool, filename, checksum string) bool {
+	var stored *string
+	if err := pool.QueryRow(ctx, `SELECT checksum FROM schema_migrations WHERE filename=$1`, filename).Scan(&stored); err != nil {
 		return false
 	}
-	return ok
-}
-
-func markApplied(ctx context.Context, pool *pgxpool.Pool, filename string) {
-	_, err := pool.Exec(ctx, `INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT DO NOTHING`, filename)
-	if err != nil {
-		log.Fatalf("mark applied %s: %v", filename, err)
+	if stored == nil || *stored == "" {
+		if _, err := pool.Exec(ctx, `UPDATE schema_migrations SET checksum=$1 WHERE filename=$2 AND checksum IS NULL`, checksum, filename); err != nil {
+			log.Fatalf("backfill migration checksum %s: %v", filename, err)
+		}
+		return true
 	}
+	if *stored != checksum {
+		log.Fatalf("migration %s changed after being applied; create a new migration instead", filename)
+	}
+	return true
 }
 
 func unmarkApplied(ctx context.Context, pool *pgxpool.Pool, filename string) {
@@ -195,14 +220,28 @@ func listApplied(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
 	return out, nil
 }
 
-func seedCredentials(pool *pgxpool.Pool) {
+func seedCredentials(pool *pgxpool.Pool) error {
 	ctx := context.Background()
-	adminHash, _ := bcrypt.GenerateFromPassword([]byte("admin123"), 10)
-	demoHash, _ := bcrypt.GenerateFromPassword([]byte("demo123"), 10)
+	adminHash, err := bcrypt.GenerateFromPassword([]byte("admin123"), 10)
+	if err != nil {
+		return err
+	}
+	demoHash, err := bcrypt.GenerateFromPassword([]byte("demo123"), 10)
+	if err != nil {
+		return err
+	}
 	cardHash := sha256.Sum256([]byte("STARAI-DEMO-1000"))
 	cardHex := hex.EncodeToString(cardHash[:])
+	const placeholderHash = "$2a$10$placeholder_will_be_updated_by_migrate"
 
-	pool.Exec(ctx, `UPDATE admin_users SET password_hash=$1 WHERE email='admin@starai.local'`, string(adminHash))
-	pool.Exec(ctx, `UPDATE auth_identities SET credential_hash=$1 WHERE identifier='demo@starai.local'`, string(demoHash))
-	pool.Exec(ctx, `UPDATE recharge_cards SET code_hash=$1 WHERE batch_id=1 AND code_hash='placeholder_card_hash'`, cardHex)
+	if _, err = pool.Exec(ctx, `UPDATE admin_users SET password_hash=$1 WHERE email='admin@starai.local' AND password_hash=$2`, string(adminHash), placeholderHash); err != nil {
+		return err
+	}
+	if _, err = pool.Exec(ctx, `UPDATE auth_identities SET credential_hash=$1 WHERE provider='email' AND identifier='demo@starai.local' AND credential_hash=$2`, string(demoHash), placeholderHash); err != nil {
+		return err
+	}
+	if _, err = pool.Exec(ctx, `UPDATE recharge_cards SET code_hash=$1 WHERE batch_id=1 AND code_hash='placeholder_card_hash'`, cardHex); err != nil {
+		return err
+	}
+	return nil
 }

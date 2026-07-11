@@ -512,10 +512,10 @@ NO_CACHE_SERVICES="admin" BUILD_SERVICES="admin" bash scripts/deploy-prod.sh
 NO_CACHE_SERVICES="web" BUILD_SERVICES="web" bash scripts/deploy-prod.sh
 ```
 
-服务器资源充足且希望构建时不停旧容器：
+脚本默认在构建期间保持旧容器运行。只有服务器内存不足、构建容易被系统杀死时，才临时启用构建前停止服务：
 
 ```bash
-STOP_SERVICES_BEFORE_BUILD=0 bash scripts/deploy-prod.sh
+STOP_SERVICES_BEFORE_BUILD=1 bash scripts/deploy-prod.sh
 ```
 
 指定 `BUILD_SERVICES` 且不包含 `api` 时，脚本默认跳过数据库迁移。确实需要强制迁移：

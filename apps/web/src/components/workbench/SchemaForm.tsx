@@ -5,6 +5,7 @@ export interface SchemaProp {
   title?: string;
   placeholder?: string;
   enum?: (string | number)[];
+  "x-enum-labels"?: string[];
   default?: unknown;
   minimum?: number;
   maximum?: number;
@@ -74,9 +75,9 @@ export function SchemaForm({ schema, values, onChange, layout = "inline", placem
     if (prop.enum && prop.enum.length) {
       return (
         <select value={String(value)} onChange={(e) => set(key, coerce(prop, e.target.value))} className={controlCls}>
-          {prop.enum.map((opt) => (
+          {prop.enum.map((opt, index) => (
             <option key={String(opt)} value={String(opt)}>
-              {String(opt)}
+              {prop["x-enum-labels"]?.[index] || String(opt)}
             </option>
           ))}
         </select>

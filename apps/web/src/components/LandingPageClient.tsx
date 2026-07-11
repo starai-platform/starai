@@ -9,7 +9,7 @@ import { LoginModal } from "@/components/LoginModal";
 import { SiteBrand, useSiteBranding } from "@/components/SiteBrand";
 import { UILanguageSelector } from "@/components/UILanguageSelector";
 import { useI18n } from "@/i18n/I18nProvider";
-import { api } from "@/lib/api";
+import { api, hasUserSession } from "@/lib/api";
 import { useAuthStore } from "@/store/auth";
 
 interface GalleryItem {
@@ -756,7 +756,7 @@ export default function LandingPageClient() {
   }, [hydrate]);
 
   const enterAppOrLogin = () => {
-    const hasToken = token || (typeof window !== "undefined" && localStorage.getItem("token"));
+    const hasToken = token || hasUserSession();
     if (hasToken) {
       router.push("/app");
       return;

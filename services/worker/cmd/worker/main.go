@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/hibiken/asynq"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
@@ -48,8 +49,7 @@ type WorkflowTaskPayload struct {
 }
 
 func main() {
-	_ = godotenv.Load()
-	_ = godotenv.Load("../../.env")
+	_ = godotenv.Load("../../.env.local", "../../.env", ".env.local", ".env")
 	dbURL := getenv("DATABASE_URL", "postgres://starai:starai@localhost:5432/starai?sslmode=disable")
 	redisURL := getenv("REDIS_URL", "redis://localhost:6379/0")
 	newAPIBase := getenv("NEW_API_BASE_URL", "http://localhost:3002")
@@ -422,10 +422,6 @@ func processImageTask(ctx context.Context, pool *pgxpool.Pool, baseURL, token st
 		meta, _ = json.Marshal(map[string]interface{}{"image_url": imageURL})
 	}
 
-	pool.Exec(ctx, `
-		UPDATE tasks SET status='succeeded', output=$1, actual_cost=$2, finished_at=now(), updated_at=now() WHERE task_no=$3`,
-		output, actualCost, p.TaskNo)
-
 	txType, remark := "image_usage", "图片生成"
 	if isVideo {
 		txType, remark = "video_usage", "视频生成"
@@ -433,7 +429,15 @@ func processImageTask(ctx context.Context, pool *pgxpool.Pool, baseURL, token st
 		txType, remark = "audio_usage", "音频生成"
 	}
 	if !boolInput(p.Input, "_skip_billing") {
-		chargeBilling(ctx, pool, p.UserID, estimated, actualCost, "task", p.TaskNo, txType, remark)
+		if err := chargeBilling(ctx, pool, p.UserID, estimated, actualCost, "task", p.TaskNo, txType, remark); err != nil {
+			return fmt.Errorf("task %s billing: %w", p.TaskNo, err)
+		}
+	}
+
+	if _, err := pool.Exec(ctx, `
+		UPDATE tasks SET status='succeeded', output=$1, actual_cost=$2, error_code=NULL, error_message=NULL, finished_at=now(), updated_at=now() WHERE task_no=$3`,
+		output, actualCost, p.TaskNo); err != nil {
+		return fmt.Errorf("task %s finalize: %w", p.TaskNo, err)
 	}
 
 	publicID := fmt.Sprintf("work_%d", time.Now().UnixNano())
@@ -2125,7 +2129,9 @@ func failTask(ctx context.Context, pool *pgxpool.Pool, p ImageTaskPayload, code,
 	pool.Exec(ctx, `
 		UPDATE tasks SET status='failed', error_code=$1, error_message=$2, finished_at=now(), updated_at=now() WHERE task_no=$3`,
 		code, msg, p.TaskNo)
-	unfreezeBilling(ctx, pool, p.UserID, estimated, "task", p.TaskNo)
+	if err := unfreezeBilling(ctx, pool, p.UserID, estimated, "task", p.TaskNo); err != nil {
+		return fmt.Errorf("task %s release billing: %w", p.TaskNo, err)
+	}
 	insertNotification(ctx, pool, p.UserID, "生成失败",
 		fmt.Sprintf("%s，任务号：%s", msg, p.TaskNo), "task")
 	log.Printf("Task %s failed: %s", p.TaskNo, msg)
@@ -2144,12 +2150,30 @@ func insertNotification(ctx context.Context, pool *pgxpool.Pool, userID int64, t
 		userID, title, content, typ)
 }
 
-func chargeBilling(ctx context.Context, pool *pgxpool.Pool, userID int64, freezeAmount, actualAmount float64, refType, refID, txType, remark string) {
-	tx, _ := pool.Begin(ctx)
+func chargeBilling(ctx context.Context, pool *pgxpool.Pool, userID int64, freezeAmount, actualAmount float64, refType, refID, txType, remark string) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
 	defer tx.Rollback(ctx)
+	lockedAmount, err := lockedFreezeAmount(ctx, tx, userID, refType, refID)
+	if err != nil {
+		return err
+	}
+	if lockedAmount <= 0 {
+		return nil
+	}
+	if freezeAmount <= 0 || freezeAmount > lockedAmount {
+		freezeAmount = lockedAmount
+	}
 	var balance, frozen float64
-	tx.QueryRow(ctx, `SELECT compute_balance, frozen_compute FROM wallets WHERE user_id=$1 FOR UPDATE`, userID).Scan(&balance, &frozen)
+	if err = tx.QueryRow(ctx, `SELECT compute_balance, frozen_compute FROM wallets WHERE user_id=$1 FOR UPDATE`, userID).Scan(&balance, &frozen); err != nil {
+		return err
+	}
 	charge := actualAmount
+	if charge < 0 {
+		charge = 0
+	}
 	if charge > freezeAmount {
 		charge = freezeAmount
 	}
@@ -2158,20 +2182,60 @@ func chargeBilling(ctx context.Context, pool *pgxpool.Pool, userID int64, freeze
 	if newFrozen < 0 {
 		newFrozen = 0
 	}
-	tx.Exec(ctx, `UPDATE wallets SET compute_balance=$1, frozen_compute=$2, updated_at=now() WHERE user_id=$3`, newBalance, newFrozen, userID)
-	tx.Exec(ctx, `UPDATE balance_freezes SET status='charged', released_at=now() WHERE user_id=$1 AND ref_type=$2 AND ref_id=$3 AND status='frozen'`, userID, refType, refID)
-	if charge > 0 {
-		tx.Exec(ctx, `INSERT INTO wallet_transactions (user_id, type, direction, amount, balance_after, ref_type, ref_id, remark) VALUES ($1,$2,'out',$3,$4,$5,$6,$7)`, userID, txType, charge, newBalance, refType, refID, remark)
+	if _, err = tx.Exec(ctx, `UPDATE wallets SET compute_balance=$1, frozen_compute=$2, updated_at=now() WHERE user_id=$3`, newBalance, newFrozen, userID); err != nil {
+		return err
 	}
-	tx.Commit(ctx)
+	if _, err = tx.Exec(ctx, `UPDATE balance_freezes SET status='charged', released_at=now() WHERE user_id=$1 AND ref_type=$2 AND ref_id=$3 AND status='frozen'`, userID, refType, refID); err != nil {
+		return err
+	}
+	if charge > 0 {
+		if _, err = tx.Exec(ctx, `INSERT INTO wallet_transactions (user_id, type, direction, amount, balance_after, ref_type, ref_id, remark) VALUES ($1,$2,'out',$3,$4,$5,$6,$7)`, userID, txType, charge, newBalance, refType, refID, remark); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
-func unfreezeBilling(ctx context.Context, pool *pgxpool.Pool, userID int64, amount float64, refType, refID string) {
-	tx, _ := pool.Begin(ctx)
+func unfreezeBilling(ctx context.Context, pool *pgxpool.Pool, userID int64, amount float64, refType, refID string) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
 	defer tx.Rollback(ctx)
-	tx.Exec(ctx, `UPDATE wallets SET frozen_compute = GREATEST(frozen_compute - $1, 0), updated_at=now() WHERE user_id=$2`, amount, userID)
-	tx.Exec(ctx, `UPDATE balance_freezes SET status='released', released_at=now() WHERE user_id=$1 AND ref_type=$2 AND ref_id=$3 AND status='frozen'`, userID, refType, refID)
-	tx.Commit(ctx)
+	lockedAmount, err := lockedFreezeAmount(ctx, tx, userID, refType, refID)
+	if err != nil {
+		return err
+	}
+	if lockedAmount <= 0 {
+		return nil
+	}
+	if amount <= 0 || amount > lockedAmount {
+		amount = lockedAmount
+	}
+	if _, err = tx.Exec(ctx, `UPDATE wallets SET frozen_compute = GREATEST(frozen_compute - $1, 0), updated_at=now() WHERE user_id=$2`, amount, userID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE balance_freezes SET status='released', released_at=now() WHERE user_id=$1 AND ref_type=$2 AND ref_id=$3 AND status='frozen'`, userID, refType, refID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func lockedFreezeAmount(ctx context.Context, tx pgx.Tx, userID int64, refType, refID string) (float64, error) {
+	rows, err := tx.Query(ctx, `SELECT amount FROM balance_freezes WHERE user_id=$1 AND ref_type=$2 AND ref_id=$3 AND status='frozen' FOR UPDATE`, userID, refType, refID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	total := 0.0
+	for rows.Next() {
+		var amount float64
+		if err := rows.Scan(&amount); err != nil {
+			return 0, err
+		}
+		total += amount
+	}
+	return total, rows.Err()
 }
 
 func getenv(key, fallback string) string {

@@ -17,7 +17,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { api, API_URL, uploadAsset } from "@/lib/api";
+import { api, API_URL, hasUserSession, legacyAuthHeaders, uploadAsset } from "@/lib/api";
 import type { Model } from "@starai/shared-types";
 import {
   buildAudioTaskParams,
@@ -289,9 +289,8 @@ function TaskMediaVideo({ src, className }: { src: string; className?: string })
       return;
     }
     let objectURL = "";
-    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
     setLoading(true);
-    fetch(src, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+    fetch(src, { headers: legacyAuthHeaders(), credentials: "include" })
       .then(async (res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const blob = await res.blob();
@@ -955,7 +954,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
     const next = !notifOpen;
     setNotifOpen(next);
     if (!next) return;
-    if (typeof window !== "undefined" && !localStorage.getItem("token")) {
+    if (!hasUserSession()) {
       setNotifNeedLogin(true);
       setNotifItems([]);
       setNotifLoading(false);
@@ -1157,13 +1156,13 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
     let assistantContent = "";
 
     try {
-      const token = localStorage.getItem("token");
       const res = await fetch(`${API_URL}/api/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+          ...legacyAuthHeaders(),
         },
+        credentials: "include",
         body: JSON.stringify({
           model_code: model.code,
           conversation_id: conversationId,

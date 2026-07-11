@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api } from "@/lib/api";
+import { api, hasUserSession } from "@/lib/api";
 
 interface NotificationState {
   unread: number;
@@ -12,7 +12,7 @@ interface NotificationState {
 export const useNotificationStore = create<NotificationState>((set, get) => ({
   unread: 0,
   refreshUnread: async () => {
-    if (typeof window === "undefined" || !localStorage.getItem("token")) {
+    if (!hasUserSession()) {
       set({ unread: 0 });
       return;
     }

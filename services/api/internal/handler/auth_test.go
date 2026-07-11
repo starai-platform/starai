@@ -8,7 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func TestExtractBearer(t *testing.T) {
+func TestExtractAPIKey(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
@@ -53,8 +53,8 @@ func TestExtractBearer(t *testing.T) {
 			}
 			c.Request = req
 
-			if got := extractBearer(c); got != tt.want {
-				t.Fatalf("extractBearer()=%q, want %q", got, tt.want)
+			if got := extractAPIKey(c); got != tt.want {
+				t.Fatalf("extractAPIKey()=%q, want %q", got, tt.want)
 			}
 		})
 	}

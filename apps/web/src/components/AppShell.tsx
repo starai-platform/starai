@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bot, ChevronLeft, Compass, FileText, Home, LayoutGrid, Menu, Search, Settings, WalletCards, X } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
 import { RechargeModal } from "./RechargeModal";
-import { api } from "@/lib/api";
+import { api, apiForLocale } from "@/lib/api";
 import type { Model, Wallet } from "@starai/shared-types";
 import { clsx } from "clsx";
 import { AGENT_CATEGORIES, AGENT_CATEGORY_TAG, CATEGORIES, CATEGORY_TAG, MODEL_ICONS } from "./workbench/categoryMeta";
@@ -85,7 +85,7 @@ function useIsMobile() {
 export function AppShell({ children, selectedModelCode }: AppShellProps) {
   const pathname = usePathname();
   const router = useRouter();
-  const { t, td } = useI18n();
+  const { t, td, locale } = useI18n();
   const { site_name, site_description } = useSiteBranding();
   const { user, hydrate } = useAuthStore();
   const [wallet, setWallet] = useState<Wallet | null>(null);
@@ -196,8 +196,14 @@ export function AppShell({ children, selectedModelCode }: AppShellProps) {
         : category === "chat"
           ? `?category=chat`
           : `?category=${category}`;
-    api<Model[]>(`/api/models${q}`).then(setModels).catch(() => setModels([]));
-  }, [category, isWorkbench, section]);
+    const controller = new AbortController();
+    apiForLocale<Model[]>(`/api/models${q}`, locale, { signal: controller.signal })
+      .then(setModels)
+      .catch((error) => {
+        if (error?.name !== "AbortError") setModels([]);
+      });
+    return () => controller.abort();
+  }, [category, isWorkbench, section, locale]);
 
   useEffect(() => {
     if (section !== "models" || activeModelCode || isMobile) return;
@@ -209,16 +215,28 @@ export function AppShell({ children, selectedModelCode }: AppShellProps) {
       setActiveModel(null);
       return;
     }
-    api<Model>(`/api/models/${activeModelCode}`).then(setActiveModel).catch(() => setActiveModel(null));
-  }, [activeModelCode]);
+    const controller = new AbortController();
+    apiForLocale<Model>(`/api/models/${activeModelCode}`, locale, { signal: controller.signal })
+      .then(setActiveModel)
+      .catch((error) => {
+        if (error?.name !== "AbortError") setActiveModel(null);
+      });
+    return () => controller.abort();
+  }, [activeModelCode, locale]);
 
   useEffect(() => {
     if (!isWorkbench || section !== "agents") return;
-    api<{ items: AgentItem[] }>("/api/agents").then((r) => {
-      setAgents(r.items || []);
-      if (!isMobile) setActiveAgentCode((prev) => prev || r.items?.[0]?.code);
-    });
-  }, [isWorkbench, section, isMobile]);
+    const controller = new AbortController();
+    apiForLocale<{ items: AgentItem[] }>("/api/agents", locale, { signal: controller.signal })
+      .then((r) => {
+        setAgents(r.items || []);
+        if (!isMobile) setActiveAgentCode((prev) => prev || r.items?.[0]?.code);
+      })
+      .catch((error) => {
+        if (error?.name !== "AbortError") setAgents([]);
+      });
+    return () => controller.abort();
+  }, [isWorkbench, section, isMobile, locale]);
 
   useEffect(() => {
     if (!isWorkbench || section !== "gallery") return;
@@ -300,12 +318,12 @@ export function AppShell({ children, selectedModelCode }: AppShellProps) {
                 if (item.id !== "models") setActiveModelCode(undefined);
               }}
               className={clsx(
-                "flex flex-col items-center gap-1.5 py-3 rounded-xl text-xs transition",
+                "flex min-w-0 flex-col items-center gap-1.5 rounded-xl px-0.5 py-3 text-[11px] transition xl:text-xs",
                 active ? "bg-primary/10 text-primary font-medium" : "text-gray-400 hover:bg-gray-50"
               )}
             >
               <Icon size={20} />
-              {!compact && primaryNavLabel(item.id)}
+              {!compact && <span className="w-full break-words text-center leading-4">{primaryNavLabel(item.id)}</span>}
             </button>
           );
         })}

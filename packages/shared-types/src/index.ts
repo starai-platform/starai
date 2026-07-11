@@ -172,6 +172,8 @@ export interface SystemConfig {
   ui_translation_overrides?: UITranslationOverride[];
   payment_enabled: boolean;
   card_recharge_enabled: boolean;
+  payment_provider?: "disabled" | "mock" | "generic" | "stripe" | "paypal";
+  payment_currency?: string;
   default_locale: string;
   work_retention_days: number;
   daily_checkin_enabled?: boolean;

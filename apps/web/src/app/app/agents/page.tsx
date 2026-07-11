@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { useI18n } from "@/i18n/I18nProvider";
 
 interface WorkflowNode {
   id: string;
@@ -20,6 +21,7 @@ interface Workflow {
 }
 
 export default function AgentsPage() {
+	const { t } = useI18n();
   const [items, setItems] = useState<Workflow[]>([]);
 
   useEffect(() => {
@@ -29,11 +31,11 @@ export default function AgentsPage() {
   return (
     <div className="flex-1 overflow-y-auto p-8">
       <div className="max-w-5xl mx-auto">
-        <h1 className="text-2xl font-bold mb-1">智能体</h1>
-        <p className="text-sm text-gray-500 mb-6">多模型协作工作流，一次输入自动完成多步创作。</p>
+        <h1 className="text-2xl font-bold mb-1">{t("agent.listTitle")}</h1>
+        <p className="text-sm text-gray-500 mb-6">{t("agent.listDesc")}</p>
 
         {items.length === 0 ? (
-          <div className="text-center text-gray-400 py-16">暂无可用智能体</div>
+          <div className="text-center text-gray-400 py-16">{t("agent.listEmpty")}</div>
         ) : (
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
             {items.map((w) => (
@@ -56,7 +58,7 @@ export default function AgentsPage() {
                   ))}
                 </div>
                 {w.price_rule?.unit_price != null && (
-                  <div className="text-xs text-primary mt-3">≈ {w.price_rule.unit_price} 算力 / 次</div>
+                  <div className="text-xs text-primary mt-3">≈ {w.price_rule.unit_price} {t("agent.costPerRun")}</div>
                 )}
               </Link>
             ))}

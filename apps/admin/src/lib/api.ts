@@ -8,14 +8,22 @@ export function getAdminToken() {
   return typeof window !== "undefined" ? localStorage.getItem(ADMIN_TOKEN_KEY) : null;
 }
 
+export function hasAdminSession() {
+  if (typeof window === "undefined") return false;
+  return localStorage.getItem("starai_admin_session") === "1" || !!getAdminToken();
+}
+
 export function setAdminSession(data: { token: string; email?: string; role?: string }) {
-  localStorage.setItem(ADMIN_TOKEN_KEY, data.token);
+  localStorage.removeItem(ADMIN_TOKEN_KEY);
+  localStorage.setItem("starai_admin_session", "1");
   if (data.email) localStorage.setItem(ADMIN_EMAIL_KEY, data.email);
   if (data.role) localStorage.setItem(ADMIN_ROLE_KEY, data.role);
 }
 
 export function clearAdminSession() {
+  void fetch(`${API_URL}/admin/api/logout`, { method: "POST", credentials: "include" }).catch(() => {});
   localStorage.removeItem(ADMIN_TOKEN_KEY);
+  localStorage.removeItem("starai_admin_session");
   localStorage.removeItem(ADMIN_EMAIL_KEY);
   localStorage.removeItem(ADMIN_ROLE_KEY);
 }
@@ -35,7 +43,7 @@ export async function adminApi<T>(path: string, options: RequestInit = {}): Prom
     ...(options.headers as Record<string, string>),
   };
   if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`${API_URL}/admin/api${path}`, { ...options, headers });
+  const res = await fetch(`${API_URL}/admin/api${path}`, { ...options, headers, credentials: "include" });
   const ct = res.headers.get("content-type") || "";
   const text = await res.text();
   let json: any = null;
@@ -63,6 +71,7 @@ export async function adminUploadFile(file: File): Promise<string> {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     body: form,
+    credentials: "include",
   });
   const json = await res.json();
   if (!res.ok) {

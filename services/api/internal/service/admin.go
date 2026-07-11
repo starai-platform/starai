@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -1385,6 +1387,81 @@ func (s *AdminService) UpdateSystemConfig(ctx context.Context, key string, value
 		INSERT INTO system_configs (key, value, updated_at) VALUES ($1,$2,now())
 		ON CONFLICT (key) DO UPDATE SET value=$2, updated_at=now()`, key, data)
 	return err
+}
+
+// CheckContentSafety checks only string values in user input. It deliberately
+// stores neither the submitted content nor the matched term.
+func (s *AdminService) CheckContentSafety(ctx context.Context, userID int64, source string, input interface{}) (bool, error) {
+	var enabledRaw, termsRaw []byte
+	if err := s.db.QueryRow(ctx, `SELECT value FROM system_configs WHERE key='content_safety_enabled'`).Scan(&enabledRaw); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	var enabled bool
+	if json.Unmarshal(enabledRaw, &enabled) != nil || !enabled {
+		return false, nil
+	}
+	if err := s.db.QueryRow(ctx, `SELECT value FROM system_configs WHERE key='content_safety_blocked_terms'`).Scan(&termsRaw); err != nil {
+		return false, err
+	}
+	terms := parseBlockedTerms(termsRaw)
+	if len(terms) == 0 {
+		return false, nil
+	}
+	var generic interface{}
+	raw, err := json.Marshal(input)
+	if err != nil || json.Unmarshal(raw, &generic) != nil {
+		return false, errors.New("内容安全检查无法解析输入")
+	}
+	texts := collectStringValues(generic, nil)
+	for _, term := range terms {
+		needle := strings.ToLower(strings.TrimSpace(term))
+		if needle == "" {
+			continue
+		}
+		for _, text := range texts {
+			if strings.Contains(strings.ToLower(text), needle) {
+				digest := sha256.Sum256([]byte(needle))
+				_, err := s.db.Exec(ctx, `
+					INSERT INTO content_safety_events (user_id, source, matched_term_digest)
+					VALUES ($1,$2,$3)`, userID, source, hex.EncodeToString(digest[:]))
+				return true, err
+			}
+		}
+	}
+	return false, nil
+}
+
+func parseBlockedTerms(raw []byte) []string {
+	var terms []string
+	if json.Unmarshal(raw, &terms) == nil {
+		return terms
+	}
+	var encoded string
+	if json.Unmarshal(raw, &encoded) == nil {
+		_ = json.Unmarshal([]byte(encoded), &terms)
+	}
+	return terms
+}
+
+func collectStringValues(v interface{}, out []string) []string {
+	switch value := v.(type) {
+	case string:
+		return append(out, value)
+	case []string:
+		return append(out, value...)
+	case []interface{}:
+		for _, item := range value {
+			out = collectStringValues(item, out)
+		}
+	case map[string]interface{}:
+		for _, item := range value {
+			out = collectStringValues(item, out)
+		}
+	}
+	return out
 }
 
 func (s *AdminService) LogOperation(ctx context.Context, adminID int64, action, targetType, targetID string, detail map[string]interface{}) {

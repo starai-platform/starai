@@ -124,12 +124,27 @@ if (-not $env:GOPROXY) {
   Info "GOPROXY not set; using $env:GOPROXY"
 }
 
-# 0) Ensure .env exists
-if (-not (Test-Path (Join-Path $Root ".env"))) {
-  Info "Creating .env from .env.local"
-  Copy-Item (Join-Path $Root ".env.local") (Join-Path $Root ".env")
+# 0) Load local development configuration into this process. Every service
+# launched below inherits these values, so .env.local is the single source of
+# truth for local development. .env remains a compatibility fallback only.
+$localEnv = Join-Path $Root ".env.local"
+$fallbackEnv = Join-Path $Root ".env"
+$envFile = if (Test-Path $localEnv) { $localEnv } elseif (Test-Path $fallbackEnv) { $fallbackEnv } else { $null }
+if ($envFile) {
+  foreach ($line in Get-Content -Encoding UTF8 $envFile) {
+    $text = [string]$line
+    if ([string]::IsNullOrWhiteSpace($text) -or $text.TrimStart().StartsWith("#") -or -not $text.Contains("=")) { continue }
+    $parts = $text.Split(@("="), 2, [System.StringSplitOptions]::None)
+    $key = $parts[0].Trim()
+    $value = $parts[1].Trim()
+    if (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'"))) {
+      $value = $value.Substring(1, $value.Length - 2)
+    }
+    if ($key) { [Environment]::SetEnvironmentVariable($key, $value, "Process") }
+  }
+  Info "Loaded local environment from $([IO.Path]::GetFileName($envFile))"
 } else {
-  Info ".env exists"
+  Warn "No .env.local or .env found; services will use development defaults"
 }
 
 # 1) Start infra (Postgres/Redis/MinIO)

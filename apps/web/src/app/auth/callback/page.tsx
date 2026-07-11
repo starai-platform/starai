@@ -14,24 +14,23 @@ export default function OAuthCallbackPage() {
   useEffect(() => {
     const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     const errMsg = hash.get("error");
-    const token = hash.get("token");
+    const session = hash.get("session");
     if (errMsg) {
       setError(decodeURIComponent(errMsg));
       return;
     }
-    if (!token) {
+    if (!session) {
       setError("缺少登录凭证，请重新登录");
       return;
     }
-    // Persist the token first so the /api/me request carries it.
-    localStorage.setItem("token", token);
+    localStorage.setItem("starai_session", "1");
     api<User>("/api/me")
       .then((user) => {
-        setAuth(token, user);
+        setAuth("", user);
         router.replace("/app");
       })
       .catch((e) => {
-        localStorage.removeItem("token");
+        localStorage.removeItem("starai_session");
         setError(e instanceof Error ? e.message : "登录失败，请重试");
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps

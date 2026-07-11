@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Bell } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, hasUserSession } from "@/lib/api";
 import { useNotificationPolling } from "@/hooks/useNotificationPolling";
 import { useNotificationStore } from "@/store/notifications";
 import { useI18n } from "@/i18n/I18nProvider";
@@ -39,7 +39,7 @@ export function NotificationBell() {
   }, []);
 
   const load = async () => {
-    if (typeof window !== "undefined" && !localStorage.getItem("token")) {
+    if (!hasUserSession()) {
       setNeedLogin(true);
       setItems([]);
       return;

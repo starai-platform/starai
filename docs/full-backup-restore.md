@@ -25,6 +25,14 @@ bash scripts/export-full-backup.sh
 backups/full/starai-full-backup-xxxx.tar.gz
 ```
 
+备份包包含 `SHA256SUMS`。导出后建议立即执行只读完整性检查：
+
+```bash
+bash scripts/verify-full-backup.sh backups/full/starai-full-backup-xxxx.tar.gz
+```
+
+检查会验证包内路径、必需文件、SHA-256、上传文件压缩包，并在本机存在 `pg_restore` 时检查数据库 dump 目录。它不会连接或修改数据库。
+
 脚本会自动处理上传目录：
 
 - 如果项目根目录有 `data/uploads`，直接打包它。

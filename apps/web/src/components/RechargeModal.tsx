@@ -21,13 +21,13 @@ export function RechargeModal({ open, onClose, onSuccess }: Props) {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [config, setConfig] = useState<{ payment_enabled: boolean; card_recharge_enabled: boolean } | null>(null);
+  const [config, setConfig] = useState<{ payment_enabled: boolean; card_recharge_enabled: boolean; payment_provider?: string; payment_currency?: string; payment_mock_mode?: boolean } | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setMessage("");
     setError("");
-    api<{ payment_enabled: boolean; card_recharge_enabled: boolean }>("/api/payment/config")
+    api<{ payment_enabled: boolean; card_recharge_enabled: boolean; payment_provider?: string; payment_currency?: string; payment_mock_mode?: boolean }>("/api/payment/config")
       .then((c) => {
         setConfig(c);
         setTab(c.payment_enabled ? "online" : "card");
@@ -60,10 +60,14 @@ export function RechargeModal({ open, onClose, onSuccess }: Props) {
     setError("");
     setMessage("");
     try {
-      const res = await api<{ compute_credited: number; status: string }>("/api/payment/orders", {
+      const res = await api<{ compute_credited: number; status: string; checkout_url?: string }>("/api/payment/orders", {
         method: "POST",
-        body: JSON.stringify({ amount, channel: "mock" }),
+        body: JSON.stringify({ amount, channel: config?.payment_provider || "mock" }),
       });
+      if (res.status === "pending" && res.checkout_url) {
+        window.location.assign(res.checkout_url);
+        return;
+      }
       setMessage(t("recharge.paymentSuccess", { amount: res.compute_credited }));
       onSuccess?.();
     } catch (err) {
@@ -118,7 +122,7 @@ export function RechargeModal({ open, onClose, onSuccess }: Props) {
                           : "border-gray-200 text-gray-600 hover:border-gray-300 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:border-white/20"
                       }`}
                     >
-                      {a}
+                      {a} {config?.payment_currency || ""}
                     </button>
                   ))}
                 </div>
@@ -131,10 +135,12 @@ export function RechargeModal({ open, onClose, onSuccess }: Props) {
                   disabled={loading}
                   className="w-full rounded-xl bg-primary py-3 font-semibold text-dark disabled:opacity-50"
                 >
-                  {loading ? t("recharge.paying") : t("recharge.payAmount", { amount })}
+                  {loading ? t("recharge.paying") : t("recharge.payAmount", { amount: `${amount} ${config?.payment_currency || ""}`.trim() })}
                 </button>
 
-                <p className="text-center text-[11px] text-gray-400 dark:text-gray-500">{t("recharge.mockNotice")}</p>
+                <p className="text-center text-[11px] text-gray-400 dark:text-gray-500">
+                  {t(config?.payment_mock_mode ? "recharge.mockNotice" : "recharge.securePaymentNotice")}
+                </p>
               </div>
             ) : (
               <form onSubmit={handleRedeem} className="space-y-4">

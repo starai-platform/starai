@@ -53,6 +53,42 @@ export default function WalletPage() {
 
   useEffect(() => {
     load();
+    const query = new URLSearchParams(window.location.search);
+    const paymentState = query.get("payment");
+    const orderNo = query.get("order");
+    if (paymentState === "cancel") {
+      setMessage("支付已取消，订单不会入账。");
+      return;
+    }
+    if (paymentState !== "success" || !orderNo) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    const poll = async () => {
+      attempts += 1;
+      try {
+        const order = await api<{ status: string; compute_credited: number }>(`/api/payment/orders/${encodeURIComponent(orderNo)}`);
+        if (cancelled) return;
+        if (order.status === "paid") {
+          setMessage(`支付成功，${order.compute_credited.toFixed(2)} 算力已到账。`);
+          load();
+          return;
+        }
+        if (order.status === "failed" || order.status === "expired") {
+          setMessage("支付订单未完成。如已扣款，请联系客服核对订单。");
+          return;
+        }
+        setMessage("支付结果确认中，请稍候……");
+      } catch {
+        if (!cancelled) setMessage("暂时无法查询支付结果，请稍后刷新钱包。");
+      }
+      if (!cancelled && attempts < 30) timer = setTimeout(poll, 1500);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   const submitWithdrawal = async (e: React.FormEvent) => {

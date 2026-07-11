@@ -16,6 +16,7 @@ import {
   GalleryHorizontalEnd,
   GitBranch,
   Layers3,
+  Languages,
   LayoutDashboard,
   LogOut,
   MessageSquareText,
@@ -25,7 +26,7 @@ import {
   ShieldCheck,
   Users,
 } from "lucide-react";
-import { clearAdminSession, getAdminToken } from "@/lib/api";
+import { clearAdminSession, hasAdminSession } from "@/lib/api";
 import { AdminBrand } from "./AdminBrand";
 
 const NAV_GROUPS = [
@@ -47,6 +48,7 @@ const NAV_GROUPS = [
       { href: "/admin/channel-presets", label: "渠道预设", icon: ChartNoAxesCombined },
       { href: "/admin/role-templates", label: "角色模板", icon: MessageSquareText },
       { href: "/admin/api-docs", label: "API 文档", icon: BookOpen },
+      { href: "/admin/content-translations", label: "内容翻译", icon: Languages },
     ],
   },
   {
@@ -77,8 +79,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    const token = getAdminToken();
-    if (!token) {
+    if (!hasAdminSession()) {
       router.replace("/admin/login");
       return;
     }

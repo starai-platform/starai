@@ -190,7 +190,7 @@ func (s *ContentI18nService) SyncCatalog(ctx context.Context, models *ModelServi
 		if model.Description != nil {
 			description = *model.Description
 		}
-		if err := s.SyncEntity(ctx, "model", model.Code, ExtractModelTranslationFields(model.DisplayName, description, model.Tags, model.InputSchema)); err != nil {
+		if err := s.SyncEntity(ctx, "model", model.Code, ExtractModelTranslationFields(model.DisplayName, description, model.Tags, model.InputSchema, model.RuntimeRule)); err != nil {
 			return count, err
 		}
 		count++
@@ -480,7 +480,7 @@ func (s *ContentI18nService) Stats(ctx context.Context, entityType string) ([]Co
 	return result, rows.Err()
 }
 
-func ExtractModelTranslationFields(displayName, description string, tags []string, schema map[string]interface{}) map[string]string {
+func ExtractModelTranslationFields(displayName, description string, tags []string, schema, runtimeRule map[string]interface{}) map[string]string {
 	fields := map[string]string{}
 	putTranslationField(fields, "/display_name", displayName)
 	putTranslationField(fields, "/description", description)
@@ -488,6 +488,7 @@ func ExtractModelTranslationFields(displayName, description string, tags []strin
 		putTranslationField(fields, fmt.Sprintf("/tags/%d", i), tag)
 	}
 	extractVisibleJSONFields(fields, "/input_schema", schema)
+	extractVisibleJSONFields(fields, "/runtime_rule", runtimeRule)
 	return fields
 }
 
@@ -518,6 +519,7 @@ var visibleContentKeys = map[string]bool{
 	"name": true, "tip": true, "hint": true, "help": true, "text": true, "unit": true, "reason": true,
 	"image_label": true, "empty_text": true, "button_text": true, "notes": true,
 	"prompt": true, "input": true, "content": true,
+	"prompt_hint": true, "secondary_prompt_hint": true, "upload_hint": true, "search_placeholder": true,
 }
 
 var visibleContentListKeys = map[string]bool{
@@ -530,6 +532,16 @@ func extractVisibleJSONFields(fields map[string]string, path string, value inter
 	case map[string]interface{}:
 		for key, child := range current {
 			childPath := path + "/" + escapeJSONPointer(key)
+			if key == "x-enum-labels" {
+				if labels, ok := child.([]interface{}); ok {
+					for i, label := range labels {
+						if text, ok := label.(string); ok {
+							putTranslationField(fields, childPath+"/"+strconv.Itoa(i), text)
+						}
+					}
+				}
+				continue
+			}
 			if visibleContentListKeys[key] {
 				if items, ok := child.([]interface{}); ok {
 					for i, item := range items {
@@ -546,6 +558,11 @@ func extractVisibleJSONFields(fields map[string]string, path string, value inter
 				}
 			}
 			if key == "enum" {
+				// Parameter values must remain stable. Only synthesize display
+				// labels from enum values when the schema has no explicit labels.
+				if _, hasLabels := current["x-enum-labels"]; hasLabels {
+					continue
+				}
 				if options, ok := child.([]interface{}); ok {
 					for i, option := range options {
 						if text, ok := option.(string); ok {

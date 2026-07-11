@@ -2213,7 +2213,7 @@ func (h *Handler) AdminCreateModel(c *gin.Context) {
 		return
 	}
 	_ = h.contentI18n.SyncEntity(c.Request.Context(), "model", input.Code,
-		service.ExtractModelTranslationFields(input.DisplayName, input.Description, input.Tags, input.InputSchema))
+		service.ExtractModelTranslationFields(input.DisplayName, input.Description, input.Tags, input.InputSchema, input.RuntimeRule))
 	h.triggerContentAutoTranslation("model", input.Code)
 	h.admin.LogOperation(c.Request.Context(), c.GetInt64("admin_id"), "create_model", "model", input.Code, nil)
 	util.Created(c, m)
@@ -2232,7 +2232,7 @@ func (h *Handler) AdminUpdateModel(c *gin.Context) {
 		return
 	}
 	_ = h.contentI18n.SyncEntity(c.Request.Context(), "model", input.Code,
-		service.ExtractModelTranslationFields(input.DisplayName, input.Description, input.Tags, input.InputSchema))
+		service.ExtractModelTranslationFields(input.DisplayName, input.Description, input.Tags, input.InputSchema, input.RuntimeRule))
 	h.triggerContentAutoTranslation("model", input.Code)
 	h.admin.LogOperation(c.Request.Context(), c.GetInt64("admin_id"), "update_model", "model", fmt.Sprintf("%d", id), nil)
 	util.OK(c, m)

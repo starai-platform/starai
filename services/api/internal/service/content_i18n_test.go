@@ -13,13 +13,21 @@ func TestExtractModelTranslationFieldsKeepsEnumValuesStable(t *testing.T) {
 			},
 		},
 	}
-	fields := ExtractModelTranslationFields("图像模型", "生成图片", []string{"热门"}, schema)
+	runtimeRule := map[string]interface{}{
+		"audio": map[string]interface{}{
+			"prompt_hint":           "请输入要朗读的文本",
+			"secondary_prompt_hint": "音乐描述：风格、情绪、场景",
+		},
+	}
+	fields := ExtractModelTranslationFields("图像模型", "生成图片", []string{"热门"}, schema, runtimeRule)
 	for path, want := range map[string]string{
 		"/display_name":                        "图像模型",
 		"/description":                         "生成图片",
 		"/tags/0":                              "热门",
 		"/input_schema/properties/style/title": "风格",
 		"/input_schema/properties/style/x-enum-labels/0": "自然",
+		"/runtime_rule/audio/prompt_hint":                "请输入要朗读的文本",
+		"/runtime_rule/audio/secondary_prompt_hint":      "音乐描述：风格、情绪、场景",
 	} {
 		if fields[path] != want {
 			t.Fatalf("field %s = %q, want %q", path, fields[path], want)
@@ -46,6 +54,25 @@ func TestSetJSONPointerCreatesEnumLabels(t *testing.T) {
 	labels := style["x-enum-labels"].([]interface{})
 	if labels[1] != "Realistic" {
 		t.Fatalf("enum label = %#v", labels)
+	}
+}
+
+func TestExtractModelTranslationFieldsUsesExplicitEnumLabels(t *testing.T) {
+	schema := map[string]interface{}{
+		"properties": map[string]interface{}{
+			"voice_id": map[string]interface{}{
+				"type":          "string",
+				"enum":          []interface{}{"male-qn-qingse", "female-shaonv"},
+				"x-enum-labels": []interface{}{"男声-青涩", "女声-少女"},
+			},
+		},
+	}
+	fields := ExtractModelTranslationFields("语音模型", "", nil, schema, nil)
+	if got := fields["/input_schema/properties/voice_id/x-enum-labels/0"]; got != "男声-青涩" {
+		t.Fatalf("explicit enum label = %q", got)
+	}
+	if _, exists := fields["/input_schema/properties/voice_id/enum/0"]; exists {
+		t.Fatal("enum parameter value must not be extracted")
 	}
 }
 

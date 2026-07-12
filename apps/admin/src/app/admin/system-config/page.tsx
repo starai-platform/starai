@@ -767,7 +767,7 @@ export default function SystemConfigPage() {
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold text-gray-950">更新记录</h2>
-                <p className="mt-1 text-xs text-gray-400">当前版本 {appVersion ? `v${appVersion.replace(/^v/i, "")}` : "读取中"}，内容来自 apps/admin/CHANGELOG.md。</p>
+                <p className="mt-1 text-xs text-gray-400">当前版本 {appVersion ? `v${appVersion.replace(/^v/i, "")}` : "读取中"}。</p>
               </div>
               <button type="button" onClick={() => setVersionOpen(false)} className="rounded-xl border px-3 py-2 text-sm text-gray-500 hover:bg-gray-50">关闭</button>
             </div>

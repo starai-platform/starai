@@ -4,7 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/jpeg"
+	_ "image/png"
 	"log"
 	"net/http"
 	"os"
@@ -15,6 +21,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	_ "golang.org/x/image/webp"
 )
 
 type workflowNode struct {
@@ -226,7 +233,15 @@ func processSimpleAgentWorkflow(ctx context.Context, pool *pgxpool.Pool, baseURL
 
 	nodeRunID := insertWorkflowNodeRun(ctx, pool, p.ProjectID, "generate", "生成结果", stringAny(runtimeCfg["generation_type"]), map[string]interface{}{"prompt": finalPrompt}, 1)
 	start := time.Now()
-	mediaTasks, errMsg := runAgentMediaTasks(ctx, pool, baseURL, token, p.ProjectID, p.UserID, publicID, runtimeCfg, generationInputs, finalPrompt)
+	var mediaTasks []map[string]interface{}
+	var errMsg string
+	if stringAny(generationInputs["creative_scene"]) == "detail_image" && stringAny(runtimeCfg["generation_type"]) != "video" {
+		var detailPage map[string]interface{}
+		mediaTasks, detailPage, errMsg = runAgentDetailPageTasks(ctx, pool, baseURL, token, p.ProjectID, p.UserID, publicID, runtimeCfg, generationInputs, analysis, finalPrompt)
+		outputs["detail_page"] = detailPage
+	} else {
+		mediaTasks, errMsg = runAgentMediaTasks(ctx, pool, baseURL, token, p.ProjectID, p.UserID, publicID, runtimeCfg, generationInputs, finalPrompt)
+	}
 	duration := int(time.Since(start).Milliseconds())
 	generationCost := sumAgentMediaTaskCost(mediaTasks)
 	out := map[string]interface{}{"media_tasks": mediaTasks, "cost": generationCost}
@@ -793,6 +808,13 @@ func buildAgentAnalysisSystemPrompt(category, presetCode string, candidateCount 
 	}
 	scene := agentPresetInstruction(presetCode, category)
 	scene = firstNonEmpty(agentCreativeSceneInstruction(creativeScene), scene)
+	detailPlan := ""
+	if creativeScene == "detail_image" && category != "video" {
+		detailPlan = `
+这是商品详情长图任务。除 candidates 外必须额外返回 detail_sections，按详情页从上到下排列 4–8 个模块。
+每个模块结构：{"id":"detail_01","type":"hero|benefit|material|feature|usage|specification|closing","title":"模块标题","objective":"本模块目的","copy_title":"后期排版标题","copy_points":["已确认卖点"],"image_prompt":"只描述商品、场景、构图、材质、光影和文字留白区，不要求图片模型绘制文字"}。
+必须保持商品外观、颜色、包装、Logo位置和比例跨模块一致；不得编造用户未提供的成分、尺寸、容量、认证或功效。规格模块没有可靠参数时只提供版式和留白，不得杜撰数据。`
+	}
 	return fmt.Sprintf(`你是电商AI创作智能体的方案分析引擎，当前生成类型是%s。
 只输出严格JSON，不要Markdown，不要标题，不要解释，不要出现“某模型的回答”。
 禁止输出与创作无关的运维、CPU、IO、数据库、系统瓶颈、监控等泛化建议。
@@ -812,9 +834,11 @@ JSON结构：
     {"id":"B","title":"方案名","reason":"适用场景","prompt":"可直接生成的完整提示词","negative_prompt":"需要避免的内容","params":{}},
     {"id":"C","title":"方案名","reason":"适用场景","prompt":"可直接生成的完整提示词","negative_prompt":"需要避免的内容","params":{}}
   ],
-  "generation_prompt": "AI推荐方案的prompt"
+  "generation_prompt": "AI推荐方案的prompt",
+  "detail_sections": []
 }
-%s`, target, scene, candidateCount, extra)
+%s
+%s`, target, scene, candidateCount, extra, detailPlan)
 }
 
 func agentPresetInstruction(code, category string) string {
@@ -1364,6 +1388,204 @@ func runAgentMediaTasks(ctx context.Context, pool *pgxpool.Pool, baseURL, token 
 		return results, firstNonEmpty(firstErr, "生成任务全部失败")
 	}
 	return results, ""
+}
+
+func runAgentDetailPageTasks(ctx context.Context, pool *pgxpool.Pool, baseURL, token string, projectID, userID int64, publicID string, runtimeCfg, inputs, analysis map[string]interface{}, basePrompt string) ([]map[string]interface{}, map[string]interface{}, string) {
+	modelCode := stringAny(runtimeCfg["generation_model_code"])
+	if modelCode == "" {
+		return nil, map[string]interface{}{"status": "failed"}, "未配置生成模型"
+	}
+	var modelID int64
+	var requestMode string
+	if err := pool.QueryRow(ctx, "SELECT id, request_mode FROM models WHERE code=$1", modelCode).Scan(&modelID, &requestMode); err != nil {
+		return nil, map[string]interface{}{"status": "failed"}, "生成模型不存在：" + modelCode
+	}
+	if requestMode == "video" || requestMode == "audio" {
+		return nil, map[string]interface{}{"status": "failed"}, "商品详情页必须配置图片生成模型"
+	}
+	sections := agentDetailSections(analysis, inputs, basePrompt)
+	results := make([]map[string]interface{}, 0, len(sections))
+	completedSections := make([]map[string]interface{}, 0, len(sections))
+	imageURLs := make([]string, 0, len(sections))
+	successCount := 0
+	firstErr := ""
+	for i, section := range sections {
+		sectionPrompt := detailSectionGenerationPrompt(basePrompt, section, i, len(sections), inputs)
+		taskNo := newWorkflowTaskNo(i)
+		taskInput := agentMediaTaskInput(inputs, sectionPrompt, publicID)
+		taskInput["count"] = 1
+		taskInput["n"] = 1
+		if imageURL := firstImageURL(inputs); imageURL != "" {
+			taskInput["reference_images"] = []string{imageURL}
+		}
+		taskEstimated := estimateModelCostByIDWorker(ctx, pool, modelID, taskInput, 0, 0)
+		inputJSON, _ := json.Marshal(taskInput)
+		_, err := pool.Exec(ctx, "INSERT INTO tasks (task_no, user_id, model_id, type, status, input, estimated_cost) VALUES ($1,$2,$3,'image','pending',$4,$5)", taskNo, userID, modelID, inputJSON, taskEstimated)
+		if err != nil {
+			if firstErr == "" {
+				firstErr = err.Error()
+			}
+			results = append(results, map[string]interface{}{"task_no": taskNo, "status": "failed", "progress": 100, "error_message": err.Error(), "detail_section": section})
+			continue
+		}
+		pending := map[string]interface{}{"task_no": taskNo, "status": "pending", "progress": 5, "output": map[string]interface{}{}, "detail_section": section}
+		appendWorkflowMediaTask(ctx, pool, projectID, pending)
+		_ = processImageTask(ctx, pool, baseURL, token, ImageTaskPayload{TaskNo: taskNo, UserID: userID, ModelID: modelID, ModelCode: modelCode, Input: taskInput})
+		item := loadAgentMediaTask(ctx, pool, taskNo)
+		item["detail_section"] = section
+		appendWorkflowMediaTask(ctx, pool, projectID, item)
+		if stringAny(item["status"]) == "succeeded" {
+			successCount++
+			out, _ := item["output"].(map[string]interface{})
+			imageURL := firstNonEmpty(stringAny(out["image_url"]), firstImageResultURL(out))
+			sectionResult := copyMap(section)
+			sectionResult["task_no"] = taskNo
+			sectionResult["image_url"] = imageURL
+			sectionResult["status"] = "succeeded"
+			completedSections = append(completedSections, sectionResult)
+			if imageURL != "" {
+				imageURLs = append(imageURLs, imageURL)
+			}
+		} else if firstErr == "" {
+			firstErr = firstNonEmpty(stringAny(item["error_message"]), "详情模块生成失败")
+		}
+		results = append(results, item)
+	}
+	detailPage := map[string]interface{}{
+		"status":          "modules_ready",
+		"sections":        completedSections,
+		"section_count":   len(sections),
+		"completed_count": successCount,
+	}
+	if successCount == 0 {
+		detailPage["status"] = "failed"
+		return results, detailPage, firstNonEmpty(firstErr, "商品详情模块全部生成失败")
+	}
+	if len(imageURLs) == successCount && len(imageURLs) > 1 {
+		if longURL, err := composeDetailPageLongImage(ctx, publicID, imageURLs); err != nil {
+			detailPage["compose_status"] = "skipped"
+			detailPage["compose_error"] = err.Error()
+			log.Printf("Workflow %s detail page compose skipped: %v", publicID, err)
+		} else if longURL != "" {
+			detailPage["status"] = "completed"
+			detailPage["compose_status"] = "succeeded"
+			detailPage["long_image_url"] = longURL
+		}
+	}
+	return results, detailPage, ""
+}
+
+func agentDetailSections(analysis, inputs map[string]interface{}, basePrompt string) []map[string]interface{} {
+	wanted := intAny(inputs["detail_section_count"])
+	if wanted < 4 || wanted > 8 {
+		if n := intAny(inputs["count"]); n >= 4 && n <= 8 {
+			wanted = n
+		} else {
+			wanted = 6
+		}
+	}
+	items := []map[string]interface{}{}
+	if raw, ok := analysis["detail_sections"].([]interface{}); ok {
+		for idx, item := range raw {
+			section, _ := item.(map[string]interface{})
+			if section == nil || strings.TrimSpace(stringAny(section["image_prompt"])) == "" {
+				continue
+			}
+			next := copyMap(section)
+			if stringAny(next["id"]) == "" {
+				next["id"] = fmt.Sprintf("detail_%02d", idx+1)
+			}
+			items = append(items, next)
+			if len(items) >= wanted {
+				break
+			}
+		}
+	}
+	defaults := []map[string]interface{}{
+		{"type": "hero", "title": "商品首屏", "objective": "建立商品定位和第一视觉", "copy_title": "核心商品定位", "image_prompt": "详情页首屏视觉，商品居中或黄金分割构图，高级商业光影，背景简洁，预留标题与核心卖点区域"},
+		{"type": "benefit", "title": "核心卖点", "objective": "突出用户已提供的主要购买理由", "copy_title": "核心卖点", "image_prompt": "详情页核心卖点模块，商品与功能视觉符号结合，层次清晰，预留三项卖点排版区域"},
+		{"type": "material", "title": "材质细节", "objective": "展示结构、材质和工艺", "copy_title": "细节与材质", "image_prompt": "商品局部微距特写，突出材质纹理、结构和工艺细节，商业摄影，预留细节标注区域"},
+		{"type": "feature", "title": "功能展示", "objective": "解释商品功能和使用价值", "copy_title": "功能展示", "image_prompt": "商品功能可视化详情模块，清晰表现工作原理或使用价值，简洁信息图式构图但不绘制文字"},
+		{"type": "usage", "title": "使用场景", "objective": "建立真实使用情境和购买欲", "copy_title": "使用场景", "image_prompt": "真实高品质使用场景，商品主体外观保持一致，尺度准确，生活方式商业摄影，预留场景说明区域"},
+		{"type": "specification", "title": "规格与收尾", "objective": "承载真实规格和购买信息", "copy_title": "规格参数", "image_prompt": "详情页规格收尾模块，商品多角度或包装组合展示，干净背景，大面积规整留白用于后期参数排版，不生成任何参数文字"},
+		{"type": "closing", "title": "品牌收尾", "objective": "形成完整详情页结束视觉", "copy_title": "品牌收尾", "image_prompt": "品牌感详情页收尾视觉，商品英雄式展示，统一品牌色和高级光影，预留行动文案区域"},
+	}
+	for len(items) < wanted {
+		next := copyMap(defaults[len(items)%len(defaults)])
+		next["id"] = fmt.Sprintf("detail_%02d", len(items)+1)
+		if stringAny(next["image_prompt"]) == "" {
+			next["image_prompt"] = basePrompt
+		}
+		items = append(items, next)
+	}
+	return items
+}
+
+func detailSectionGenerationPrompt(basePrompt string, section map[string]interface{}, index, total int, inputs map[string]interface{}) string {
+	sectionPrompt := firstNonEmpty(stringAny(section["image_prompt"]), stringAny(section["objective"]), basePrompt)
+	prompt := fmt.Sprintf("DETAIL PAGE MODULE %d/%d\n模块类型：%s\n模块标题：%s\n模块目标：%s\n\n%s\n\n全页一致性要求：严格保持参考商品的外观、颜色、材质、包装、Logo位置和比例一致；本模块只生成视觉底图和排版留白，不绘制任何标题、参数、促销文字或虚构认证；与其他模块使用统一品牌色、光线和商业风格。\n基础商品方案：%s", index+1, total, stringAny(section["type"]), stringAny(section["title"]), stringAny(section["objective"]), sectionPrompt, basePrompt)
+	return agentPromptWithScene(prompt, inputs)
+}
+
+func firstImageResultURL(out map[string]interface{}) string {
+	if raw, ok := out["images"].([]interface{}); ok && len(raw) > 0 {
+		if item, ok := raw[0].(map[string]interface{}); ok {
+			return stringAny(item["url"])
+		}
+	}
+	return ""
+}
+
+func composeDetailPageLongImage(ctx context.Context, publicID string, urls []string) (string, error) {
+	if objectStore == nil {
+		return "", errors.New("对象存储未初始化")
+	}
+	images := make([]image.Image, 0, len(urls))
+	maxWidth := 0
+	totalHeight := 0
+	const gap = 16
+	for _, mediaURL := range urls {
+		data, _, err := loadMediaBytes(ctx, mediaURL)
+		if err != nil {
+			return "", err
+		}
+		img, _, err := image.Decode(bytes.NewReader(data))
+		if err != nil {
+			return "", fmt.Errorf("图片格式暂不支持自动拼接: %w", err)
+		}
+		bounds := img.Bounds()
+		if bounds.Dx() <= 0 || bounds.Dy() <= 0 || bounds.Dx() > 4096 || bounds.Dy() > 8192 {
+			return "", errors.New("详情模块尺寸超出安全范围")
+		}
+		images = append(images, img)
+		if bounds.Dx() > maxWidth {
+			maxWidth = bounds.Dx()
+		}
+		totalHeight += bounds.Dy()
+	}
+	if len(images) < 2 {
+		return "", errors.New("可拼接模块不足")
+	}
+	totalHeight += gap * (len(images) - 1)
+	if int64(maxWidth)*int64(totalHeight) > 80_000_000 {
+		return "", errors.New("详情长图像素超过安全上限")
+	}
+	canvas := image.NewRGBA(image.Rect(0, 0, maxWidth, totalHeight))
+	draw.Draw(canvas, canvas.Bounds(), &image.Uniform{C: color.White}, image.Point{}, draw.Src)
+	y := 0
+	for _, img := range images {
+		bounds := img.Bounds()
+		x := (maxWidth - bounds.Dx()) / 2
+		target := image.Rect(x, y, x+bounds.Dx(), y+bounds.Dy())
+		draw.Draw(canvas, target, img, bounds.Min, draw.Src)
+		y += bounds.Dy() + gap
+	}
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, canvas, &jpeg.Options{Quality: 90}); err != nil {
+		return "", err
+	}
+	objectName := fmt.Sprintf("workflows/%s/detail-page-%d.jpg", publicID, time.Now().UnixNano())
+	return objectStore.Upload(ctx, objectName, "image/jpeg", bytes.NewReader(encoded.Bytes()), int64(encoded.Len()))
 }
 
 func completeSimpleAgentWorkflow(ctx context.Context, pool *pgxpool.Pool, p WorkflowTaskPayload, publicID string, estimated float64, outputs map[string]interface{}) error {

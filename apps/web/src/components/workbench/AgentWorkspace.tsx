@@ -66,7 +66,9 @@ type Workflow = {
   };
 };
 type NodeRun = { node_id: string; name: string; type: string; status: string; output: Record<string, any>; error?: string };
-type MediaTask = { task_no: string; status: string; progress: number; output?: Record<string, any>; error_message?: string };
+type DetailSection = { id?: string; type?: string; title?: string; objective?: string; copy_title?: string; copy_points?: string[]; image_url?: string; status?: string };
+type DetailPageOutput = { status?: string; compose_status?: string; compose_error?: string; long_image_url?: string; section_count?: number; completed_count?: number; sections?: DetailSection[] };
+type MediaTask = { task_no: string; status: string; progress: number; output?: Record<string, any>; error_message?: string; detail_section?: DetailSection };
 type ReferenceImage = { url: string; name: string; public_id?: string };
 type AnalysisCandidate = { id: string; title?: string; reason?: string; prompt: string; negative_prompt?: string; params?: Record<string, unknown> };
 type Project = {
@@ -327,6 +329,7 @@ export function AgentWorkspace({ code }: { code: string }) {
     [workflow?.runtime_config?.creative_scenes, workflow?.runtime_config?.output_scenes, generationType]
   );
   const selectedSceneMeta = IMAGE_SCENES.find((item) => item.code === selectedScene) || IMAGE_SCENES[0];
+  const isDetailPageScene = selectedSceneMeta.code === "detail_image" && generationType === "image";
   const videoConfig = parseVideoRuntime(generationModel?.runtime_rule);
   const [comicSettings, setComicSettings] = useState({
     style_reference_mode: "image_reference",
@@ -373,6 +376,7 @@ export function AgentWorkspace({ code }: { code: string }) {
     [project]
   );
   const finalVideoURL = textOf(project?.outputs?.final_video_url);
+  const detailPage = (project?.outputs?.detail_page || null) as DetailPageOutput | null;
   const mediaTasks = useMemo(
     () => (isComicDrama && finalVideoURL ? allMediaTasks.filter((task) => !textOf(task.task_no).startsWith("compose_")) : allMediaTasks),
     [allMediaTasks, finalVideoURL, isComicDrama]
@@ -485,6 +489,10 @@ export function AgentWorkspace({ code }: { code: string }) {
     }
   }, [generationType, outputScenes, selectedScene]);
 
+  useEffect(() => {
+    if (isDetailPageScene && count < 4) setCount(6);
+  }, [count, isDetailPageScene]);
+
   const startPolling = (publicId: string) => {
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = setInterval(async () => {
@@ -550,6 +558,7 @@ export function AgentWorkspace({ code }: { code: string }) {
             scene_prompt: scenePrompt,
             creative_scene: selectedSceneMeta.code,
             creative_scene_label: selectedSceneMeta.label,
+            detail_section_count: isDetailPageScene ? Math.max(4, Math.min(8, count || 6)) : undefined,
             generation_language: languageParams.language,
             generation_language_label: languageParams.language_label,
             ...(isComicDrama ? {
@@ -1082,6 +1091,7 @@ export function AgentWorkspace({ code }: { code: string }) {
                   )}
 
                   {finalVideoURL && <FinalComicVideo url={finalVideoURL} />}
+                  {detailPage && <DetailPagePanel detailPage={detailPage} />}
                   {mediaTasks.length > 0 && <MediaTaskGrid tasks={mediaTasks} generationType={generationType} onMore={() => router.push("/app/works")} />}
                   {project.status === "failed" && (
                     <div className="rounded-2xl bg-red-50 border border-red-100 p-4 dark:bg-red-500/10 dark:border-red-400/20">
@@ -1199,7 +1209,7 @@ export function AgentWorkspace({ code }: { code: string }) {
                   <>
                     <ImageGenerationToolbar
                       count={count}
-                      onCountChange={setCount}
+                      onCountChange={(value) => setCount(isDetailPageScene ? Math.max(4, Math.min(8, value)) : value)}
                       ratio={imageRatio}
                       onRatioChange={setImageRatio}
                       imageSize={imageSize}
@@ -1795,6 +1805,54 @@ function FinalComicVideo({ url }: { url: string }) {
   );
 }
 
+function DetailPagePanel({ detailPage }: { detailPage: DetailPageOutput }) {
+  const { t } = useI18n();
+  const sections = Array.isArray(detailPage.sections) ? detailPage.sections : [];
+  const longURL = textOf(detailPage.long_image_url);
+  return (
+    <div className="space-y-3 rounded-2xl border border-amber-100 bg-amber-50/50 p-4 dark:border-amber-400/15 dark:bg-amber-400/5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-sm font-semibold text-gray-900 dark:text-white">{t("agent.detailPage.title")}</div>
+          <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-300">
+            {t("agent.detailPage.completed")} {Number(detailPage.completed_count || sections.length)}/{Number(detailPage.section_count || sections.length)} {t("agent.detailPage.modules")}
+          </div>
+        </div>
+        <span className="rounded-full bg-amber-500/10 px-2.5 py-1 text-[11px] font-semibold text-amber-700 dark:text-amber-200">
+          {detailPage.compose_status === "succeeded" ? t("agent.detailPage.longReady") : t("agent.detailPage.modulesReady")}
+        </span>
+      </div>
+      {longURL && (
+        <div className="overflow-hidden rounded-xl border border-white bg-white dark:border-white/10 dark:bg-gray-950">
+          <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2 dark:border-white/10">
+            <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">{t("agent.detailPage.finalLong")}</span>
+            <a href={longURL} target="_blank" rel="noreferrer" download className="flex items-center gap-1 text-xs font-medium text-amber-700 dark:text-amber-200"><Download size={14} />{t("agent.detailPage.downloadLong")}</a>
+          </div>
+          <div className="max-h-[620px] overflow-y-auto bg-gray-50 p-2 dark:bg-gray-950">
+            <Image src={longURL} alt="商品详情长图" width={1200} height={6000} sizes="(max-width: 768px) 100vw, 900px" className="mx-auto h-auto w-full max-w-3xl" />
+          </div>
+        </div>
+      )}
+      {sections.length > 0 && (
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {sections.map((section, index) => (
+            <div key={textOf(section.id || index)} className="rounded-xl border border-white bg-white/80 p-3 dark:border-white/10 dark:bg-white/5">
+              <div className="flex items-center gap-2">
+                <span className="rounded-lg bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-200">{index + 1}</span>
+                <span className="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">{textOf(section.title || section.copy_title || `详情模块 ${index + 1}`)}</span>
+              </div>
+              {section.objective && <p className="mt-1 line-clamp-2 text-xs leading-5 text-gray-500 dark:text-gray-300">{section.objective}</p>}
+            </div>
+          ))}
+        </div>
+      )}
+      {detailPage.compose_status === "skipped" && detailPage.compose_error && (
+        <p className="text-xs text-amber-700 dark:text-amber-200">{t("agent.detailPage.composeSkipped")} {detailPage.compose_error}</p>
+      )}
+    </div>
+  );
+}
+
 function MediaTaskGrid({ tasks, generationType, onMore }: { tasks: MediaTask[]; generationType: string; onMore: () => void }) {
   const { t } = useI18n();
   const [preview, setPreview] = useState<{ url: string; type: string } | null>(null);
@@ -1893,7 +1951,7 @@ function MediaResultCard({
   return (
     <div className="rounded-2xl border border-gray-100 bg-white p-2.5 dark:bg-white/5 dark:border-white/10">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-xs text-gray-400">#{index + 1}</span>
+        <span className="max-w-[70%] truncate text-xs text-gray-400">{task.detail_section?.title || `#${index + 1}`}</span>
         <span className={`text-xs ${status === "succeeded" ? "text-emerald-600" : failed ? "text-red-500" : "text-amber-600"}`}>{t(STATUS_LABEL_KEY[status] || status)}</span>
       </div>
       <div className="h-1.5 rounded-full bg-gray-100 dark:bg-white/10 overflow-hidden mb-2.5"><div className="h-full bg-primary" style={{ width: progress + "%" }} /></div>

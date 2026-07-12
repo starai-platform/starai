@@ -102,6 +102,21 @@ function parseMultiCollabSnapshot(content: string): MultiCollabSnapshot | null {
 type RefImage = { url: string; name: string; public_id?: string };
 type VideoResult = { url: string; thumbnail?: string };
 
+function singleResultAudioSchema(schema: Model["input_schema"]) {
+  const source = (schema ?? {}) as Record<string, unknown>;
+  const properties = { ...((source.properties as Record<string, unknown> | undefined) ?? {}) };
+  delete properties.count;
+  delete properties.n;
+  return { ...source, properties };
+}
+
+function singleResultAudioParams(params: Record<string, unknown>) {
+  const next = { ...params };
+  delete next.count;
+  delete next.n;
+  return next;
+}
+
 type HistoryItem = {
   id: string;
   kind: "chat" | "task";
@@ -757,7 +772,11 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
   const isImage = model.category === "image";
   const isVideo = model.category === "video";
   const isAudio = model.category === "audio";
-  const hasSchemaFields = Object.keys(schemaProperties(model.input_schema)).length > 0;
+  const workbenchInputSchema = useMemo(
+    () => (isAudio ? singleResultAudioSchema(model.input_schema) : model.input_schema),
+    [isAudio, model.input_schema]
+  );
+  const hasSchemaFields = Object.keys(schemaProperties(workbenchInputSchema)).length > 0;
   const tag = CATEGORY_TAG[model.category] || { label: model.category, labelKey: `modelCategory.${model.category}`, className: "bg-gray-100 text-gray-600" };
   const modelName = td(`model.${model.code}.name`, model.display_name);
   const modelDescription = td(`model.${model.code}.description`, model.description || t("workspace.defaultModelDesc"));
@@ -801,8 +820,9 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
     const secondaryKey = parseAudioRuntime(model.runtime_rule).secondary_prompt_key || "style_prompt";
     const defaults = model.default_params || {};
     setParams({
-      ...(isVideo || isAudio ? schemaDefaultsFromFields(model.input_schema) : schemaDefaults(model.input_schema)),
+      ...(isVideo || isAudio ? schemaDefaultsFromFields(workbenchInputSchema) : schemaDefaults(workbenchInputSchema)),
       ...defaults,
+      ...(isAudio ? { count: undefined, n: undefined } : {}),
     });
     setRefImages([]);
     setVideoMedia(EMPTY_VIDEO_MEDIA);
@@ -816,7 +836,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
       channel_key: typeof defaults.channel_key === "string" && defaults.channel_key ? defaults.channel_key : prev.channel_key,
     }));
     setPrompt(initialPrompt || "");
-  }, [model.code, initialPrompt, isVideo, isAudio, isImage, model.input_schema, model.default_params, model.runtime_rule]);
+  }, [model.code, initialPrompt, isVideo, isAudio, isImage, workbenchInputSchema, model.default_params, model.runtime_rule]);
 
   useEffect(() => {
     const selectedAssets = bottom.asset_ids?.length ? { asset_ids: bottom.asset_ids } : {};
@@ -826,7 +846,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
       ? { ...buildVideoTaskParams(params, videoMedia, model.runtime_rule), ...languageParams, ...selectedAssets, ...selectedReferenceAssets }
       : isAudio
         ? {
-            ...buildAudioTaskParams(params, prompt, audioSecondaryPrompt, model.runtime_rule),
+            ...buildAudioTaskParams(singleResultAudioParams(params), prompt, audioSecondaryPrompt, model.runtime_rule),
             ...(audioRef?.url ? { reference_audio: audioRef.url } : {}),
             ...selectedAssets,
           }
@@ -1082,6 +1102,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
       setTaskStatus("");
       setTaskOutput(null);
       setTaskImages([]);
+      setTaskVideos([]);
       setHistoryOpen(false);
     } catch {
       /* ignore */
@@ -1416,7 +1437,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
         ? { ...buildVideoTaskParams(params, videoMedia, model.runtime_rule), ...buildLanguageParams(selectedLanguage), user_prompt: prompt, ...selectedAssets, ...selectedReferenceAssets }
         : isAudio
           ? {
-              ...buildAudioTaskParams(params, prompt, audioSecondaryPrompt, model.runtime_rule),
+              ...buildAudioTaskParams(singleResultAudioParams(params), prompt, audioSecondaryPrompt, model.runtime_rule),
               ...(audioRef?.url ? { reference_audio: audioRef.url } : {}),
               ...selectedAssets,
             }
@@ -1543,6 +1564,8 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
             onClick={() => {
               setMessages([]);
               setTaskOutput(null);
+              setTaskImages([]);
+              setTaskVideos([]);
               setTaskStatus("");
               setConversationId("");
             }}
@@ -1940,7 +1963,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                 <div className="flex items-center gap-2 sm:gap-3">
                   <div className="flex-1 min-w-0 flex flex-wrap items-center gap-1.5 sm:gap-2">
                     <ChatTopTools value={bottom} onChange={setBottom} />
-                    <SchemaForm schema={model.input_schema} values={params} onChange={setParams} placement="top" />
+                    <SchemaForm schema={workbenchInputSchema} values={params} onChange={setParams} placement="top" />
                     {isMultiCollab && (
                       <div className="flex lg:hidden items-center gap-1 h-9 shrink-0">
                         {/* compact collaborator logos */}
@@ -1975,7 +1998,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                           onReferenceImagesChange={setRefImages}
                           maxReferenceImages={maxRefImages}
                         />
-                        <SchemaForm schema={model.input_schema} values={params} onChange={setParams} placement="top" />
+                        <SchemaForm schema={workbenchInputSchema} values={params} onChange={setParams} placement="top" />
                       </div>
                       <InputToolbarMeta
                         onPricing={() => setPricingOpen(true)}
@@ -2038,7 +2061,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                           maxReferenceImages={maxVideoAssetRefs}
                         />
                         <VideoTopControls
-                          schema={model.input_schema}
+                          schema={workbenchInputSchema}
                           values={params}
                           onChange={setParams}
                           videoConfig={videoConfig}
@@ -2055,7 +2078,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                   <div className="flex items-center gap-2 sm:gap-3">
                     <div className="flex items-center gap-2 min-w-0 flex-1 min-h-9 flex-wrap">
                       <AudioTopControls
-                        schema={model.input_schema}
+                        schema={workbenchInputSchema}
                         values={params}
                         onChange={setParams}
                         audioConfig={audioConfig}
@@ -2082,9 +2105,9 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                   </div>
                 ) : (
                   <>
-                    <SchemaForm schema={model.input_schema} values={params} onChange={setParams} placement="top" />
+                    <SchemaForm schema={workbenchInputSchema} values={params} onChange={setParams} placement="top" />
                     {hasSchemaFields && (
-                      <SchemaForm schema={model.input_schema} values={params} onChange={setParams} placement="default" />
+                      <SchemaForm schema={workbenchInputSchema} values={params} onChange={setParams} placement="default" />
                     )}
                     <div className="flex items-center gap-2 flex-wrap">
                       {refImages.map((img, i) => (
@@ -2234,7 +2257,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                       />
                     )}
                     <VideoOptionToolbar
-                      schema={model.input_schema}
+                      schema={workbenchInputSchema}
                       values={params}
                       onChange={setParams}
                       videoConfig={videoConfig}
@@ -2254,7 +2277,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                       />
                     )}
                     <AudioOptionToolbar
-                      schema={model.input_schema}
+                      schema={workbenchInputSchema}
                       values={params}
                       onChange={setParams}
                       audioConfig={audioConfig}

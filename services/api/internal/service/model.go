@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -873,6 +874,7 @@ func (s *ModelService) Create(ctx context.Context, input CreateModelInput) (*Mod
 	if err := validateModelConnection(input); err != nil {
 		return nil, err
 	}
+	input.NewAPIEndpoint = normalizeModelEndpoint(input.NewAPIEndpoint)
 	tags, _ := json.Marshal(input.Tags)
 	runtime, _ := json.Marshal(input.RuntimeRule)
 	schema, _ := json.Marshal(input.InputSchema)
@@ -890,9 +892,25 @@ func (s *ModelService) Create(ctx context.Context, input CreateModelInput) (*Mod
 		input.IconURL, input.Description, tags, runtime, schema, defaults, extra, price, input.IsEnabled, input.SortOrder,
 	).Scan(&id)
 	if err != nil {
+		if friendly := modelCreateError(input.Code, err); friendly != nil {
+			return nil, friendly
+		}
 		return nil, err
 	}
 	return s.GetByID(ctx, id)
+}
+
+func modelCreateError(code string, err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		switch pgErr.ConstraintName {
+		case "models_code_key":
+			return fmt.Errorf("模型编码 %q 已存在，请换一个编码或编辑已有模型", code)
+		default:
+			return errors.New("模型唯一字段已存在，请检查编码或名称")
+		}
+	}
+	return nil
 }
 
 func (s *ModelService) Update(ctx context.Context, id int64, input CreateModelInput) (*ModelDTO, error) {
@@ -902,6 +920,7 @@ func (s *ModelService) Update(ctx context.Context, id int64, input CreateModelIn
 	if err := validateModelConnection(input); err != nil {
 		return nil, err
 	}
+	input.NewAPIEndpoint = normalizeModelEndpoint(input.NewAPIEndpoint)
 	tags, _ := json.Marshal(input.Tags)
 	runtime, _ := json.Marshal(input.RuntimeRule)
 	schema, _ := json.Marshal(input.InputSchema)
@@ -1012,6 +1031,14 @@ func validateModelConnection(input CreateModelInput) error {
 		}
 	}
 	return nil
+}
+
+func normalizeModelEndpoint(endpoint string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" || strings.HasPrefix(endpoint, "/") || strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+		return endpoint
+	}
+	return "/" + endpoint
 }
 
 func (s *ModelService) Delete(ctx context.Context, id int64) error {

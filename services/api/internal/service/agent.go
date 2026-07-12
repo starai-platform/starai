@@ -752,7 +752,24 @@ func (s *AgentService) estimateAgentRuntimeCost(ctx context.Context, runtimeCfg 
 		total += s.estimateModelCostByCode(ctx, code, inputs, 500, 1000)
 	}
 	if code := stringValue(runtimeCfg["generation_model_code"]); code != "" {
-		total += s.estimateModelCostByCode(ctx, code, inputs, 0, 0)
+		generationInputs := inputs
+		if stringValue(inputs["creative_scene"]) == "detail_image" && stringValue(runtimeCfg["generation_type"]) != "video" {
+			generationInputs = make(map[string]interface{}, len(inputs)+2)
+			for key, value := range inputs {
+				generationInputs[key] = value
+			}
+			sectionCount := intFromAgentAny(inputs["detail_section_count"])
+			if sectionCount < 4 || sectionCount > 8 {
+				if requested := intFromAgentAny(inputs["count"]); requested >= 4 && requested <= 8 {
+					sectionCount = requested
+				} else {
+					sectionCount = 6
+				}
+			}
+			generationInputs["count"] = sectionCount
+			generationInputs["n"] = sectionCount
+		}
+		total += s.estimateModelCostByCode(ctx, code, generationInputs, 0, 0)
 	}
 	return total
 }

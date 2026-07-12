@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"testing"
+	"time"
 )
 
 func TestParseUpstreamMediaKeepsTaskIDWhenMediaExists(t *testing.T) {
@@ -112,6 +113,50 @@ func TestParseUpstreamMediaReadsNestedAudioResult(t *testing.T) {
 	items, _ := parseUpstreamMedia(body)
 	if len(items) != 1 || items[0].B64JSON != audio {
 		t.Fatalf("items = %#v", items)
+	}
+}
+
+func TestParseUpstreamMediaReadsRawMP3Audio(t *testing.T) {
+	body := append([]byte("ID3\x04\x00\x00\x00\x00\x00\x21TXXX=AIGC"), []byte("audio-audio-audio-audio-audio")...)
+
+	items, upstreamID := parseUpstreamMedia(body)
+	if upstreamID != "" {
+		t.Fatalf("upstreamID = %q", upstreamID)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %#v", items)
+	}
+	if items[0].MimeType != "audio/mpeg" {
+		t.Fatalf("mime = %q", items[0].MimeType)
+	}
+	data, contentType, err := decodeEncodedMedia(items[0].B64JSON, items[0].MimeType, "audio")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contentType != "audio/mpeg" {
+		t.Fatalf("contentType = %q", contentType)
+	}
+	if string(data[:3]) != "ID3" {
+		t.Fatalf("decoded head = %q", string(data[:3]))
+	}
+}
+
+func TestJoinBaseEndpointNormalizesMissingSlash(t *testing.T) {
+	got := joinBaseEndpoint("https://api.minimaxi.com/", "v1/music_generation")
+	if got != "https://api.minimaxi.com/v1/music_generation" {
+		t.Fatalf("url = %q", got)
+	}
+}
+
+func TestUpstreamRequestTimeoutSupportsAudioAndOverride(t *testing.T) {
+	if got := upstreamRequestTimeout(nil, true); got != 15*time.Minute {
+		t.Fatalf("audio timeout = %s", got)
+	}
+	got := upstreamRequestTimeout(map[string]interface{}{
+		"upstream": map[string]interface{}{"request_timeout_sec": float64(900)},
+	}, true)
+	if got != 15*time.Minute {
+		t.Fatalf("override timeout = %s", got)
 	}
 }
 

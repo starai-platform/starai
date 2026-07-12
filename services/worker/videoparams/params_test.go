@@ -112,3 +112,78 @@ func TestBuildUpstreamPayloadSupportsNestedMap(t *testing.T) {
 		t.Fatalf("response_format should not be sent: %#v", got)
 	}
 }
+
+func TestBuildUpstreamPayloadSupportsMinimaxMusicTemplate(t *testing.T) {
+	got := BuildUpstreamVideoPayload(
+		"audio_minimax_music_26",
+		"music-2.6",
+		map[string]interface{}{
+			"upstream": map[string]interface{}{
+				"include": []interface{}{"model_version", "music_prompt", "output_format", "format", "sample_rate", "bitrate"},
+				"map": map[string]interface{}{
+					"prompt":        "lyrics",
+					"music_prompt":  "prompt",
+					"model_version": "model",
+					"format":        "audio_setting.format",
+					"sample_rate":   "audio_setting.sample_rate",
+					"bitrate":       "audio_setting.bitrate",
+				},
+				"static": map[string]interface{}{"stream": false},
+			},
+		},
+		nil,
+		map[string]interface{}{
+			"prompt":        "[Verse] hello",
+			"music_prompt":  "upbeat pop",
+			"model_version": "music-2.6",
+			"output_format": "hex",
+			"format":        "mp3",
+			"sample_rate":   44100,
+			"bitrate":       256000,
+		},
+	)
+	if got["model"] != "music-2.6" || got["lyrics"] != "[Verse] hello" || got["prompt"] != "upbeat pop" {
+		t.Fatalf("unexpected MiniMax music payload: %#v", got)
+	}
+	if got["output_format"] != "hex" || got["stream"] != false {
+		t.Fatalf("missing MiniMax music output settings: %#v", got)
+	}
+	audio, ok := got["audio_setting"].(map[string]interface{})
+	if !ok || audio["format"] != "mp3" || audio["sample_rate"] != float64(44100) || audio["bitrate"] != float64(256000) {
+		t.Fatalf("unexpected MiniMax music audio_setting: %#v", got)
+	}
+}
+
+func TestBuildUpstreamPayloadSupportsCompatibleSpeechMusicTemplate(t *testing.T) {
+	got := BuildUpstreamVideoPayload(
+		"music-2-6-openai",
+		"music-2.6",
+		map[string]interface{}{
+			"upstream": map[string]interface{}{
+				"include": []interface{}{"music_prompt", "format", "sample_rate", "bitrate"},
+				"map": map[string]interface{}{
+					"prompt":       "metadata.lyrics",
+					"music_prompt": "input",
+					"format":       "response_format",
+					"sample_rate":  "metadata.sample_rate",
+					"bitrate":      "metadata.bitrate",
+				},
+			},
+		},
+		nil,
+		map[string]interface{}{
+			"prompt":       "[Chorus] hello",
+			"music_prompt": "Mandopop, upbeat",
+			"format":       "mp3",
+			"sample_rate":  44100,
+			"bitrate":      256000,
+		},
+	)
+	if got["input"] != "Mandopop, upbeat" || got["response_format"] != "mp3" {
+		t.Fatalf("unexpected compatible music payload: %#v", got)
+	}
+	metadata, ok := got["metadata"].(map[string]interface{})
+	if !ok || metadata["lyrics"] != "[Chorus] hello" || metadata["sample_rate"] != float64(44100) || metadata["bitrate"] != float64(256000) {
+		t.Fatalf("unexpected compatible music metadata: %#v", got)
+	}
+}

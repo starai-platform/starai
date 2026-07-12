@@ -281,7 +281,7 @@ func processImageTask(ctx context.Context, pool *pgxpool.Pool, baseURL, token st
 		respBody, statusCode, err = postVideoUpstream(ctx, conn, endpoint, payloadMap, p.TaskNo)
 	} else {
 		body, _ = json.Marshal(payloadMap)
-		respBody, statusCode, err = doJSONRequestWithLimit(ctx, conn, "POST", conn.BaseURL+resolveModelEndpoint(endpoint, newAPIModel), body, 90*time.Second, 96<<20)
+		respBody, statusCode, err = doJSONRequestWithLimit(ctx, conn, "POST", joinBaseEndpoint(conn.BaseURL, resolveModelEndpoint(endpoint, newAPIModel)), body, upstreamRequestTimeout(runtimeRule, isAudio), 96<<20)
 	}
 	if err != nil {
 		return failTask(ctx, pool, p, "MODEL_TIMEOUT", "生成超时，请重试")
@@ -539,6 +539,38 @@ func trimRightSlash(s string) string {
 		s = s[:len(s)-1]
 	}
 	return s
+}
+
+func joinBaseEndpoint(baseURL, endpoint string) string {
+	baseURL = trimRightSlash(strings.TrimSpace(baseURL))
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return baseURL
+	}
+	if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+		return endpoint
+	}
+	if !strings.HasPrefix(endpoint, "/") {
+		endpoint = "/" + endpoint
+	}
+	return baseURL + endpoint
+}
+
+func upstreamRequestTimeout(runtimeRule map[string]interface{}, isAudio bool) time.Duration {
+	if up, _ := runtimeRule["upstream"].(map[string]interface{}); up != nil {
+		for _, key := range []string{"request_timeout_sec", "timeout_sec"} {
+			if d := secondsFromAny(up[key]); d > 0 {
+				if d > 30*time.Minute {
+					return 30 * time.Minute
+				}
+				return d
+			}
+		}
+	}
+	if isAudio {
+		return 15 * time.Minute
+	}
+	return 90 * time.Second
 }
 
 func normalizeImageResultURL(url, b64 string) string {
@@ -1388,6 +1420,9 @@ func doJSONRequestWithLimit(ctx context.Context, conn connectionConfig, method, 
 func parseUpstreamMedia(body []byte) ([]mediaItem, string) {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(body, &raw); err != nil {
+		if item, ok := rawAudioMediaItem(body); ok {
+			return []mediaItem{item}, ""
+		}
 		return nil, ""
 	}
 	raw = unwrapUpstreamBody(raw)
@@ -1398,6 +1433,42 @@ func parseUpstreamMedia(body []byte) ([]mediaItem, string) {
 	}
 	// otuapi 等网关：异步任务 ID 在 task_id，顶层 id 常为数字记录号
 	return nil, upstreamID
+}
+
+func rawAudioMediaItem(body []byte) (mediaItem, bool) {
+	if len(body) < 8 {
+		return mediaItem{}, false
+	}
+	contentType := detectRawAudioContentType(body)
+	if contentType == "" {
+		return mediaItem{}, false
+	}
+	return mediaItem{
+		B64JSON:  base64.StdEncoding.EncodeToString(body),
+		MimeType: contentType,
+	}, true
+}
+
+func detectRawAudioContentType(body []byte) string {
+	if len(body) < 4 {
+		return ""
+	}
+	switch {
+	case bytes.HasPrefix(body, []byte("ID3")):
+		return "audio/mpeg"
+	case len(body) >= 2 && body[0] == 0xff && (body[1]&0xe0) == 0xe0:
+		return "audio/mpeg"
+	case bytes.HasPrefix(body, []byte("fLaC")):
+		return "audio/flac"
+	case bytes.HasPrefix(body, []byte("OggS")):
+		return "audio/ogg"
+	case len(body) >= 12 && bytes.HasPrefix(body, []byte("RIFF")) && bytes.Equal(body[8:12], []byte("WAVE")):
+		return "audio/wav"
+	}
+	if detected := http.DetectContentType(body); strings.HasPrefix(strings.ToLower(detected), "audio/") {
+		return detected
+	}
+	return ""
 }
 
 func unwrapUpstreamBody(raw map[string]interface{}) map[string]interface{} {

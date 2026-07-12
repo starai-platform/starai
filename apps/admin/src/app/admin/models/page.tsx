@@ -193,6 +193,20 @@ const IMAGE_ENDPOINT_PRESETS = [
 
 const BANANA_MODELS = ["nano_banana_2", "nano_banana_pro-1K", "nano_banana_pro-2K", "nano_banana_pro-4K"];
 
+function singleResultAudioSchema(schema: Record<string, unknown>) {
+  const properties = { ...((schema?.properties as Record<string, unknown> | undefined) ?? {}) };
+  delete properties.count;
+  delete properties.n;
+  return { ...schema, properties };
+}
+
+function singleResultAudioParams(params: Record<string, unknown>) {
+  const next = { ...params };
+  delete next.count;
+  delete next.n;
+  return next;
+}
+
 interface FormState {
   id: number | null;
   code: string;
@@ -276,6 +290,7 @@ export default function ModelsPage() {
   const [languageRows, setLanguageRows] = useState<GenerationLanguageRow[]>(DEFAULT_GENERATION_LANGUAGES);
   const [languageErr, setLanguageErr] = useState("");
   const [languageSaving, setLanguageSaving] = useState(false);
+  const [audioTemplateKey, setAudioTemplateKey] = useState("");
 
   const [filterCategory, setFilterCategory] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
@@ -352,6 +367,7 @@ export default function ModelsPage() {
   const openCreate = () => {
     setForm(emptyForm);
     setBatchRows([emptyBatchRow()]);
+    setAudioTemplateKey("");
     setErr("");
     setShowForm(true);
   };
@@ -390,6 +406,7 @@ export default function ModelsPage() {
       price_rule: JSON.stringify(m.price_rule ?? {}, null, 2),
       runtime_rule: JSON.stringify(m.runtime_rule ?? {}, null, 2),
     });
+    setAudioTemplateKey("");
     setErr("");
     setShowForm(true);
   };
@@ -671,17 +688,32 @@ export default function ModelsPage() {
           prompt_required: true,
           show_channel: next.show_channel,
           show_web_search: next.show_web_search,
-          count_options: next.count_options?.length ? next.count_options : [1, 3, 5, 10, 30, 50],
-          count_allow_custom: next.count_allow_custom,
-          count_max: Math.max(1, next.count_max || 50),
+          count_options: [1],
+          count_allow_custom: false,
+          count_max: 1,
           frames: {
             first: { key: "first_frame", label: "首帧", max: 1 },
             last: { key: "last_frame", label: "尾帧", max: 1 },
           },
           reference_images: { key: "reference_images", max: next.ref_slot_max },
         },
-        upstream: { include, map: mapObj },
+        upstream: { ...(((rr?.upstream as Record<string, unknown>) ?? {}) as Record<string, unknown>), include, map: mapObj },
         capabilities: { ...(rr?.capabilities ?? {}), web_search: false, deep_think: false },
+      },
+      null,
+      2
+    );
+  };
+
+  const withAudioUpstreamPatch = (runtimeRuleText: string, upstreamPatch: Record<string, unknown>) => {
+    const rr = safeParseJson(runtimeRuleText, {});
+    return JSON.stringify(
+      {
+        ...rr,
+        upstream: {
+          ...(((rr?.upstream as Record<string, unknown>) ?? {}) as Record<string, unknown>),
+          ...upstreamPatch,
+        },
       },
       null,
       2
@@ -746,7 +778,11 @@ export default function ModelsPage() {
           count_allow_custom: next.count_allow_custom,
           count_max: Math.max(1, next.count_max || 50),
         },
-        upstream: { include, map: mapObj },
+        upstream: {
+          ...(((rr?.upstream as Record<string, unknown>) ?? {}) as Record<string, unknown>),
+          include,
+          map: mapObj,
+        },
         capabilities: { ...(rr?.capabilities ?? {}), web_search: false, deep_think: false },
       },
       null,
@@ -758,6 +794,7 @@ export default function ModelsPage() {
     ...prev,
     category: "audio",
     request_mode: "audio",
+    new_api_model: "speech-2.8-hd",
     new_api_endpoint: ENDPOINT_BY_MODE.audio,
     runtime_rule: setAudioRule(clearModelCaps(prev.runtime_rule), {
       input_layout: "single",
@@ -766,8 +803,17 @@ export default function ModelsPage() {
       count_allow_custom: true,
       count_max: 50,
       prompt_hint: "输入文本内容，选择音色即可生成语音",
-      upstream_include: ["count", "voice_id", "emotion", "speed", "format"],
-      upstream_map: JSON.stringify({ count: "n" }, null, 2),
+      upstream_include: ["voice_id", "emotion", "speed", "format"],
+      upstream_map: JSON.stringify(
+        {
+          prompt: "input",
+          voice_id: "voice",
+          format: "response_format",
+          emotion: "metadata.emotion",
+        },
+        null,
+        2
+      ),
     }),
     input_schema: JSON.stringify(
       {
@@ -837,8 +883,8 @@ export default function ModelsPage() {
           format: {
             type: "string",
             title: "输出格式",
-            enum: ["mp3", "wav", "flac", "pcm"],
-            enumLabels: { mp3: "MP3", wav: "WAV", flac: "FLAC", pcm: "PCM" },
+            enum: ["mp3", "flac", "pcm"],
+            enumLabels: { mp3: "MP3", flac: "FLAC", pcm: "PCM" },
             default: "mp3",
             "x-order": 5,
             "x-widget": "option_menu",
@@ -849,8 +895,431 @@ export default function ModelsPage() {
       null,
       2
     ),
-    default_params: JSON.stringify({ count: 1, voice_id: "Chinese (Mandarin)_Warm_Bestie", emotion: "auto", speed: 1, format: "mp3" }, null, 2),
+    default_params: JSON.stringify({ voice_id: "Chinese (Mandarin)_Warm_Bestie", emotion: "auto", speed: 1, format: "mp3" }, null, 2),
     price_rule: JSON.stringify({ billing_type: "per_token", currency: "¥", input_price_per_m: 2, output_price_per_m: 4 }, null, 2),
+  });
+
+  const applyAudioYunwuMinimaxSpeechStandard = (prev: FormState): FormState => ({
+    ...prev,
+    category: "audio",
+    request_mode: "audio",
+    new_api_model: "speech-2.8-hd",
+    new_api_endpoint: "/minimax/v1/t2a_v2",
+    runtime_rule: withAudioUpstreamPatch(
+      setAudioRule(clearModelCaps(prev.runtime_rule), {
+        input_layout: "single",
+        billing_hint: "per_token",
+        count_options: [1, 3, 5, 10, 30, 50],
+        count_allow_custom: true,
+        count_max: 50,
+        prompt_hint: "输入要朗读的文本，选择 Voice ID 和情绪后生成高保真语音。",
+        upstream_include: ["voice_id", "emotion", "speed", "format"],
+        upstream_map: JSON.stringify(
+          {
+            prompt: "text",
+            voice_id: "voice_setting.voice_id",
+            emotion: "voice_setting.emotion",
+            speed: "voice_setting.speed",
+            format: "audio_setting.format",
+          },
+          null,
+          2
+        ),
+      }),
+      { static: { stream: false }, request_timeout_sec: 900 }
+    ),
+    input_schema: JSON.stringify(
+      {
+        type: "object",
+        properties: {
+          count: {
+            type: "integer",
+            title: "生成数量",
+            enum: [1, 3, 5, 10, 30, 50],
+            default: 1,
+            minimum: 1,
+            maximum: 50,
+            "x-allow-custom": true,
+            "x-order": 1,
+            "x-widget": "option_menu",
+            "x-icon": "layers",
+            "x-highlight": true,
+          },
+          voice_id: {
+            type: "string",
+            title: "Voice ID",
+            enum: ["male-qn-qingse", "female-shaonv", "female-yujie", "male-qn-jingying", "male-qn-badao"],
+            enumLabels: {
+              "male-qn-qingse": "男声 · 青涩",
+              "female-shaonv": "女声 · 少女",
+              "female-yujie": "女声 · 御姐",
+              "male-qn-jingying": "男声 · 精英",
+              "male-qn-badao": "男声 · 霸道",
+            },
+            default: "male-qn-qingse",
+            "x-order": 2,
+            "x-widget": "option_menu",
+            "x-icon": "voice",
+            "x-placement": "top",
+            "x-highlight": true,
+          },
+          speed: {
+            type: "number",
+            title: "语速",
+            enum: [0.8, 1, 1.15, 1.2, 1.5],
+            enumLabels: { "0.8": "0.8x", "1": "1.0x", "1.15": "1.15x", "1.2": "1.2x", "1.5": "1.5x" },
+            default: 1.15,
+            "x-order": 3,
+            "x-widget": "option_menu",
+            "x-icon": "speed",
+          },
+          emotion: {
+            type: "string",
+            title: "Emotion",
+            enum: ["auto", "happy", "sad", "angry", "fearful", "disgusted", "surprised", "calm", "neutral"],
+            enumLabels: {
+              auto: "自动",
+              happy: "开心",
+              sad: "悲伤",
+              angry: "愤怒",
+              fearful: "恐惧",
+              disgusted: "厌恶",
+              surprised: "惊讶",
+              calm: "平静",
+              neutral: "中性",
+            },
+            default: "auto",
+            "x-order": 4,
+            "x-widget": "option_menu",
+            "x-icon": "emotion",
+            "x-omit-auto": true,
+          },
+          format: {
+            type: "string",
+            title: "输出格式",
+            enum: ["mp3", "wav", "flac", "pcm"],
+            enumLabels: { mp3: "MP3", wav: "WAV", flac: "FLAC", pcm: "PCM" },
+            default: "mp3",
+            "x-order": 5,
+            "x-widget": "option_menu",
+            "x-icon": "format",
+            "x-placement": "top",
+          },
+        },
+      },
+      null,
+      2
+    ),
+    default_params: JSON.stringify({ count: 1, voice_id: "male-qn-qingse", emotion: "auto", speed: 1.15, format: "mp3" }, null, 2),
+    price_rule: JSON.stringify({ billing_type: "per_token", currency: "¥", input_price_per_m: 2, output_price_per_m: 4 }, null, 2),
+  });
+
+  const applyAudioMinimaxOfficialTtsStandard = (prev: FormState): FormState => ({
+    ...prev,
+    category: "audio",
+    request_mode: "audio",
+    new_api_model: "hailuo-speech-2.8",
+    new_api_endpoint: "/v1/audio/speech",
+    runtime_rule: setAudioRule(clearModelCaps(prev.runtime_rule), {
+      input_layout: "single",
+      billing_hint: "per_token",
+      count_options: [1, 3, 5, 10, 30, 50],
+      count_allow_custom: true,
+      count_max: 50,
+      prompt_hint: "输入想要朗读的文本内容，选择你的专属克隆音色，一键生成语音",
+      show_upload: true,
+      upstream_include: ["count", "speed", "pitch", "emotion", "sound_effect", "quality", "reference_audio"],
+      upstream_map: JSON.stringify({ count: "n", quality: "model_variant" }, null, 2),
+    }),
+    input_schema: JSON.stringify(
+      {
+        type: "object",
+        properties: {
+          count: {
+            type: "integer",
+            title: "生成数量",
+            enum: [1, 3, 5, 10, 30, 50],
+            default: 1,
+            minimum: 1,
+            maximum: 50,
+            "x-allow-custom": true,
+            "x-order": 1,
+            "x-widget": "option_menu",
+            "x-icon": "layers",
+            "x-highlight": true,
+          },
+          speed: {
+            type: "string",
+            title: "语速",
+            enum: ["0.8x", "1.0x", "1.2x", "1.5x"],
+            default: "1.0x",
+            "x-order": 2,
+            "x-widget": "option_menu",
+            "x-icon": "speed",
+          },
+          pitch: {
+            type: "string",
+            title: "音调",
+            enum: ["low", "standard", "high"],
+            enumLabels: { low: "偏低", standard: "标准", high: "偏高" },
+            default: "standard",
+            "x-order": 3,
+            "x-widget": "option_menu",
+            "x-icon": "pitch",
+          },
+          emotion: {
+            type: "string",
+            title: "情感",
+            enum: ["auto", "neutral", "happy", "sad"],
+            enumLabels: { auto: "自动", neutral: "中性", happy: "愉悦", sad: "悲伤" },
+            default: "auto",
+            "x-order": 4,
+            "x-widget": "option_menu",
+            "x-icon": "emotion",
+          },
+          sound_effect: {
+            type: "string",
+            title: "音效",
+            enum: ["none", "reverb", "echo"],
+            enumLabels: { none: "无", reverb: "混响", echo: "回声" },
+            default: "none",
+            "x-order": 5,
+            "x-widget": "option_menu",
+            "x-icon": "sparkles",
+          },
+          quality: {
+            type: "string",
+            title: "合成质量",
+            enum: ["turbo", "hd"],
+            enumLabels: { turbo: "极速 Turbo", hd: "HD 高清" },
+            default: "turbo",
+            "x-order": 6,
+            "x-widget": "option_menu",
+            "x-icon": "compass",
+            "x-highlight": true,
+          },
+        },
+      },
+      null,
+      2
+    ),
+    default_params: JSON.stringify({ count: 1, speed: "1.0x", pitch: "standard", emotion: "auto", sound_effect: "none", quality: "turbo" }, null, 2),
+    price_rule: JSON.stringify({ billing_type: "per_token", input_price: 0.000002, output_price: 0.000004 }, null, 2),
+  });
+
+  const applyAudioMusicSpeechStandard = (prev: FormState): FormState => ({
+    ...prev,
+    category: "audio",
+    request_mode: "audio",
+    new_api_model: "music-2.6",
+    new_api_endpoint: "/v1/audio/speech",
+    runtime_rule: withAudioUpstreamPatch(
+      setAudioRule(clearModelCaps(prev.runtime_rule), {
+        input_layout: "dual",
+        billing_hint: "estimated",
+        count_options: [1],
+        count_allow_custom: false,
+        count_max: 1,
+        prompt_hint: "请输入完整歌词，支持 [Verse]、[Chorus]、[Bridge]、[Outro] 等结构标签。",
+        secondary_prompt_hint: "音乐描述：风格、情绪、场景。例如：Mandopop, Festive, Upbeat",
+        secondary_prompt_key: "music_prompt",
+        show_upload: false,
+        upstream_include: ["music_prompt", "format", "sample_rate", "bitrate"],
+        upstream_map: JSON.stringify(
+          {
+            prompt: "metadata.lyrics",
+            music_prompt: "input",
+            format: "response_format",
+            sample_rate: "metadata.sample_rate",
+            bitrate: "metadata.bitrate",
+          },
+          null,
+          2
+        ),
+      }),
+      { request_timeout_sec: 900 }
+    ),
+    input_schema: JSON.stringify(
+      {
+        type: "object",
+        properties: {
+          format: {
+            type: "string",
+            title: "音频格式",
+            enum: ["mp3", "wav", "pcm"],
+            enumLabels: { mp3: "MP3", wav: "WAV", pcm: "PCM" },
+            default: "mp3",
+            "x-order": 1,
+            "x-widget": "option_menu",
+            "x-icon": "format",
+            "x-placement": "top",
+          },
+          sample_rate: {
+            type: "number",
+            title: "采样率",
+            enum: [44100],
+            enumLabels: { "44100": "44100 Hz" },
+            default: 44100,
+            "x-order": 2,
+            "x-widget": "option_menu",
+            "x-icon": "audio",
+          },
+          bitrate: {
+            type: "number",
+            title: "码率",
+            enum: [128000, 256000],
+            enumLabels: { "128000": "128 kbps", "256000": "256 kbps" },
+            default: 256000,
+            "x-order": 3,
+            "x-widget": "option_menu",
+            "x-icon": "bitrate",
+          },
+        },
+      },
+      null,
+      2
+    ),
+    default_params: JSON.stringify({ format: "mp3", sample_rate: 44100, bitrate: 256000 }, null, 2),
+    price_rule: JSON.stringify({ billing_type: "per_request", currency: "¥", unit_price: 1 }, null, 2),
+  });
+
+  const applyAudioMinimaxOfficialMusicStandard = (prev: FormState): FormState => ({
+    ...prev,
+    category: "audio",
+    request_mode: "audio",
+    new_api_model: "music-2.6",
+    new_api_endpoint: "/v1/music_generation",
+    runtime_rule: withAudioUpstreamPatch(
+      setAudioRule(clearModelCaps(prev.runtime_rule), {
+        input_layout: "dual",
+        billing_hint: "estimated",
+        count_options: [1],
+        count_allow_custom: false,
+        count_max: 1,
+        prompt_hint: "请输入歌词，支持 [Verse]、[Chorus]、[Bridge]、[Outro] 等结构标签。纯音乐模式可留空。",
+        secondary_prompt_hint: "音乐描述：风格、情绪、场景。例如：独立民谣, 忧郁, 内省, 咖啡馆",
+        secondary_prompt_key: "music_prompt",
+        show_upload: false,
+        upstream_include: ["model_version", "music_prompt", "output_format", "format", "sample_rate", "bitrate", "is_instrumental", "lyrics_optimizer", "aigc_watermark"],
+        upstream_map: JSON.stringify(
+          {
+            prompt: "lyrics",
+            music_prompt: "prompt",
+            model_version: "model",
+            format: "audio_setting.format",
+            sample_rate: "audio_setting.sample_rate",
+            bitrate: "audio_setting.bitrate",
+            is_instrumental: "audio_setting.is_instrumental",
+            lyrics_optimizer: "audio_setting.lyrics_optimizer",
+            aigc_watermark: "audio_setting.aigc_watermark",
+          },
+          null,
+          2
+        ),
+      }),
+      { static: { stream: false }, request_timeout_sec: 900 }
+    ),
+    input_schema: JSON.stringify(
+      {
+        type: "object",
+        properties: {
+          model_version: {
+            type: "string",
+            title: "模型版本",
+            enum: ["music-2.6", "music-2.6-free"],
+            enumLabels: { "music-2.6": "Music-2.6", "music-2.6-free": "Music-2.6 Free" },
+            default: "music-2.6",
+            "x-order": 1,
+            "x-widget": "option_menu",
+            "x-icon": "compass",
+            "x-placement": "top",
+            "x-highlight": true,
+          },
+          output_format: {
+            type: "string",
+            title: "返回格式",
+            enum: ["hex", "url"],
+            enumLabels: { hex: "Hex 数据", url: "临时 URL" },
+            default: "hex",
+            "x-order": 2,
+            "x-widget": "option_menu",
+            "x-icon": "format",
+          },
+          format: {
+            type: "string",
+            title: "音频格式",
+            enum: ["mp3", "wav", "flac"],
+            enumLabels: { mp3: "MP3", wav: "WAV", flac: "FLAC" },
+            default: "mp3",
+            "x-order": 3,
+            "x-widget": "option_menu",
+            "x-icon": "format",
+            "x-placement": "top",
+          },
+          sample_rate: {
+            type: "number",
+            title: "采样率",
+            enum: [32000, 44100],
+            enumLabels: { "32000": "32000 Hz", "44100": "44100 Hz" },
+            default: 44100,
+            "x-order": 4,
+            "x-widget": "option_menu",
+            "x-icon": "audio",
+          },
+          bitrate: {
+            type: "number",
+            title: "码率",
+            enum: [128000, 256000, 320000],
+            enumLabels: { "128000": "128 kbps", "256000": "256 kbps", "320000": "320 kbps" },
+            default: 256000,
+            "x-order": 5,
+            "x-widget": "option_menu",
+            "x-icon": "bitrate",
+          },
+          is_instrumental: {
+            type: "boolean",
+            title: "纯音乐",
+            default: false,
+            "x-order": 6,
+            "x-widget": "boolean_toggle",
+            "x-icon": "mode",
+          },
+          lyrics_optimizer: {
+            type: "boolean",
+            title: "歌词优化",
+            default: false,
+            "x-order": 7,
+            "x-widget": "boolean_toggle",
+            "x-icon": "sparkles",
+          },
+          aigc_watermark: {
+            type: "boolean",
+            title: "AIGC 水印",
+            default: false,
+            "x-order": 8,
+            "x-widget": "boolean_toggle",
+            "x-icon": "audio",
+          },
+        },
+      },
+      null,
+      2
+    ),
+    default_params: JSON.stringify(
+      {
+        model_version: "music-2.6",
+        output_format: "hex",
+        format: "mp3",
+        sample_rate: 44100,
+        bitrate: 256000,
+        is_instrumental: false,
+        lyrics_optimizer: false,
+        aigc_watermark: false,
+      },
+      null,
+      2
+    ),
+    price_rule: JSON.stringify({ billing_type: "per_request", currency: "¥", unit_price: 1 }, null, 2),
   });
 
   const applyVideoStandard = (prev: FormState): FormState => ({
@@ -950,8 +1419,12 @@ export default function ModelsPage() {
         .split(",")
         .map((t) => t.trim())
         .filter(Boolean),
-      input_schema: inputSchema,
-      default_params: isMultiCollabForm ? { ...(defaultParams as Record<string, unknown>), channel_key: defaultChannelKey } : defaultParams,
+      input_schema: form.category === "audio" ? singleResultAudioSchema(inputSchema as Record<string, unknown>) : inputSchema,
+      default_params: isMultiCollabForm
+        ? { ...(defaultParams as Record<string, unknown>), channel_key: defaultChannelKey }
+        : form.category === "audio"
+          ? singleResultAudioParams(defaultParams as Record<string, unknown>)
+          : defaultParams,
       new_api_extra_params: isMultiCollabForm ? {} : extraParams,
       price_rule: priceRule,
       runtime_rule:
@@ -1009,6 +1482,12 @@ export default function ModelsPage() {
     const codes = rows.map((r) => r.code);
     if (new Set(codes).size !== codes.length) {
       setErr("模型编码重复，请检查批量行");
+      return;
+    }
+    const existingCodes = new Set(models.map((m) => m.code));
+    const duplicatedExisting = rows.filter((r) => existingCodes.has(r.code)).map((r) => r.code);
+    if (duplicatedExisting.length > 0) {
+      setErr(`模型编码已存在：${duplicatedExisting.join("、")}。请换一个编码，或点击已有模型进入编辑。`);
       return;
     }
 
@@ -1594,6 +2073,7 @@ export default function ModelsPage() {
               value={form.request_mode}
               onChange={(e) =>
                 setForm((prev) => {
+                  setAudioTemplateKey("");
                   const next = {
                     ...prev,
                     request_mode: e.target.value,
@@ -1621,10 +2101,14 @@ export default function ModelsPage() {
               value={form.category}
               onChange={(e) =>
                 setForm((prev) => {
+                  setAudioTemplateKey("");
                   if (e.target.value === "multi_collab") return applyMultiCollabStandard(prev);
                   if (e.target.value === "image") return applyImageStandard(prev);
                   if (e.target.value === "video") return applyVideoStandard(prev);
-                  if (e.target.value === "audio") return applyAudioStandard(prev);
+                  if (e.target.value === "audio") {
+                    setAudioTemplateKey("openai_audio_speech");
+                    return applyAudioStandard(prev);
+                  }
                   return { ...prev, category: e.target.value };
                 })
               }
@@ -1671,7 +2155,10 @@ export default function ModelsPage() {
               <input
                 className="w-full mt-1 px-3 py-2 rounded-lg border text-sm"
                 value={form.new_api_endpoint}
-                onChange={(e) => setForm({ ...form, new_api_endpoint: e.target.value })}
+                onChange={(e) => {
+                  if (form.category === "audio") setAudioTemplateKey("");
+                  setForm({ ...form, new_api_endpoint: e.target.value });
+                }}
               />
             )
           )}
@@ -2122,6 +2609,46 @@ export default function ModelsPage() {
                 <div className="text-xs text-gray-500">
                   音频模型通过 runtime_rule.audio 驱动输入区布局与计费展示；input_schema 定义底部参数条（x-widget / x-order / x-icon）。
                 </div>
+                <div>
+                  <label className="text-xs text-gray-500">上游接口模板</label>
+                  <select
+                    className="w-full mt-1 px-3 py-2 rounded-lg border text-sm bg-white"
+                    value={audioTemplateKey}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setAudioTemplateKey(value);
+                      if (!value) return;
+                      setForm((prev) => {
+                        switch (value) {
+                          case "yunwu_minimax_speech":
+                            return applyAudioYunwuMinimaxSpeechStandard(prev);
+                          case "minimax_official_tts":
+                            return applyAudioMinimaxOfficialTtsStandard(prev);
+                          case "openai_audio_speech":
+                            return applyAudioStandard(prev);
+                          case "minimax_official_music":
+                            return applyAudioMinimaxOfficialMusicStandard(prev);
+                          case "openai_audio_music":
+                            return applyAudioMusicSpeechStandard(prev);
+                          default:
+                            return prev;
+                        }
+                      });
+                    }}
+                  >
+                    <option value="">选择模板后自动填充配置...</option>
+                    <option disabled>单文本框（TTS / 克隆）</option>
+                    <option value="yunwu_minimax_speech">云雾 API MiniMax Speech 2.8 HD（/minimax/v1/t2a_v2）</option>
+                    <option value="minimax_official_tts">MiniMax / 海螺旧版兼容网关（/v1/audio/speech）</option>
+                    <option value="openai_audio_speech">第三方 OpenAI 兼容 Speech（/v1/audio/speech，input/voice/metadata）</option>
+                    <option disabled>双文本框（音乐生成）</option>
+                    <option value="minimax_official_music">MiniMax 官方 Music-2.6（/v1/music_generation）</option>
+                    <option value="openai_audio_music">第三方 OpenAI 兼容 Music（/v1/audio/speech，metadata.lyrics）</option>
+                  </select>
+                  <div className="text-[11px] text-gray-400 mt-1">
+                    模板会覆盖 endpoint、input_schema、default_params、runtime_rule；连接密钥仍在 new_api_extra_params.connection 中单独配置。
+                  </div>
+                </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="text-xs text-gray-500">输入布局 input_layout</label>
@@ -2251,56 +2778,8 @@ export default function ModelsPage() {
                     前台显示「上传参考音频」
                   </label>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-xs text-gray-500">生成数量选项（逗号分隔）</label>
-                    <input
-                      className="w-full mt-1 px-3 py-2 rounded-lg border text-sm bg-white"
-                      value={getAudioRule(form.runtime_rule).count_options.join(",")}
-                      onChange={(e) => {
-                        const opts = e.target.value
-                          .split(/[,，\s]+/)
-                          .map((s) => parseInt(s.trim(), 10))
-                          .filter((n) => Number.isFinite(n) && n >= 1);
-                        const uniq = [...new Set(opts.length ? opts : [1, 3, 5, 10, 30, 50])].sort((a, b) => a - b);
-                        const rule = getAudioRule(form.runtime_rule);
-                        setForm((prev) => ({
-                          ...prev,
-                          runtime_rule: setAudioRule(prev.runtime_rule, { count_options: uniq }),
-                          input_schema: syncCountSchema(
-                            prev.input_schema,
-                            uniq,
-                            rule.count_allow_custom,
-                            rule.count_max
-                          ),
-                        }));
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-500">自定义数量上限</label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={200}
-                      className="w-full mt-1 px-3 py-2 rounded-lg border text-sm bg-white"
-                      value={getAudioRule(form.runtime_rule).count_max}
-                      onChange={(e) => {
-                        const max = Math.max(1, Math.min(200, parseInt(e.target.value, 10) || 50));
-                        const rule = getAudioRule(form.runtime_rule);
-                        setForm((prev) => ({
-                          ...prev,
-                          runtime_rule: setAudioRule(prev.runtime_rule, { count_max: max }),
-                          input_schema: syncCountSchema(
-                            prev.input_schema,
-                            rule.count_options,
-                            rule.count_allow_custom,
-                            max
-                          ),
-                        }));
-                      }}
-                    />
-                  </div>
+                <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+                  音频模型固定为单结果生成，不向前台提供批量数量选项。
                 </div>
                 <div>
                   <label className="text-xs text-gray-500">upstream.include</label>

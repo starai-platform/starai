@@ -2,14 +2,25 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "@/i18n/I18nProvider";
+import { DEFAULT_UI_LANGUAGES } from "@/i18n/dictionaries";
 import { clsx } from "clsx";
 
-function FlagMark({ flag, flagUrl }: { flag?: string; flagUrl?: string }) {
-  if (flagUrl) {
-    // eslint-disable-next-line @next/next/no-img-element
-    return <img src={flagUrl} alt="" className="h-4 w-6 rounded-[3px] object-cover shadow-sm ring-1 ring-black/5" />;
+function FlagMark({ code, flag, flagUrl }: { code: string; flag?: string; flagUrl?: string }) {
+  const fallbackUrl = DEFAULT_UI_LANGUAGES.find((item) => item.code === code)?.flag_url;
+  const [src, setSrc] = useState(flagUrl || fallbackUrl || "");
+  useEffect(() => setSrc(flagUrl || fallbackUrl || ""), [fallbackUrl, flagUrl]);
+  if (src) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={src}
+        alt=""
+        onError={() => setSrc(src !== fallbackUrl ? fallbackUrl || "" : "")}
+        className="h-4 w-6 rounded-[3px] object-cover shadow-sm ring-1 ring-black/5"
+      />
+    );
   }
-  return <span className="text-base leading-none">{flag || "\u{1F310}"}</span>;
+  return <span className="inline-flex h-4 w-6 items-center justify-center text-base leading-none">{flag || "\u{1F310}"}</span>;
 }
 
 export function UILanguageSelector({
@@ -51,7 +62,7 @@ export function UILanguageSelector({
             : "border-gray-200 bg-white text-gray-700 hover:border-primary/50 hover:text-gray-950 dark:border-white/10 dark:bg-white/5 dark:text-gray-100 dark:hover:bg-white/10"
         )}
       >
-        <FlagMark flag={language.flag} flagUrl={language.flag_url} />
+        <FlagMark code={language.code} flag={language.flag} flagUrl={language.flag_url} />
         <span className="font-semibold">{language.short}</span>
       </button>
       {open && (
@@ -73,7 +84,7 @@ export function UILanguageSelector({
               )}
             >
               <span className="flex min-w-0 items-center gap-2">
-                <FlagMark flag={item.flag} flagUrl={item.flag_url} />
+                <FlagMark code={item.code} flag={item.flag} flagUrl={item.flag_url} />
                 <span className="truncate">{item.name}</span>
               </span>
               <span className="text-xs text-gray-400">{item.short}</span>

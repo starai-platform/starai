@@ -2,11 +2,11 @@ export const SUPPORTED_UI_LOCALES = ["zh-CN", "en-US", "ja-JP", "ko-KR", "vi-VN"
 export type SupportedUILocale = (typeof SUPPORTED_UI_LOCALES)[number];
 
 export const DEFAULT_UI_LANGUAGES = [
-  { code: "zh-CN", short: "ZH", name: "Chinese (Simplified)", flag: "\u{1F1E8}\u{1F1F3}", flag_url: "/assets/comic-styles/cn.png", enabled: true, sort_order: 10 },
-  { code: "en-US", short: "EN", name: "English", flag: "\u{1F1FA}\u{1F1F8}", flag_url: "/assets/comic-styles/us.png", enabled: true, sort_order: 20 },
-  { code: "ja-JP", short: "JA", name: "Japanese", flag: "\u{1F1EF}\u{1F1F5}", flag_url: "/assets/comic-styles/jp.png", enabled: true, sort_order: 30 },
-  { code: "ko-KR", short: "KO", name: "Korean", flag: "\u{1F1F0}\u{1F1F7}", flag_url: "/assets/comic-styles/kr.png", enabled: true, sort_order: 40 },
-  { code: "vi-VN", short: "VI", name: "Vietnamese", flag: "\u{1F1FB}\u{1F1F3}", flag_url: "/assets/comic-styles/vn.png", enabled: true, sort_order: 50 },
+  { code: "zh-CN", short: "ZH", name: "Chinese (Simplified)", flag: "\u{1F1E8}\u{1F1F3}", flag_url: "/assets/comic-styles/cn.png?v=20260712", enabled: true, sort_order: 10 },
+  { code: "en-US", short: "EN", name: "English", flag: "\u{1F1FA}\u{1F1F8}", flag_url: "/assets/comic-styles/us.png?v=20260712", enabled: true, sort_order: 20 },
+  { code: "ja-JP", short: "JA", name: "Japanese", flag: "\u{1F1EF}\u{1F1F5}", flag_url: "/assets/comic-styles/jp.png?v=20260712", enabled: true, sort_order: 30 },
+  { code: "ko-KR", short: "KO", name: "Korean", flag: "\u{1F1F0}\u{1F1F7}", flag_url: "/assets/comic-styles/kr.png?v=20260712", enabled: true, sort_order: 40 },
+  { code: "vi-VN", short: "VI", name: "Vietnamese", flag: "\u{1F1FB}\u{1F1F3}", flag_url: "/assets/comic-styles/vn.png?v=20260712", enabled: true, sort_order: 50 },
 ];
 
 const zh: Record<string, string> = {

@@ -101,7 +101,7 @@ services:
     depends_on:
       - api
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/ && wget -q -O /dev/null http://127.0.0.1:3000/assets/comic-styles/cn.png"]
       interval: 15s
       timeout: 5s
       retries: 8

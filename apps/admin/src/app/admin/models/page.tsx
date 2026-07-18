@@ -1014,6 +1014,30 @@ export default function ModelsPage() {
     price_rule: JSON.stringify({ billing_type: "per_token", currency: "¥", input_price_per_m: 2, output_price_per_m: 4 }, null, 2),
   });
 
+  const applyAudioMinimaxOfficialSpeechStandard = (prev: FormState): FormState => {
+    const next = applyAudioYunwuMinimaxSpeechStandard(prev);
+    return {
+      ...next,
+      new_api_model: "speech-2.8-hd",
+      new_api_endpoint: "/v1/t2a_v2",
+      new_api_extra_params: setConnection(next.new_api_extra_params, {
+        base_url: "https://api.minimaxi.com",
+        auth_type: "bearer",
+        api_key_header: "Authorization",
+      }),
+      runtime_rule: withAudioUpstreamPatch(next.runtime_rule, {
+        static: {
+          stream: false,
+          subtitle_enable: false,
+          output_format: "hex",
+          voice_setting: { vol: 1, pitch: 0 },
+          audio_setting: { sample_rate: 32000, bitrate: 128000, channel: 1 },
+        },
+        request_timeout_sec: 900,
+      }),
+    };
+  };
+
   const applyAudioMinimaxOfficialTtsStandard = (prev: FormState): FormState => ({
     ...prev,
     category: "audio",
@@ -2622,6 +2646,8 @@ export default function ModelsPage() {
                         switch (value) {
                           case "yunwu_minimax_speech":
                             return applyAudioYunwuMinimaxSpeechStandard(prev);
+                          case "minimax_official_speech":
+                            return applyAudioMinimaxOfficialSpeechStandard(prev);
                           case "minimax_official_tts":
                             return applyAudioMinimaxOfficialTtsStandard(prev);
                           case "openai_audio_speech":
@@ -2639,6 +2665,7 @@ export default function ModelsPage() {
                     <option value="">选择模板后自动填充配置...</option>
                     <option disabled>单文本框（TTS / 克隆）</option>
                     <option value="yunwu_minimax_speech">云雾 API MiniMax Speech 2.8 HD（/minimax/v1/t2a_v2）</option>
+                    <option value="minimax_official_speech">MiniMax 官方 Speech 2.8 HD（api.minimaxi.com/v1/t2a_v2）</option>
                     <option value="minimax_official_tts">MiniMax / 海螺旧版兼容网关（/v1/audio/speech）</option>
                     <option value="openai_audio_speech">第三方 OpenAI 兼容 Speech（/v1/audio/speech，input/voice/metadata）</option>
                     <option disabled>双文本框（音乐生成）</option>

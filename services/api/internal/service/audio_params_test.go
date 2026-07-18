@@ -15,7 +15,13 @@ func TestBuildUpstreamAudioPayloadSupportsNestedMap(t *testing.T) {
 					"speed":    "voice_setting.speed",
 					"format":   "audio_setting.format",
 				},
-				"static": map[string]interface{}{"stream": false},
+				"static": map[string]interface{}{
+					"stream":          false,
+					"output_format":   "hex",
+					"subtitle_enable": false,
+					"voice_setting":   map[string]interface{}{"vol": float64(1), "pitch": float64(0)},
+					"audio_setting":   map[string]interface{}{"sample_rate": float64(32000), "bitrate": float64(128000), "channel": float64(1)},
+				},
 			},
 		},
 	}
@@ -35,9 +41,18 @@ func TestBuildUpstreamAudioPayloadSupportsNestedMap(t *testing.T) {
 	if voice["voice_id"] != "male-qn-qingse" || voice["speed"] != 1.15 {
 		t.Fatalf("unexpected voice_setting: %#v", voice)
 	}
+	if voice["vol"] != float64(1) || voice["pitch"] != float64(0) {
+		t.Fatalf("missing MiniMax official voice defaults: %#v", voice)
+	}
 	audio, ok := got["audio_setting"].(map[string]interface{})
 	if !ok || audio["format"] != "mp3" {
 		t.Fatalf("unexpected audio_setting: %#v", got)
+	}
+	if audio["sample_rate"] != float64(32000) || audio["bitrate"] != float64(128000) || audio["channel"] != float64(1) {
+		t.Fatalf("missing MiniMax official audio defaults: %#v", audio)
+	}
+	if got["output_format"] != "hex" || got["subtitle_enable"] != false {
+		t.Fatalf("missing MiniMax official response defaults: %#v", got)
 	}
 	if _, ok := got["response_format"]; ok {
 		t.Fatalf("response_format should not be sent: %#v", got)

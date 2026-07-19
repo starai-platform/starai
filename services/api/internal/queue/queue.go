@@ -53,6 +53,8 @@ func EnqueueWorkflowTask(client *asynq.Client, payload WorkflowTaskPayload) erro
 		return err
 	}
 	task := asynq.NewTask(TypeWorkflowTask, data)
-	_, err = client.Enqueue(task, asynq.Queue(QueueWorkflow), asynq.MaxRetry(1))
+	// AI 漫剧会串行经历规划、关键帧、视频片段和合成，默认 30 分钟不足以
+	// 覆盖正常的第三方视频轮询。阶段状态由数据库持久化，超时仍保留兜底重试。
+	_, err = client.Enqueue(task, asynq.Queue(QueueWorkflow), asynq.MaxRetry(1), asynq.Timeout(6*time.Hour))
 	return err
 }

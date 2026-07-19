@@ -110,6 +110,17 @@ type ComicProject = {
   archived?: boolean;
   archived_at?: string;
 };
+type ComicAsset = {
+  public_id: string;
+  asset_type: "character" | "prop" | "location";
+  asset_code: string;
+  name: string;
+  description: string;
+  visual_prompt: string;
+  reference_asset_ids?: string[];
+  status: string;
+  version: number;
+};
 
 const STATUS_LABEL_KEY: Record<string, string> = {
   pending: "status.pending",
@@ -346,6 +357,8 @@ export function AgentWorkspace({ code }: { code: string }) {
 	const [showArchivedProjects, setShowArchivedProjects] = useState(false);
   const [activeComicProject, setActiveComicProject] = useState<ComicProject | null>(null);
   const [comicStyles, setComicStyles] = useState<ComicStyle[]>([]);
+  const [comicAssets, setComicAssets] = useState<ComicAsset[]>([]);
+  const [assetModalOpen, setAssetModalOpen] = useState(false);
   const [projectDrawerCollapsed, setProjectDrawerCollapsed] = useState(false);
   const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [styleModalOpen, setStyleModalOpen] = useState(false);
@@ -438,6 +451,19 @@ export function AgentWorkspace({ code }: { code: string }) {
     }
   };
 
+  useEffect(() => {
+    if (!isComicDrama || !activeComicProject?.last_workflow_project_id) return;
+    const publicId = activeComicProject.last_workflow_project_id;
+    api<Project>(`/api/agent-projects/${publicId}`)
+      .then((item) => {
+        setProject(item);
+        if (item.status === "pending" || item.status === "running") startPolling(publicId);
+      })
+      .catch(() => setError(t("comic.loadWorkflowFailed")));
+    // The selected comic project is the source of truth for restoring its latest workflow.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isComicDrama, activeComicProject?.last_workflow_project_id]);
+
   const loadComicStyles = async () => {
     try {
       const res = await api<{ items: ComicStyle[] }>("/api/comic-drama/styles");
@@ -448,6 +474,26 @@ export function AgentWorkspace({ code }: { code: string }) {
       setComicStyles([]);
     }
   };
+
+  const loadComicAssets = async (projectId = activeComicProject?.public_id) => {
+    if (!projectId) {
+      setComicAssets([]);
+      return;
+    }
+    try {
+      const res = await api<{ items: ComicAsset[] }>(`/api/comic-drama/projects/${projectId}/assets`);
+      setComicAssets(res.items || []);
+    } catch {
+      setComicAssets([]);
+    }
+  };
+
+  useEffect(() => {
+    if (!isComicDrama) return;
+    void loadComicAssets(activeComicProject?.public_id);
+    // Assets belong to the selected project and are refreshed after workflow completion.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isComicDrama, activeComicProject?.public_id]);
 
   useEffect(() => {
     if (!isComicDrama) return;
@@ -499,8 +545,9 @@ export function AgentWorkspace({ code }: { code: string }) {
       try {
         const p = await api<Project>(`/api/agent-projects/${publicId}`);
         setProject(p);
-        if (p.status === "succeeded" || p.status === "failed" || p.status === "waiting_confirm") {
+        if (p.status === "succeeded" || p.status === "failed" || p.status === "waiting_confirm" || p.status === "canceled") {
           if (pollRef.current) clearInterval(pollRef.current);
+          if (isComicDrama) void loadComicAssets();
         }
       } catch {
         /* ignore */
@@ -536,6 +583,7 @@ export function AgentWorkspace({ code }: { code: string }) {
         videoMedia.first_frame?.url ||
         videoMedia.last_frame?.url ||
         "";
+      const comicReferenceURLs = [productImage?.url, ...videoMedia.reference_images.map((item) => item.url)].filter((item): item is string => !!item);
       const referenceAssetIds = [
         productImage?.public_id,
         videoMedia.first_frame?.public_id,
@@ -566,9 +614,11 @@ export function AgentWorkspace({ code }: { code: string }) {
               comic_project_id: activeComicProject?.public_id,
               comic_project_name: activeComicProject?.name,
               comic_project_description: activeComicProject?.description,
-              comic_style: activeComicProject?.style || comicStyles.find((item) => item.public_id === projectDraft.style_id),
+              comic_style: comicStyles.find((item) => item.public_id === projectDraft.style_id) || activeComicProject?.style,
               orientation: activeComicProject?.orientation || projectDraft.orientation,
               quality: activeComicProject?.quality || projectDraft.quality,
+              reference_images: comicReferenceURLs,
+              comic_assets: comicAssets,
             } : {}),
             count: Number((videoParams as any).count ?? (imageParams as any).count ?? params.count ?? count),
             n: Number((videoParams as any).count ?? (imageParams as any).n ?? params.count ?? count),
@@ -614,6 +664,14 @@ export function AgentWorkspace({ code }: { code: string }) {
 			await api(`/api/agent-projects/${project.public_id}/retry`, { method: "POST" });
 		}
     startPolling(project.public_id);
+  };
+
+  const cancelProject = async () => {
+    if (!project || !window.confirm(t("comic.confirmCancelWorkflow"))) return;
+    await api(`/api/agent-projects/${project.public_id}/cancel`, { method: "POST" });
+    const updated = await api<Project>(`/api/agent-projects/${project.public_id}`);
+    setProject(updated);
+    if (isComicDrama) await loadComicProjects();
   };
 
   const resetTask = () => {
@@ -748,7 +806,12 @@ export function AgentWorkspace({ code }: { code: string }) {
     setError("");
     try {
       const asset = await uploadAsset(file, { name: file.name, kind: "image", asset_type: "prop" });
-      setProductImage({ url: asset.url, name: asset.name || file.name, public_id: asset.public_id });
+      const item = { url: asset.url, name: asset.name || file.name, public_id: asset.public_id };
+      if (!productImage) {
+        setProductImage(item);
+      } else {
+        setVideoMedia((prev) => ({ ...prev, reference_images: [...prev.reference_images, item].slice(0, 8) }));
+      }
     } catch (err) {
       const message = err instanceof Error && err.message ? err.message : "网络连接失败";
       setError(t("agent.uploadFailed") + message);
@@ -884,15 +947,33 @@ export function AgentWorkspace({ code }: { code: string }) {
               <div className="mx-auto mt-auto w-full max-w-5xl shrink-0">
                 {error && <div className="mb-2 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-200">{error}</div>}
                 {project && (
-                  <div className="mb-2 flex items-center justify-between rounded-2xl border border-cyan-100 bg-white/70 px-4 py-2 text-xs text-gray-500 shadow-sm backdrop-blur dark:border-cyan-400/15 dark:bg-white/5 dark:text-gray-300">
+                  <div className="mb-2 rounded-2xl border border-cyan-100 bg-white/70 px-4 py-2 text-xs text-gray-500 shadow-sm backdrop-blur dark:border-cyan-400/15 dark:bg-white/5 dark:text-gray-300">
+                    <div className="flex items-center justify-between gap-3">
                     <span>{projectStage(project, allMediaTasks, generationType, true)} · {totalProgress}%</span>
-					{finalVideoURL ? <a href={finalVideoURL} target="_blank" rel="noreferrer" className="font-semibold text-cyan-600 dark:text-cyan-200">{t("comic.viewFinal")}</a> : null}
+                    <div className="flex items-center gap-2">
+					  {finalVideoURL ? <a href={finalVideoURL} target="_blank" rel="noreferrer" className="font-semibold text-cyan-600 dark:text-cyan-200">{t("comic.viewFinal")}</a> : null}
+                      {(project.status === "pending" || project.status === "waiting_confirm") && <button type="button" onClick={() => void cancelProject()} className="font-semibold text-red-500 hover:text-red-600">{t("common.cancel")}</button>}
+                      {project.status === "failed" && <button type="button" onClick={() => void retry()} className="inline-flex items-center gap-1 font-semibold text-cyan-600 dark:text-cyan-200"><RefreshCw size={12} />{t("comic.retryWorkflow")}</button>}
+                    </div>
+                    </div>
+                    {project.error_message ? <p className="mt-1 text-red-500">{project.error_message}</p> : null}
                   </div>
                 )}
+                {project?.status === "waiting_confirm" && (
+                  <div className="mb-2 rounded-2xl border border-amber-200 bg-amber-50/95 p-3 shadow-sm dark:border-amber-400/20 dark:bg-amber-500/10">
+                    <div className="mb-2 text-sm font-semibold text-amber-800 dark:text-amber-200">{t("agent.confirmPlan")}</div>
+                    <textarea value={confirmPrompt} readOnly={!allowPromptEdit} onChange={(event) => setConfirmPrompt(event.target.value)} className="h-24 w-full resize-none rounded-xl border border-amber-100 bg-white px-3 py-2 text-sm text-gray-700 outline-none dark:border-amber-400/20 dark:bg-gray-950 dark:text-gray-100" />
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button type="button" onClick={() => void confirmStep()} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-cyan-500 px-4 text-sm font-semibold text-white"><Check size={15} />{t("agent.confirmGenerate")}</button>
+                      {canUseAutopilot && <button type="button" onClick={() => void enableAutopilot()} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-gray-900 px-4 text-sm font-semibold text-white dark:bg-white dark:text-gray-900"><Wand2 size={15} />{t("agent.autopilot")}</button>}
+                    </div>
+                  </div>
+                )}
+                {project && (project.status === "succeeded" || project.status === "failed") ? <ComicProjectPanel project={project} /> : null}
                 <div className="rounded-3xl border border-gray-200 bg-white/90 shadow-xl shadow-cyan-950/10 backdrop-blur dark:border-white/10 dark:bg-[#1b1d22]/95 dark:shadow-black/30">
                   <div className="flex min-h-[92px] gap-3 p-3 sm:min-h-[104px] sm:p-4">
                     <label className="flex h-14 w-12 shrink-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-gray-200 bg-gray-50 text-[10px] text-gray-400 hover:border-cyan-300 hover:bg-cyan-50 dark:border-white/10 dark:bg-white/5 dark:hover:bg-cyan-400/10 sm:h-20 sm:w-16">
-					{productImage ? <Image src={productImage.url} alt="" width={128} height={128} sizes="64px" className="h-full w-full rounded-xl object-cover" /> : comicUploading || uploading ? <Loader2 size={18} className="animate-spin" /> : <><Plus size={18} /><span>{t("comic.referenceImage")}</span></>}
+					{productImage ? <div className="relative h-full w-full"><Image src={productImage.url} alt="" width={128} height={128} sizes="64px" className="h-full w-full rounded-xl object-cover" />{videoMedia.reference_images.length > 0 && <span className="absolute bottom-1 right-1 rounded-full bg-black/70 px-1.5 py-0.5 text-[9px] text-white">+{videoMedia.reference_images.length}</span>}</div> : comicUploading || uploading ? <Loader2 size={18} className="animate-spin" /> : <><Plus size={18} /><span>{t("comic.referenceImage")}</span></>}
                       <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" disabled={uploading} onChange={(e) => { handleUpload(e.target.files?.[0]); e.currentTarget.value = ""; }} />
                     </label>
 					<textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder={t("comic.videoPlaceholder")} className="min-h-[68px] flex-1 resize-none bg-transparent text-sm leading-6 text-gray-700 outline-none placeholder:text-gray-400 dark:text-gray-100 dark:placeholder:text-gray-500 sm:min-h-[86px]" />
@@ -906,6 +987,9 @@ export function AgentWorkspace({ code }: { code: string }) {
                     </button>
                     <button type="button" onClick={() => setProjectModalOpen(true)} className="flex h-9 items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 px-3 text-xs font-semibold text-gray-700 dark:border-white/10 dark:bg-white/5 dark:text-gray-200">
 					<Folder size={14} /> {activeComicProject?.name || t("comic.selectProject")}
+                    </button>
+                    <button type="button" disabled={!activeComicProject} onClick={() => setAssetModalOpen(true)} className="flex h-9 items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 px-3 text-xs font-semibold text-gray-700 disabled:opacity-40 dark:border-white/10 dark:bg-white/5 dark:text-gray-200">
+                      <ImageIcon size={14} /> {t("comic.assetLibrary")} · {comicAssets.length}
                     </button>
                     <span className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-600 dark:border-white/10 dark:bg-white/5 dark:text-gray-300">{projectQuality}</span>
 					<span className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-600 dark:border-white/10 dark:bg-white/5 dark:text-gray-300">{projectOrientation === "portrait" ? t("comic.portrait") : t("comic.landscape")}</span>
@@ -966,6 +1050,14 @@ export function AgentWorkspace({ code }: { code: string }) {
         )}
         {settingsOpen && (
           <ComicPreferenceModal settings={comicSettings} onChange={setComicSettings} onClose={() => setSettingsOpen(false)} />
+        )}
+        {assetModalOpen && activeComicProject && (
+          <ComicAssetModal
+            projectId={activeComicProject.public_id}
+            items={comicAssets}
+            onClose={() => setAssetModalOpen(false)}
+            onChanged={() => loadComicAssets(activeComicProject.public_id)}
+          />
         )}
       </div>
     );
@@ -1649,6 +1741,60 @@ function ComicStyleAddModal({ mode, draft, uploading, submitting, onChange, onUp
   );
 }
 
+function ComicAssetModal({ projectId, items, onClose, onChanged }: { projectId: string; items: ComicAsset[]; onClose: () => void; onChanged: () => Promise<void> | void }) {
+  const { t } = useI18n();
+  const [draft, setDraft] = useState({ asset_type: "character", asset_code: "", name: "", description: "", visual_prompt: "", status: "locked" });
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const save = async () => {
+    if (!draft.name.trim() || saving) return;
+    setSaving(true);
+    setMessage("");
+    try {
+      await api(`/api/comic-drama/projects/${projectId}/assets`, { method: "POST", body: JSON.stringify(draft) });
+      setDraft((prev) => ({ ...prev, asset_code: "", name: "", description: "", visual_prompt: "" }));
+      await onChanged();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : t("comic.assetSaveFailed"));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const remove = async (item: ComicAsset) => {
+    if (!window.confirm(t("comic.confirmDeleteAsset", { name: item.name }))) return;
+    await api(`/api/comic-drama/projects/${projectId}/assets/${item.public_id}`, { method: "DELETE" });
+    await onChanged();
+  };
+  const labels: Record<string, string> = { character: t("comic.characters"), prop: t("comic.props"), location: t("comic.locations") };
+  return (
+    <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/45 p-4" onClick={onClose}>
+      <div className="grid max-h-[88vh] w-full max-w-5xl gap-4 overflow-hidden rounded-3xl bg-white p-5 shadow-2xl dark:border dark:border-white/10 dark:bg-gray-900 md:grid-cols-[1.15fr_.85fr]" onClick={(event) => event.stopPropagation()}>
+        <div className="min-h-0 overflow-y-auto">
+          <div className="mb-3 flex items-center justify-between"><div><h3 className="text-lg font-bold text-gray-900 dark:text-white">{t("comic.assetLibrary")}</h3><p className="text-xs text-gray-400">{t("comic.assetLibraryHint")}</p></div><button type="button" onClick={onClose} className="rounded-xl bg-gray-100 p-2 text-gray-500 dark:bg-white/10"><X size={18} /></button></div>
+          <div className="space-y-3">
+            {["character", "prop", "location"].map((type) => {
+              const grouped = items.filter((item) => item.asset_type === type);
+              return <section key={type}><div className="mb-1.5 text-xs font-semibold text-gray-500">{labels[type]} · {grouped.length}</div><div className="grid gap-2 sm:grid-cols-2">{grouped.map((item) => <div key={item.public_id} className="rounded-xl border border-gray-100 p-3 dark:border-white/10"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><div className="truncate text-sm font-semibold text-gray-900 dark:text-white">{item.name}</div><div className="text-[10px] text-gray-400">{item.asset_code} · v{item.version}</div></div><button type="button" onClick={() => void remove(item)} className="text-gray-300 hover:text-red-500"><Trash2 size={14} /></button></div><p className="mt-1 line-clamp-2 text-xs leading-5 text-gray-500 dark:text-gray-300">{item.visual_prompt || item.description}</p></div>)}</div></section>;
+            })}
+          </div>
+        </div>
+        <div className="overflow-y-auto rounded-2xl bg-gray-50 p-4 dark:bg-white/5">
+          <h4 className="mb-3 text-sm font-semibold text-gray-900 dark:text-white">{t("comic.addAsset")}</h4>
+          <div className="space-y-3">
+            <select value={draft.asset_type} onChange={(event) => setDraft((prev) => ({ ...prev, asset_type: event.target.value }))} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-gray-950 dark:text-white"><option value="character">{labels.character}</option><option value="prop">{labels.prop}</option><option value="location">{labels.location}</option></select>
+            <input value={draft.name} onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))} placeholder={t("comic.assetName")} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-gray-950 dark:text-white" />
+            <input value={draft.asset_code} onChange={(event) => setDraft((prev) => ({ ...prev, asset_code: event.target.value }))} placeholder={t("comic.assetCodeOptional")} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-gray-950 dark:text-white" />
+            <textarea value={draft.description} onChange={(event) => setDraft((prev) => ({ ...prev, description: event.target.value }))} placeholder={t("comic.assetDescription")} className="h-20 w-full resize-none rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-gray-950 dark:text-white" />
+            <textarea value={draft.visual_prompt} onChange={(event) => setDraft((prev) => ({ ...prev, visual_prompt: event.target.value }))} placeholder={t("comic.assetVisualPrompt")} className="h-28 w-full resize-none rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-gray-950 dark:text-white" />
+            {message && <p className="text-xs text-red-500">{message}</p>}
+            <button type="button" disabled={saving || !draft.name.trim()} onClick={() => void save()} className="h-10 w-full rounded-xl bg-cyan-500 text-sm font-semibold text-white disabled:opacity-40">{saving ? t("common.saving") : t("common.save")}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ComicPreferenceModal({ settings, onChange, onClose }: { settings: any; onChange: (next: any) => void; onClose: () => void }) {
   const set = (patch: Record<string, unknown>) => onChange((prev: any) => ({ ...prev, ...patch }));
   return (
@@ -1692,6 +1838,9 @@ function ComicSettingsSummary({ settings, onOpen }: { settings: { duration_mode:
 
 function ComicProjectPanel({ project }: { project: Project }) {
   const comic = (project.outputs?.comic_drama || {}) as Record<string, any>;
+  const characters = Array.isArray(comic.characters) ? comic.characters : [];
+  const props = Array.isArray(comic.props) ? comic.props : [];
+  const locations = Array.isArray(comic.locations) ? comic.locations : [];
   const storyboards = Array.isArray(comic.storyboards) ? comic.storyboards : [];
   const keyframes = Array.isArray(project.outputs?.keyframes) ? project.outputs?.keyframes : Array.isArray(comic.keyframes) ? comic.keyframes : [];
   const segments = Array.isArray(project.outputs?.segments) ? project.outputs?.segments : Array.isArray(comic.segments) ? comic.segments : [];
@@ -1705,6 +1854,18 @@ function ComicProjectPanel({ project }: { project: Project }) {
         </div>
         <span className="rounded-full bg-cyan-500/10 px-2.5 py-1 text-[11px] font-semibold text-cyan-700 dark:text-cyan-200">{textOf(project.outputs?.current_step || project.status)}</span>
       </div>
+      {(characters.length > 0 || props.length > 0 || locations.length > 0) && (
+        <div className="grid gap-2 sm:grid-cols-3">
+          {[["角色", characters], ["道具", props], ["场景", locations]].map(([label, items]) => (
+            <div key={String(label)} className="rounded-xl border border-white bg-white/80 p-3 dark:border-white/10 dark:bg-white/5">
+              <div className="mb-2 text-xs font-semibold text-gray-800 dark:text-gray-100">{String(label)} · {(items as any[]).length}</div>
+              <div className="flex flex-wrap gap-1.5">
+                {(items as any[]).slice(0, 8).map((item, index) => <span key={textOf(item.code || index)} title={textOf(item.description || item.visual_prompt)} className="max-w-full truncate rounded-full bg-cyan-500/10 px-2 py-1 text-[11px] text-cyan-700 dark:text-cyan-200">{textOf(item.name || item.code)}</span>)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       {storyboards.length > 0 && (
         <div className="grid gap-2 md:grid-cols-2">
           {storyboards.slice(0, 6).map((item: any, idx: number) => (

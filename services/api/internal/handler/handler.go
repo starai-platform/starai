@@ -178,6 +178,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			auth.GET("/agent-projects", h.ListAgentProjects)
 			auth.GET("/agent-projects/:id", h.GetAgentProject)
 			auth.POST("/agent-projects/:id/retry", h.RetryAgentProject)
+			auth.POST("/agent-projects/:id/cancel", h.CancelAgentProject)
 			auth.POST("/agent-projects/:id/retry-node", h.RetryAgentProjectNode)
 			auth.PATCH("/agent-projects/:id/comic/keyframes/:index", h.ReplaceComicProjectKeyframe)
 			auth.PATCH("/agent-projects/:id/comic/segments/:index", h.ReplaceComicProjectSegment)
@@ -190,6 +191,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			auth.POST("/comic-drama/projects/:id/clone", h.CloneComicDramaProject)
 			auth.PATCH("/comic-drama/projects/:id/archive", h.ArchiveComicDramaProject)
 			auth.DELETE("/comic-drama/projects/:id", h.DeleteComicDramaProject)
+			auth.GET("/comic-drama/projects/:id/assets", h.ListComicDramaAssets)
+			auth.POST("/comic-drama/projects/:id/assets", h.CreateComicDramaAsset)
+			auth.PATCH("/comic-drama/projects/:id/assets/:asset_id", h.UpdateComicDramaAsset)
+			auth.DELETE("/comic-drama/projects/:id/assets/:asset_id", h.DeleteComicDramaAsset)
 			auth.GET("/comic-drama/styles", h.ListComicDramaStyles)
 			auth.POST("/comic-drama/styles", h.CreateComicDramaStyle)
 			auth.DELETE("/comic-drama/styles/:id", h.DeleteComicDramaStyle)
@@ -3976,6 +3981,14 @@ func (h *Handler) RetryAgentProject(c *gin.Context) {
 	util.OK(c, nil)
 }
 
+func (h *Handler) CancelAgentProject(c *gin.Context) {
+	if err := h.agents.CancelProject(c.Request.Context(), c.GetInt64("user_id"), c.Param("id")); err != nil {
+		util.BadRequest(c, err.Error())
+		return
+	}
+	util.OK(c, nil)
+}
+
 func (h *Handler) RetryAgentProjectNode(c *gin.Context) {
 	var req struct {
 		NodeID string `json:"node_id"`
@@ -4006,12 +4019,30 @@ func (h *Handler) replaceComicProjectMedia(c *gin.Context, kind string) {
 		return
 	}
 	var req struct {
-		URL string `json:"url"`
+		URL     string `json:"url"`
+		AssetID string `json:"asset_id"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.URL) == "" {
-		util.BadRequest(c, "素材地址不能为空")
+	if err := c.ShouldBindJSON(&req); err != nil {
+		util.BadRequest(c, "参数错误")
 		return
 	}
+	// 只允许使用当前用户已经上传到平台对象存储的资产，避免 Worker 在合成时
+	// 下载任意 URL 所形成的 SSRF。URL 字段继续兼容旧客户端，但必须与资产地址匹配。
+	if strings.TrimSpace(req.AssetID) == "" {
+		util.BadRequest(c, "请先上传素材并提交 asset_id")
+		return
+	}
+	_, objectKey, _, err := h.assets.Get(c.Request.Context(), c.GetInt64("user_id"), strings.TrimSpace(req.AssetID))
+	if err != nil {
+		util.BadRequest(c, "素材不存在或无权访问")
+		return
+	}
+	trustedURL := h.storage.PublicURL(objectKey)
+	if supplied := strings.TrimSpace(req.URL); supplied != "" && supplied != trustedURL {
+		util.BadRequest(c, "素材地址与资产不匹配")
+		return
+	}
+	req.URL = trustedURL
 	if err := h.agents.ReplaceComicProjectMedia(c.Request.Context(), c.GetInt64("user_id"), c.Param("id"), kind, index, req.URL); err != nil {
 		util.BadRequest(c, err.Error())
 		return
@@ -4051,6 +4082,49 @@ func (h *Handler) ListComicDramaProjects(c *gin.Context) {
 		return
 	}
 	util.OK(c, map[string]interface{}{"items": items})
+}
+
+func (h *Handler) ListComicDramaAssets(c *gin.Context) {
+	items, err := h.agents.ListComicDramaAssets(c.Request.Context(), c.GetInt64("user_id"), c.Param("id"))
+	if err != nil {
+		util.InternalError(c, err.Error())
+		return
+	}
+	util.OK(c, map[string]interface{}{"items": items})
+}
+
+func (h *Handler) CreateComicDramaAsset(c *gin.Context) {
+	h.upsertComicDramaAsset(c, "")
+}
+
+func (h *Handler) UpdateComicDramaAsset(c *gin.Context) {
+	h.upsertComicDramaAsset(c, c.Param("asset_id"))
+}
+
+func (h *Handler) upsertComicDramaAsset(c *gin.Context, assetID string) {
+	var req service.ComicDramaAssetInput
+	if err := c.ShouldBindJSON(&req); err != nil {
+		util.BadRequest(c, "参数错误")
+		return
+	}
+	item, err := h.agents.UpsertComicDramaAsset(c.Request.Context(), c.GetInt64("user_id"), c.Param("id"), assetID, req)
+	if err != nil {
+		util.BadRequest(c, err.Error())
+		return
+	}
+	if assetID == "" {
+		util.Created(c, item)
+	} else {
+		util.OK(c, item)
+	}
+}
+
+func (h *Handler) DeleteComicDramaAsset(c *gin.Context) {
+	if err := h.agents.DeleteComicDramaAsset(c.Request.Context(), c.GetInt64("user_id"), c.Param("id"), c.Param("asset_id")); err != nil {
+		util.BadRequest(c, err.Error())
+		return
+	}
+	util.OK(c, nil)
 }
 
 func (h *Handler) CloneComicDramaProject(c *gin.Context) {

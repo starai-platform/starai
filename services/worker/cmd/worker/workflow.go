@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,15 +35,45 @@ type workflowNode struct {
 }
 
 func processWorkflowTask(ctx context.Context, pool *pgxpool.Pool, baseURL, token string, p WorkflowTaskPayload) error {
+	lockConn, err := pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer lockConn.Release()
+	var locked bool
+	if err := lockConn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, p.ProjectID).Scan(&locked); err != nil {
+		return err
+	}
+	if !locked {
+		log.Printf("Workflow project %d is already being processed; duplicate delivery ignored", p.ProjectID)
+		return nil
+	}
+	defer func() { _, _ = lockConn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, p.ProjectID) }()
+
 	var workflowID int64
 	var inputsRaw []byte
 	var estimated float64
 	var publicID string
-	err := pool.QueryRow(ctx,
-		`SELECT workflow_id, inputs, estimated_cost, public_id FROM workflow_projects WHERE id=$1`,
-		p.ProjectID).Scan(&workflowID, &inputsRaw, &estimated, &publicID)
+	var projectStatus string
+	err = pool.QueryRow(ctx,
+		`SELECT workflow_id, inputs, estimated_cost, public_id, status FROM workflow_projects WHERE id=$1`,
+		p.ProjectID).Scan(&workflowID, &inputsRaw, &estimated, &publicID, &projectStatus)
 	if err != nil {
 		return err
+	}
+	if projectStatus != "pending" && projectStatus != "running" {
+		log.Printf("Workflow project %s has terminal/non-runnable status %s; delivery ignored", publicID, projectStatus)
+		return nil
+	}
+	if projectStatus == "pending" {
+		tag, claimErr := pool.Exec(ctx, `UPDATE workflow_projects SET status='running', started_at=COALESCE(started_at,now()), updated_at=now() WHERE id=$1 AND status='pending'`, p.ProjectID)
+		if claimErr != nil {
+			return claimErr
+		}
+		if tag.RowsAffected() == 0 {
+			log.Printf("Workflow project %s changed state before claim; delivery ignored", publicID)
+			return nil
+		}
 	}
 
 	var nodesRaw, runtimeRaw []byte
@@ -265,7 +296,7 @@ func processComicDramaWorkflow(ctx context.Context, pool *pgxpool.Pool, baseURL,
 	if !ok {
 		nodeRunID := insertWorkflowNodeRun(ctx, pool, p.ProjectID, "comic_plan", "AI漫剧规划", "llm", map[string]interface{}{"inputs": inputs}, 0)
 		start := time.Now()
-		out, errMsg := runComicDramaPlan(ctx, pool, baseURL, token, runtimeCfg, inputs)
+		out, errMsg := runComicDramaPlan(ctx, pool, baseURL, token, p.ProjectID, runtimeCfg, inputs)
 		duration := int(time.Since(start).Milliseconds())
 		if errMsg != "" {
 			pool.Exec(ctx, `UPDATE workflow_node_runs SET status='failed', error=$1, duration_ms=$2 WHERE id=$3`, errMsg, duration, nodeRunID)
@@ -324,7 +355,7 @@ func processComicDramaWorkflow(ctx context.Context, pool *pgxpool.Pool, baseURL,
 			}
 			outputs["current_step"] = "keyframes"
 			saveWorkflowOutputs(ctx, pool, p.ProjectID, outputs)
-			pool.Exec(ctx, `UPDATE workflow_node_runs SET status='failed', output=$1, error=$2, duration_ms=$3 WHERE id=$4`, mustJSON(out), errMsg, duration, nodeRunID)
+			pool.Exec(ctx, `UPDATE workflow_node_runs SET status='failed', output=$1, cost=$2, error=$3, duration_ms=$4 WHERE id=$5`, mustJSON(out), cost, errMsg, duration, nodeRunID)
 			return failWorkflow(ctx, pool, p, publicID, estimated, errMsg)
 		}
 		updateNodeRunSuccess(ctx, pool, nodeRunID, out, cost, duration)
@@ -355,7 +386,7 @@ func processComicDramaWorkflow(ctx context.Context, pool *pgxpool.Pool, baseURL,
 			}
 			outputs["current_step"] = "video_segments"
 			saveWorkflowOutputs(ctx, pool, p.ProjectID, outputs)
-			pool.Exec(ctx, `UPDATE workflow_node_runs SET status='failed', output=$1, error=$2, duration_ms=$3 WHERE id=$4`, mustJSON(out), errMsg, duration, nodeRunID)
+			pool.Exec(ctx, `UPDATE workflow_node_runs SET status='failed', output=$1, cost=$2, error=$3, duration_ms=$4 WHERE id=$5`, mustJSON(out), cost, errMsg, duration, nodeRunID)
 			return failWorkflow(ctx, pool, p, publicID, estimated, errMsg)
 		}
 		updateNodeRunSuccess(ctx, pool, nodeRunID, out, cost, duration)
@@ -371,7 +402,7 @@ func processComicDramaWorkflow(ctx context.Context, pool *pgxpool.Pool, baseURL,
 
 	nodeRunID := insertWorkflowNodeRun(ctx, pool, p.ProjectID, "compose", "视频合成", "video", map[string]interface{}{"segments": len(segments)}, 3)
 	start := time.Now()
-	final, errMsg := composeComicDramaVideo(ctx, publicID, segments)
+	final, errMsg := composeComicDramaVideo(ctx, publicID, segments, inputs)
 	duration := int(time.Since(start).Milliseconds())
 	if errMsg != "" {
 		pool.Exec(ctx, `UPDATE workflow_node_runs SET status='failed', error=$1, duration_ms=$2 WHERE id=$3`, errMsg, duration, nodeRunID)
@@ -396,7 +427,7 @@ func processComicDramaWorkflow(ctx context.Context, pool *pgxpool.Pool, baseURL,
 	return completeSimpleAgentWorkflow(ctx, pool, p, publicID, estimated, outputs)
 }
 
-func runComicDramaPlan(ctx context.Context, pool *pgxpool.Pool, baseURL, token string, runtimeCfg, inputs map[string]interface{}) (map[string]interface{}, string) {
+func runComicDramaPlan(ctx context.Context, pool *pgxpool.Pool, baseURL, token string, workflowProjectID int64, runtimeCfg, inputs map[string]interface{}) (map[string]interface{}, string) {
 	modelCode := firstNonEmpty(stringAny(runtimeCfg["analysis_model_code"]), firstComicDialogueModel(runtimeCfg), "chat_demo_v1")
 	upstreamModel, endpoint, extraParams, errMsg := loadAgentAnalysisModel(ctx, pool, modelCode)
 	if errMsg != "" {
@@ -413,14 +444,17 @@ JSON 字段必须包含：
   "creative_direction": "创意方向",
   "outline": "故事大纲",
   "script": "分场剧本",
-  "characters": [{"name":"角色名","description":"外观与性格","visual_prompt":"角色视觉提示词"}],
-  "storyboards": [{"id":"S01","title":"分镜标题","duration_sec":5,"scene":"画面描述","dialogue":"对白/旁白","camera":"镜头运动","keyframe_prompt":"关键帧图片提示词","video_prompt":"视频生成提示词"}],
+  "characters": [{"code":"CHAR_01","name":"角色名","description":"外观与性格","visual_prompt":"角色视觉提示词"}],
+  "props": [{"code":"PROP_01","name":"道具名","description":"外观与用途","visual_prompt":"道具视觉提示词"}],
+  "locations": [{"code":"LOC_01","name":"场景名","description":"空间、时间与光线","visual_prompt":"场景视觉提示词"}],
+  "storyboards": [{"id":"S01","title":"分镜标题","duration_sec":5,"character_codes":["CHAR_01"],"prop_codes":["PROP_01"],"location_code":"LOC_01","scene":"画面描述","dialogue":"对白/旁白","camera":"镜头运动","keyframe_prompt":"关键帧图片提示词","video_prompt":"视频生成提示词"}],
   "keyframes": [],
   "segments": [],
   "current_step": "storyboard_confirm"
 }
-分镜数量必须为 %d。时长模式：%s。参考图模式：%s。必须保持角色和画风一致，提示词可以直接传给图片/视频模型。`, grid, durationMode, styleMode)
-	user := fmt.Sprintf("用户需求：%s\n参考图URL：%s\n生成参数：%s", firstUserPrompt(inputs), firstImageURL(inputs), agentGenerationParamSummary(inputs))
+分镜数量必须为 %d。时长模式：%s。参考图模式：%s。每个角色、道具和场景必须有稳定 code，分镜必须通过 code 引用资产。必须保持角色和画风一致，提示词可以直接传给图片/视频模型。`, grid, durationMode, styleMode)
+	style := mapAnyOr(inputs["comic_style"], map[string]interface{}{})
+	user := fmt.Sprintf("用户需求：%s\n项目说明：%s\n风格名称：%s\n风格提示词：%s\n已锁定角色/道具/场景：%s\n参考图URL：%s\n生成参数：%s", firstUserPrompt(inputs), stringAny(inputs["comic_project_description"]), stringAny(style["name"]), stringAny(style["prompt"]), string(mustJSON(inputs["comic_assets"])), strings.Join(referenceImageURLs(inputs), "\n"), agentGenerationParamSummary(inputs))
 	bodyMap := copyLLMExtraParams(extraParams)
 	bodyMap["model"] = firstNonEmpty(upstreamModel, modelCode)
 	bodyMap["messages"] = []map[string]string{{"role": "system", "content": system}, {"role": "user", "content": user}}
@@ -452,6 +486,7 @@ JSON 字段必须包含：
 		out = fallbackComicDramaPlan(inputs, grid, text)
 	}
 	out = normalizeComicDramaPlan(out, inputs, runtimeCfg)
+	persistComicDramaPlan(ctx, pool, workflowProjectID, inputs, out)
 	pt, ct := chatUsageTokens(respBody)
 	out["_analysis_cost"] = estimateModelCostByCodeWorker(ctx, pool, modelCode, bodyMap, pt, ct)
 	out["raw_text"] = text
@@ -533,6 +568,7 @@ func runComicKeyframes(ctx context.Context, pool *pgxpool.Pool, baseURL, token s
 	}
 	for idx, sb := range storyboards {
 		prompt := firstNonEmpty(stringAny(sb["keyframe_prompt"]), stringAny(sb["scene"]), firstUserPrompt(inputs))
+		prompt = comicStylePrompt(inputs, prompt)
 		taskInputs := copyMap(inputs)
 		taskInputs["count"] = 1
 		taskInputs["n"] = 1
@@ -557,6 +593,10 @@ func runComicKeyframes(ctx context.Context, pool *pgxpool.Pool, baseURL, token s
 			retryCount = attempt + 1
 		}
 		if errMsg != "" && imageURL == "" {
+			items = append(items, map[string]interface{}{
+				"id": firstNonEmpty(stringAny(sb["id"]), fmt.Sprintf("S%02d", idx+1)), "title": stringAny(sb["title"]),
+				"prompt": prompt, "status": "failed", "error_message": errMsg, "retry_count": retryCount,
+			})
 			return items, total, fmt.Sprintf("关键帧 %d 生成失败：%s", idx+1, errMsg)
 		}
 		items = append(items, map[string]interface{}{
@@ -590,9 +630,14 @@ func runComicVideoSegments(ctx context.Context, pool *pgxpool.Pool, baseURL, tok
 	}
 	for idx, sb := range storyboards {
 		prompt := firstNonEmpty(stringAny(sb["video_prompt"]), stringAny(sb["scene"]), firstUserPrompt(inputs))
+		prompt = comicStylePrompt(inputs, prompt)
 		taskInputs := copyMap(inputs)
 		taskInputs["count"] = 1
 		taskInputs["n"] = 1
+		if duration := intAny(sb["duration_sec"]); duration > 0 {
+			taskInputs["duration"] = duration
+			taskInputs["duration_sec"] = duration
+		}
 		if idx < len(keyframes) {
 			if kf, ok := keyframes[idx].(map[string]interface{}); ok {
 				if imageURL := stringAny(kf["image_url"]); imageURL != "" {
@@ -622,6 +667,10 @@ func runComicVideoSegments(ctx context.Context, pool *pgxpool.Pool, baseURL, tok
 			retryCount = attempt + 1
 		}
 		if errMsg != "" && videoURL == "" {
+			items = append(items, map[string]interface{}{
+				"id": firstNonEmpty(stringAny(sb["id"]), fmt.Sprintf("S%02d", idx+1)), "title": stringAny(sb["title"]),
+				"prompt": prompt, "status": "failed", "error_message": errMsg, "retry_count": retryCount,
+			})
 			return items, total, fmt.Sprintf("分段视频 %d 生成失败：%s", idx+1, errMsg)
 		}
 		items = append(items, map[string]interface{}{
@@ -636,7 +685,7 @@ func runComicVideoSegments(ctx context.Context, pool *pgxpool.Pool, baseURL, tok
 	return items, total, ""
 }
 
-func composeComicDramaVideo(ctx context.Context, publicID string, segments []interface{}) (map[string]interface{}, string) {
+func composeComicDramaVideo(ctx context.Context, publicID string, segments []interface{}, inputs map[string]interface{}) (map[string]interface{}, string) {
 	if objectStore == nil {
 		return nil, "对象存储未配置，无法保存 AI 漫剧合成视频"
 	}
@@ -696,7 +745,16 @@ func composeComicDramaVideo(ctx context.Context, publicID string, segments []int
 	if err != nil {
 		return nil, "上传合成视频失败：" + err.Error()
 	}
-	return map[string]interface{}{"final_video_url": publicURL, "video_url": publicURL, "thumbnail": publicURL, "segments": downloaded}, ""
+	thumbnailURL := ""
+	thumbPath := filepath.Join(tmpDir, "thumbnail.jpg")
+	thumbCmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-ss", "0.1", "-i", outPath, "-frames:v", "1", "-q:v", "3", thumbPath)
+	if err := thumbCmd.Run(); err == nil {
+		if thumbData, readErr := os.ReadFile(thumbPath); readErr == nil && len(thumbData) > 0 {
+			thumbName := fmt.Sprintf("works/video/%s/thumbnail_%d.jpg", publicID, time.Now().UnixNano())
+			thumbnailURL, _ = objectStore.Upload(ctx, thumbName, "image/jpeg", bytes.NewReader(thumbData), int64(len(thumbData)))
+		}
+	}
+	return map[string]interface{}{"final_video_url": publicURL, "video_url": publicURL, "thumbnail": thumbnailURL, "segments": downloaded, "orientation": stringAny(inputs["orientation"]), "quality": stringAny(inputs["quality"])}, ""
 }
 
 func insertComicDramaWork(ctx context.Context, pool *pgxpool.Pool, userID int64, runtimeCfg, inputs, final map[string]interface{}) {
@@ -1349,7 +1407,7 @@ func runAgentMediaTasks(ctx context.Context, pool *pgxpool.Pool, baseURL, token 
 	if requestMode == "video" || genType == "video" {
 		taskType = "video"
 	}
-	imageURL := firstImageURL(inputs)
+	referenceImages := referenceImageURLs(inputs)
 	results := make([]map[string]interface{}, 0, count)
 	successCount := 0
 	firstErr := ""
@@ -1358,8 +1416,8 @@ func runAgentMediaTasks(ctx context.Context, pool *pgxpool.Pool, baseURL, token 
 		taskInput := agentMediaTaskInput(inputs, prompt, publicID)
 		taskInput["count"] = 1
 		taskInput["n"] = 1
-		if imageURL != "" {
-			taskInput["reference_images"] = []string{imageURL}
+		if len(referenceImages) > 0 {
+			taskInput["reference_images"] = referenceImages
 		}
 		taskEstimated := estimateModelCostByIDWorker(ctx, pool, modelID, taskInput, 0, 0)
 		inputJSON, _ := json.Marshal(taskInput)
@@ -1860,24 +1918,123 @@ func firstUserPrompt(inputs map[string]interface{}) string {
 }
 
 func firstImageURL(inputs map[string]interface{}) string {
-	for _, key := range []string{"image_url", "product_image", "reference_image"} {
-		if s := stringAny(inputs[key]); s != "" {
-			return s
+	items := referenceImageURLs(inputs)
+	if len(items) > 0 {
+		return items[0]
+	}
+	return ""
+}
+
+func referenceImageURLs(inputs map[string]interface{}) []string {
+	seen := map[string]bool{}
+	items := []string{}
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value != "" && !seen[value] {
+			seen[value] = true
+			items = append(items, value)
 		}
+	}
+	for _, key := range []string{"image_url", "product_image", "reference_image"} {
+		add(stringAny(inputs[key]))
+	}
+	if style := mapAnyOr(inputs["comic_style"], map[string]interface{}{}); style != nil {
+		add(stringAny(style["cover_url"]))
 	}
 	for _, key := range []string{"reference_images", "images"} {
 		switch v := inputs[key].(type) {
 		case []interface{}:
-			if len(v) > 0 {
-				return stringAny(v[0])
+			for _, item := range v {
+				add(stringAny(item))
 			}
 		case []string:
-			if len(v) > 0 {
-				return strings.TrimSpace(v[0])
+			for _, item := range v {
+				add(item)
 			}
 		}
 	}
-	return ""
+	return items
+}
+
+func comicStylePrompt(inputs map[string]interface{}, prompt string) string {
+	style := mapAnyOr(inputs["comic_style"], map[string]interface{}{})
+	stylePrompt := stringAny(style["prompt"])
+	if stylePrompt == "" {
+		return prompt
+	}
+	return fmt.Sprintf("STYLE HARD REQUIREMENT: %s\nKeep the same character identity, props, palette, line work and lighting across every shot.\n\n%s", stylePrompt, prompt)
+}
+
+func persistComicDramaPlan(ctx context.Context, pool *pgxpool.Pool, workflowProjectID int64, inputs, plan map[string]interface{}) {
+	projectPublicID := stringAny(inputs["comic_project_id"])
+	if projectPublicID == "" {
+		return
+	}
+	var projectID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM comic_drama_projects WHERE public_id=$1`, projectPublicID).Scan(&projectID); err != nil {
+		return
+	}
+	for _, assetType := range []string{"character", "prop", "location"} {
+		key := assetType + "s"
+		for idx, raw := range comicCollection(plan[key]) {
+			item, _ := raw.(map[string]interface{})
+			if item == nil {
+				continue
+			}
+			code := firstNonEmpty(stringAny(item["code"]), fmt.Sprintf("%s_%02d", strings.ToUpper(assetType), idx+1))
+			name := firstNonEmpty(stringAny(item["name"]), code)
+			digest := sha256.Sum256([]byte(assetType + ":" + code))
+			publicID := fmt.Sprintf("cda_%d_%x", projectID, digest[:6])
+			_, _ = pool.Exec(ctx, `INSERT INTO comic_drama_assets
+				(public_id, project_id, asset_type, asset_code, name, description, visual_prompt, metadata, updated_at)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now())
+				ON CONFLICT (project_id, asset_type, asset_code) DO UPDATE SET
+				name=EXCLUDED.name, description=EXCLUDED.description, visual_prompt=EXCLUDED.visual_prompt,
+				metadata=EXCLUDED.metadata, version=comic_drama_assets.version+1, updated_at=now()`,
+				publicID, projectID, assetType, code, name, stringAny(item["description"]), stringAny(item["visual_prompt"]), mustJSON(item))
+		}
+	}
+	for idx, raw := range comicCollection(plan["storyboards"]) {
+		item, _ := raw.(map[string]interface{})
+		if item == nil {
+			continue
+		}
+		shotID := firstNonEmpty(stringAny(item["id"]), fmt.Sprintf("S%02d", idx+1))
+		duration := floatAny(item["duration_sec"])
+		if duration <= 0 {
+			duration = 5
+		}
+		_, _ = pool.Exec(ctx, `INSERT INTO comic_drama_storyboards
+			(project_id, workflow_project_id, shot_id, seq, title, duration_sec, character_codes, prop_codes, location_code, data, updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now())
+			ON CONFLICT (workflow_project_id, shot_id) DO UPDATE SET
+			seq=EXCLUDED.seq, title=EXCLUDED.title, duration_sec=EXCLUDED.duration_sec,
+			character_codes=EXCLUDED.character_codes, prop_codes=EXCLUDED.prop_codes,
+			location_code=EXCLUDED.location_code, data=EXCLUDED.data, updated_at=now()`,
+			projectID, workflowProjectID, shotID, idx, stringAny(item["title"]), duration,
+			mustJSON(item["character_codes"]), mustJSON(item["prop_codes"]), stringAny(item["location_code"]), mustJSON(item))
+	}
+}
+
+func comicCollection(value interface{}) []interface{} {
+	switch items := value.(type) {
+	case []interface{}:
+		return items
+	case []map[string]interface{}:
+		out := make([]interface{}, len(items))
+		for i := range items {
+			out[i] = items[i]
+		}
+		return out
+	case []string:
+		out := make([]interface{}, len(items))
+		for i := range items {
+			out[i] = items[i]
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func newWorkflowTaskNo(i int) string {
@@ -1967,11 +2124,8 @@ func comicStoryboardGrid(runtimeCfg, inputs map[string]interface{}) int {
 }
 
 func comicStoryboards(plan, runtimeCfg map[string]interface{}) []map[string]interface{} {
-	raw, ok := plan["storyboards"].([]interface{})
-	if !ok {
-		if items, ok := plan["storyboards"].([]map[string]interface{}); ok {
-			return items
-		}
+	raw := comicCollection(plan["storyboards"])
+	if len(raw) == 0 {
 		return nil
 	}
 	out := make([]map[string]interface{}, 0, len(raw))
@@ -1989,9 +2143,48 @@ func comicStoryboards(plan, runtimeCfg map[string]interface{}) []map[string]inte
 		if stringAny(m["video_prompt"]) == "" {
 			m["video_prompt"] = firstNonEmpty(stringAny(m["scene"]), stringAny(m["title"])) + "，AI 漫剧视频片段，镜头自然，角色一致"
 		}
+		assetContext := comicStoryboardAssetContext(plan, m)
+		if assetContext != "" {
+			m["keyframe_prompt"] = stringAny(m["keyframe_prompt"]) + "\nCONSISTENCY ASSETS:\n" + assetContext
+			m["video_prompt"] = stringAny(m["video_prompt"]) + "\nCONSISTENCY ASSETS:\n" + assetContext
+		}
 		out = append(out, m)
 	}
 	return out
+}
+
+func comicStoryboardAssetContext(plan, storyboard map[string]interface{}) string {
+	typeByCode := map[string]string{}
+	for _, key := range []string{"characters", "props", "locations"} {
+		for _, raw := range comicCollection(plan[key]) {
+			item, _ := raw.(map[string]interface{})
+			if item == nil {
+				continue
+			}
+			code := stringAny(item["code"])
+			if code != "" {
+				typeByCode[code] = fmt.Sprintf("%s: %s", code, firstNonEmpty(stringAny(item["visual_prompt"]), stringAny(item["description"]), stringAny(item["name"])))
+			}
+		}
+	}
+	codes := []string{}
+	for _, key := range []string{"character_codes", "prop_codes"} {
+		for _, raw := range comicCollection(storyboard[key]) {
+			if code := stringAny(raw); code != "" {
+				codes = append(codes, code)
+			}
+		}
+	}
+	if code := stringAny(storyboard["location_code"]); code != "" {
+		codes = append(codes, code)
+	}
+	lines := []string{}
+	for _, code := range codes {
+		if line := typeByCode[code]; line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func comicDefaultScores(runtimeCfg map[string]interface{}) map[string]interface{} {
@@ -2017,10 +2210,10 @@ func comicPassScores(runtimeCfg, inputs map[string]interface{}) map[string]inter
 		logic = 50
 	}
 	return map[string]interface{}{
-		"asset_consistency": minInt(asset+8, 100),
-		"logic":             minInt(logic+10, 100),
-		"threshold_asset":   asset,
-		"threshold_logic":   logic,
+		"threshold_asset": asset,
+		"threshold_logic": logic,
+		"checked":         false,
+		"status":          "quality_model_not_configured",
 	}
 }
 

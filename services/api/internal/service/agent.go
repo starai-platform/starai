@@ -179,6 +179,31 @@ type ComicDramaProjectInput struct {
 	WorkflowCode string `json:"workflow_code"`
 }
 
+type ComicDramaAssetDTO struct {
+	PublicID          string                 `json:"public_id"`
+	AssetType         string                 `json:"asset_type"`
+	AssetCode         string                 `json:"asset_code"`
+	Name              string                 `json:"name"`
+	Description       string                 `json:"description"`
+	VisualPrompt      string                 `json:"visual_prompt"`
+	ReferenceAssetIDs []string               `json:"reference_asset_ids"`
+	Metadata          map[string]interface{} `json:"metadata"`
+	Version           int                    `json:"version"`
+	Status            string                 `json:"status"`
+	UpdatedAt         string                 `json:"updated_at"`
+}
+
+type ComicDramaAssetInput struct {
+	AssetType         string                 `json:"asset_type"`
+	AssetCode         string                 `json:"asset_code"`
+	Name              string                 `json:"name"`
+	Description       string                 `json:"description"`
+	VisualPrompt      string                 `json:"visual_prompt"`
+	ReferenceAssetIDs []string               `json:"reference_asset_ids"`
+	Metadata          map[string]interface{} `json:"metadata"`
+	Status            string                 `json:"status"`
+}
+
 func (s *AgentService) CreateProject(ctx context.Context, userID int64, code string, inputs map[string]interface{}) (*WorkflowProjectDTO, error) {
 	wfID, def, err := s.getDefinition(ctx, code)
 	if err != nil {
@@ -451,6 +476,129 @@ func (s *AgentService) GetComicDramaProject(ctx context.Context, userID int64, p
 	return scanComicDramaProject(row)
 }
 
+func (s *AgentService) ListComicDramaAssets(ctx context.Context, userID int64, projectPublicID string) ([]ComicDramaAssetDTO, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT a.public_id, a.asset_type, a.asset_code, a.name, a.description, a.visual_prompt,
+		       a.reference_asset_ids, a.metadata, a.version, a.status, a.updated_at
+		FROM comic_drama_assets a
+		JOIN comic_drama_projects p ON p.id=a.project_id
+		WHERE p.public_id=$1 AND p.user_id=$2
+		ORDER BY CASE a.asset_type WHEN 'character' THEN 0 WHEN 'prop' THEN 1 ELSE 2 END, a.name`, projectPublicID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ComicDramaAssetDTO{}
+	for rows.Next() {
+		var item ComicDramaAssetDTO
+		var refsRaw, metadataRaw []byte
+		var updated time.Time
+		if err := rows.Scan(&item.PublicID, &item.AssetType, &item.AssetCode, &item.Name, &item.Description, &item.VisualPrompt, &refsRaw, &metadataRaw, &item.Version, &item.Status, &updated); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(refsRaw, &item.ReferenceAssetIDs)
+		_ = json.Unmarshal(metadataRaw, &item.Metadata)
+		item.UpdatedAt = updated.Format(time.RFC3339)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *AgentService) UpsertComicDramaAsset(ctx context.Context, userID int64, projectPublicID, assetPublicID string, input ComicDramaAssetInput) (*ComicDramaAssetDTO, error) {
+	assetType := strings.ToLower(strings.TrimSpace(input.AssetType))
+	if assetType != "character" && assetType != "prop" && assetType != "location" {
+		return nil, errors.New("资产类型必须是角色、道具或场景")
+	}
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		return nil, errors.New("资产名称不能为空")
+	}
+	creating := strings.TrimSpace(assetPublicID) == ""
+	if creating {
+		assetPublicID = util.NewPublicID("cda")
+	}
+	codeFallback := assetType + "_" + assetPublicID
+	code := normalizeComicAssetCode(input.AssetCode, codeFallback)
+	status := strings.TrimSpace(input.Status)
+	if status == "" {
+		status = "draft"
+	}
+	if status != "draft" && status != "ready" && status != "locked" {
+		return nil, errors.New("资产状态无效")
+	}
+	if input.Metadata == nil {
+		input.Metadata = map[string]interface{}{}
+	}
+	refs := mustAgentJSON(input.ReferenceAssetIDs)
+	metadata := mustAgentJSON(input.Metadata)
+	if strings.TrimSpace(input.AssetCode) == "" && len(code) > 32 {
+		code = code[len(code)-32:]
+	}
+	if creating {
+		_, err := s.db.Exec(ctx, `INSERT INTO comic_drama_assets
+			(public_id, project_id, asset_type, asset_code, name, description, visual_prompt, reference_asset_ids, metadata, status)
+			SELECT $1,p.id,$2,$3,$4,$5,$6,$7,$8,$9 FROM comic_drama_projects p WHERE p.public_id=$10 AND p.user_id=$11`,
+			assetPublicID, assetType, code, name, strings.TrimSpace(input.Description), strings.TrimSpace(input.VisualPrompt), refs, metadata, status, projectPublicID, userID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		tag, err := s.db.Exec(ctx, `UPDATE comic_drama_assets a SET
+			asset_type=$1, asset_code=$2, name=$3, description=$4, visual_prompt=$5,
+			reference_asset_ids=$6, metadata=$7, status=$8, version=version+1, updated_at=now()
+			FROM comic_drama_projects p WHERE a.project_id=p.id AND a.public_id=$9 AND p.public_id=$10 AND p.user_id=$11`,
+			assetType, code, name, strings.TrimSpace(input.Description), strings.TrimSpace(input.VisualPrompt), refs, metadata, status, assetPublicID, projectPublicID, userID)
+		if err != nil {
+			return nil, err
+		}
+		if tag.RowsAffected() == 0 {
+			return nil, pgx.ErrNoRows
+		}
+	}
+	items, err := s.ListComicDramaAssets(ctx, userID, projectPublicID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		if items[i].PublicID == assetPublicID {
+			return &items[i], nil
+		}
+	}
+	return nil, pgx.ErrNoRows
+}
+
+func (s *AgentService) DeleteComicDramaAsset(ctx context.Context, userID int64, projectPublicID, assetPublicID string) error {
+	tag, err := s.db.Exec(ctx, `DELETE FROM comic_drama_assets a USING comic_drama_projects p
+		WHERE a.project_id=p.id AND a.public_id=$1 AND p.public_id=$2 AND p.user_id=$3`, assetPublicID, projectPublicID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+func normalizeComicAssetCode(value, fallback string) string {
+	value = strings.ToUpper(strings.TrimSpace(firstAgentString(value, fallback)))
+	var out strings.Builder
+	for _, r := range value {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			out.WriteRune(r)
+		} else if out.Len() == 0 || !strings.HasSuffix(out.String(), "_") {
+			out.WriteByte('_')
+		}
+		if out.Len() >= 64 {
+			break
+		}
+	}
+	result := strings.Trim(out.String(), "_-")
+	if result == "" {
+		return "ASSET"
+	}
+	return result
+}
+
 func (s *AgentService) CreateComicDramaProject(ctx context.Context, userID int64, input ComicDramaProjectInput) (*ComicDramaProjectDTO, error) {
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
@@ -556,10 +704,25 @@ func (s *AgentService) CloneComicDramaProject(ctx context.Context, userID int64,
 	if err != nil {
 		return nil, err
 	}
-	return s.CreateComicDramaProject(ctx, userID, ComicDramaProjectInput{
+	cloned, err := s.CreateComicDramaProject(ctx, userID, ComicDramaProjectInput{
 		Name: project.Name + " 副本", Description: project.Description, CoverURL: project.CoverURL,
 		StyleID: project.StyleID, Orientation: project.Orientation, Quality: project.Quality, WorkflowCode: project.WorkflowCode,
 	})
+	if err != nil {
+		return nil, err
+	}
+	// 项目副本需要继承已锁定的角色、道具和场景；工作流和成片仍保持独立。
+	_, err = s.db.Exec(ctx, `INSERT INTO comic_drama_assets
+		(public_id, project_id, asset_type, asset_code, name, description, visual_prompt, reference_asset_ids, metadata, version, status)
+		SELECT 'cda_' || substr(md5(random()::text || clock_timestamp()::text || a.id::text),1,20), target.id,
+		       a.asset_type, a.asset_code, a.name, a.description, a.visual_prompt, a.reference_asset_ids, a.metadata, a.version, a.status
+		FROM comic_drama_assets a
+		JOIN comic_drama_projects source ON source.id=a.project_id AND source.public_id=$1 AND source.user_id=$2
+		JOIN comic_drama_projects target ON target.public_id=$3 AND target.user_id=$2`, publicID, userID, cloned.PublicID)
+	if err != nil {
+		return nil, err
+	}
+	return cloned, nil
 }
 
 func (s *AgentService) DeleteComicDramaStyle(ctx context.Context, userID int64, publicID string) error {
@@ -741,10 +904,12 @@ func (s *AgentService) estimateAgentRuntimeCost(ctx context.Context, runtimeCfg 
 			total += s.estimateModelCostByCode(ctx, code, inputs, 1200, 2500)
 		}
 		if code := firstAgentString(stringValue(runtimeCfg["image_model_code"]), stringValue(runtimeCfg["generation_model_code"])); code != "" {
-			total += s.estimateModelCostByCode(ctx, code, map[string]interface{}{"n": positiveAgentInt(intFromAgentAny(runtimeCfg["storyboard_grid"]), 6)}, 0, 0)
+			grid := positiveAgentInt(intFromAgentAny(firstAgentNonNil(inputs["storyboard_grid"], runtimeCfg["storyboard_grid"])), 6)
+			total += s.estimateModelCostByCode(ctx, code, map[string]interface{}{"n": grid}, 0, 0)
 		}
 		if code := firstAgentString(stringValue(runtimeCfg["video_model_code"]), stringValue(runtimeCfg["generation_model_code"])); code != "" {
-			total += s.estimateModelCostByCode(ctx, code, map[string]interface{}{"count": positiveAgentInt(intFromAgentAny(runtimeCfg["storyboard_grid"]), 6)}, 0, 0)
+			grid := positiveAgentInt(intFromAgentAny(firstAgentNonNil(inputs["storyboard_grid"], runtimeCfg["storyboard_grid"])), 6)
+			total += s.estimateModelCostByCode(ctx, code, map[string]interface{}{"count": grid}, 0, 0)
 		}
 		return total
 	}
@@ -862,10 +1027,8 @@ func (s *AgentService) RetryProject(ctx context.Context, userID int64, publicID 
 		_ = s.billing.Unfreeze(ctx, userID, estimated, "workflow", publicID)
 		return err
 	}
-	if _, err := s.db.Exec(ctx, `DELETE FROM workflow_node_runs WHERE project_id=$1`, projectID); err != nil {
-		_ = s.billing.Unfreeze(ctx, userID, estimated, "workflow", publicID)
-		return err
-	}
+	// 保留既有节点记录。工作流会复用 outputs 中已成功的阶段；保留记录还能让
+	// 最终结算包含失败前已经实际发生的媒体成本，并为运营排障留下审计轨迹。
 	if err := queue.EnqueueWorkflowTask(s.queue, queue.WorkflowTaskPayload{ProjectID: projectID, UserID: userID}); err != nil {
 		_, _ = s.db.Exec(ctx, `UPDATE workflow_projects SET status='failed', error_message='重试入队失败', finished_at=now(), updated_at=now() WHERE id=$1`, projectID)
 		_ = s.billing.Unfreeze(ctx, userID, estimated, "workflow", publicID)
@@ -937,12 +1100,48 @@ func (s *AgentService) ReplaceComicProjectMedia(ctx context.Context, userID int6
 	item["status"] = "succeeded"
 	items[index] = item
 	outputs[kind] = items
+	if kind == "keyframes" {
+		// 替换关键帧后，旧分段视频与最终成片已经失去来源一致性，必须显式失效。
+		delete(outputs, "segments")
+		delete(outputs, "final_video_url")
+		delete(outputs, "thumbnail")
+		outputs["current_step"] = "video_segments"
+	} else {
+		delete(outputs, "final_video_url")
+		delete(outputs, "thumbnail")
+		outputs["current_step"] = "compose"
+	}
 	if comic, ok := outputs["comic_drama"].(map[string]interface{}); ok {
 		comic[kind] = items
 		outputs["comic_drama"] = comic
 	}
 	_, err := s.db.Exec(ctx, `UPDATE workflow_projects SET outputs=$1, updated_at=now() WHERE id=$2`, mustAgentJSON(outputs), projectID)
 	return err
+}
+
+func (s *AgentService) CancelProject(ctx context.Context, userID int64, publicID string) error {
+	var projectID int64
+	var status string
+	var estimated float64
+	if err := s.db.QueryRow(ctx,
+		`SELECT id, status, estimated_cost FROM workflow_projects WHERE public_id=$1 AND user_id=$2`, publicID, userID).
+		Scan(&projectID, &status, &estimated); err != nil {
+		return err
+	}
+	if status != "pending" && status != "waiting_confirm" {
+		return errors.New("仅排队中或待确认的项目可取消")
+	}
+	tag, err := s.db.Exec(ctx, `
+		UPDATE workflow_projects
+		SET status='canceled', error_message='用户已取消', finished_at=now(), updated_at=now()
+		WHERE id=$1 AND status IN ('pending','waiting_confirm')`, projectID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errors.New("项目状态已变化，请刷新后重试")
+	}
+	return s.billing.Unfreeze(ctx, userID, estimated, "workflow", publicID)
 }
 
 func pruneWorkflowOutputsForRetry(outputs map[string]interface{}, nodeID string) {
@@ -1088,7 +1287,8 @@ func (s *AgentService) ConfirmStep(ctx context.Context, userID int64, publicID, 
 
 func (s *AgentService) SetAutopilot(ctx context.Context, userID int64, publicID string, enabled bool) error {
 	var projectID int64
-	err := s.db.QueryRow(ctx, `SELECT id FROM workflow_projects WHERE public_id=$1 AND user_id=$2`, publicID, userID).Scan(&projectID)
+	var status string
+	err := s.db.QueryRow(ctx, `SELECT id, status FROM workflow_projects WHERE public_id=$1 AND user_id=$2`, publicID, userID).Scan(&projectID, &status)
 	if err != nil {
 		return err
 	}
@@ -1101,7 +1301,9 @@ func (s *AgentService) SetAutopilot(ctx context.Context, userID int64, publicID 
 	if err != nil {
 		return err
 	}
-	if enabled {
+	// 只有从待确认切换为排队状态时才入队。重复点击、刷新重放或已运行任务
+	// 只更新偏好，不会再创建一个相同父任务。
+	if enabled && status == "waiting_confirm" {
 		return queue.EnqueueWorkflowTask(s.queue, queue.WorkflowTaskPayload{ProjectID: projectID, UserID: userID})
 	}
 	return nil
@@ -1356,6 +1558,15 @@ func firstAgentString(items ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstAgentNonNil(items ...interface{}) interface{} {
+	for _, item := range items {
+		if item != nil {
+			return item
+		}
+	}
+	return nil
 }
 
 func positiveAgentInt(v, fallback int) int {

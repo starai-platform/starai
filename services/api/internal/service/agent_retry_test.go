@@ -36,3 +36,14 @@ func TestPruneWorkflowOutputsForRetry(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeComicAssetCodeUsesStableASCIIFallback(t *testing.T) {
+	code := normalizeComicAssetCode("", "character_cda_123456789")
+	if code != "CHARACTER_CDA_123456789" {
+		t.Fatalf("code=%q", code)
+	}
+	if got := normalizeComicAssetCode("主角-01", "fallback"); got != "-01" && got != "01" {
+		// Chinese labels are not used as identifiers; the explicit numeric suffix remains stable.
+		t.Fatalf("unexpected normalized code %q", got)
+	}
+}

@@ -894,7 +894,7 @@ func (h *Handler) CreatePaymentOrder(c *gin.Context) {
 	allowMockPayment := mockPaymentAllowed(h.cfg.AppEnv)
 	var order *service.OrderDTO
 	if allowMockPayment && (req.Channel == "" || req.Channel == "mock") {
-		order, err = h.payment.CreateMockOrder(c.Request.Context(), userID, selectedPackage.Amount, "mock", selectedPackage.ID)
+		order, err = h.payment.CreateMockPackageOrder(c.Request.Context(), userID, *selectedPackage, "mock")
 	} else {
 		if req.Channel == "mock" {
 			util.Forbidden(c, "当前运行环境不支持模拟支付")
@@ -904,7 +904,7 @@ func (h *Handler) CreatePaymentOrder(c *gin.Context) {
 			util.BadRequest(c, "不支持的支付渠道")
 			return
 		}
-		order, err = h.payment.CreatePendingOrder(c.Request.Context(), userID, selectedPackage.Amount, selectedPackage.ID)
+		order, err = h.payment.CreatePendingPackageOrder(c.Request.Context(), userID, *selectedPackage)
 	}
 	if err != nil {
 		util.BadRequest(c, err.Error())
@@ -3026,7 +3026,7 @@ func (h *Handler) adminUpsertPaymentPackage(c *gin.Context, publicID string) {
 	if publicID == "" {
 		action = "create_payment_package"
 	}
-	h.admin.LogOperation(c.Request.Context(), c.GetInt64("admin_id"), action, "payment_package", item.PublicID, map[string]interface{}{"amount": item.Amount, "enabled": item.IsEnabled})
+	h.admin.LogOperation(c.Request.Context(), c.GetInt64("admin_id"), action, "payment_package", item.PublicID, map[string]interface{}{"amount": item.Amount, "compute_credits": item.EffectiveComputeCredits, "credits_mode": item.CreditsMode, "enabled": item.IsEnabled})
 	if publicID == "" {
 		util.Created(c, item)
 	} else {

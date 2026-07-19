@@ -11,7 +11,7 @@ interface Props {
   onSuccess?: () => void;
 }
 
-type PaymentPackage = { public_id: string; name: string; amount: number; badge?: string };
+type PaymentPackage = { public_id: string; name: string; amount: number; badge?: string; effective_compute_credits: number; credits_mode: "manual" | "formula" };
 type PaymentConfig = {
   payment_enabled: boolean;
   card_recharge_enabled: boolean;
@@ -136,6 +136,7 @@ export function RechargeModal({ open, onClose, onSuccess }: Props) {
                     >
                       {item.badge ? <span className="absolute -right-1.5 -top-2 max-w-[90%] truncate rounded-full bg-amber-500 px-1.5 py-0.5 text-[9px] font-medium text-white">{item.badge}</span> : null}
                       <span className="block">{item.amount.toFixed(2).replace(/\.00$/, "")} {config?.payment_currency || ""}</span>
+                      <span className="mt-1 block text-[10px] font-medium text-emerald-600 dark:text-emerald-300">{t("recharge.creditsReceived", { amount: item.effective_compute_credits.toFixed(2).replace(/\.00$/, "") })}</span>
                       {item.name && item.name !== `${item.amount} ${config?.payment_currency || ""}` ? <span className="mt-1 block truncate text-[10px] font-normal opacity-65">{item.name}</span> : null}
                     </button>
                   ))}

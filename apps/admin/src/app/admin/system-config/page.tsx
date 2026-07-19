@@ -57,6 +57,7 @@ const BASE_ITEMS: ConfigItem[] = [
     { value: "generic", label: "通用 HMAC 网关" },
   ], hint: "先保存并验证渠道参数，最后再开启在线支付。" },
   { key: "payment_currency", label: "收款币种", type: "text", hint: "三位 ISO 币种代码，例如 USD、EUR、JPY。必须与支付商账户支持的币种一致。" },
+  { key: "payment_compute_rate", label: "默认算力兑换倍率", type: "number", hint: "未在套餐中指定到账算力时使用：支付金额 × 此倍率。1 算力≈1元人民币时，USD 可设置约 7.2；更换收款币种后请同步调整。" },
   { key: "payment_product_name", label: "支付商品名称", type: "text", hint: "显示在 Stripe / PayPal 收银台，例如 StarAI Credits。" },
   { key: "payment_success_url", label: "支付成功返回地址", type: "text", hint: "必须是完整 http(s) 地址，可使用 {order_no}，例如 https://example.com/app/wallet?payment=success&order={order_no}" },
   { key: "payment_cancel_url", label: "取消支付返回地址", type: "text", hint: "必须是完整 http(s) 地址，例如 https://example.com/app/wallet?payment=cancel" },

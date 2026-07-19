@@ -95,23 +95,27 @@ func optionalPackageID(values []int64) interface{} {
 }
 
 type RechargePackageDTO struct {
-	ID        int64   `json:"-"`
-	PublicID  string  `json:"public_id"`
-	Name      string  `json:"name"`
-	Amount    float64 `json:"amount"`
-	Badge     string  `json:"badge"`
-	IsEnabled bool    `json:"is_enabled"`
-	SortOrder int     `json:"sort_order"`
-	CreatedAt string  `json:"created_at,omitempty"`
-	UpdatedAt string  `json:"updated_at,omitempty"`
+	ID                      int64    `json:"-"`
+	PublicID                string   `json:"public_id"`
+	Name                    string   `json:"name"`
+	Amount                  float64  `json:"amount"`
+	ComputeCredits          *float64 `json:"compute_credits,omitempty"`
+	EffectiveComputeCredits float64  `json:"effective_compute_credits"`
+	CreditsMode             string   `json:"credits_mode"`
+	Badge                   string   `json:"badge"`
+	IsEnabled               bool     `json:"is_enabled"`
+	SortOrder               int      `json:"sort_order"`
+	CreatedAt               string   `json:"created_at,omitempty"`
+	UpdatedAt               string   `json:"updated_at,omitempty"`
 }
 
 type RechargePackageInput struct {
-	Name      string  `json:"name"`
-	Amount    float64 `json:"amount"`
-	Badge     string  `json:"badge"`
-	IsEnabled bool    `json:"is_enabled"`
-	SortOrder int     `json:"sort_order"`
+	Name           string   `json:"name"`
+	Amount         float64  `json:"amount"`
+	ComputeCredits *float64 `json:"compute_credits"`
+	Badge          string   `json:"badge"`
+	IsEnabled      bool     `json:"is_enabled"`
+	SortOrder      int      `json:"sort_order"`
 }
 
 func (s *PaymentService) ListRechargePackages(ctx context.Context, includeDisabled bool) ([]RechargePackageDTO, error) {
@@ -119,7 +123,7 @@ func (s *PaymentService) ListRechargePackages(ctx context.Context, includeDisabl
 	if includeDisabled {
 		where = ""
 	}
-	rows, err := s.db.Query(ctx, `SELECT id, public_id, name, amount, badge, is_enabled, sort_order, created_at, updated_at
+	rows, err := s.db.Query(ctx, `SELECT id, public_id, name, amount, compute_credits, badge, is_enabled, sort_order, created_at, updated_at
 		FROM payment_packages `+where+` ORDER BY sort_order ASC, amount ASC, id ASC`)
 	if err != nil {
 		return nil, err
@@ -129,11 +133,12 @@ func (s *PaymentService) ListRechargePackages(ctx context.Context, includeDisabl
 	for rows.Next() {
 		var item RechargePackageDTO
 		var created, updated time.Time
-		if err := rows.Scan(&item.ID, &item.PublicID, &item.Name, &item.Amount, &item.Badge, &item.IsEnabled, &item.SortOrder, &created, &updated); err != nil {
+		if err := rows.Scan(&item.ID, &item.PublicID, &item.Name, &item.Amount, &item.ComputeCredits, &item.Badge, &item.IsEnabled, &item.SortOrder, &created, &updated); err != nil {
 			return nil, err
 		}
 		item.CreatedAt = created.Format(time.RFC3339)
 		item.UpdatedAt = updated.Format(time.RFC3339)
+		s.applyRechargePackageCredits(ctx, &item)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -145,13 +150,13 @@ func (s *PaymentService) ResolveRechargePackage(ctx context.Context, publicID st
 	publicID = strings.TrimSpace(publicID)
 	var err error
 	if publicID != "" {
-		err = s.db.QueryRow(ctx, `SELECT id, public_id, name, amount, badge, is_enabled, sort_order, created_at, updated_at
+		err = s.db.QueryRow(ctx, `SELECT id, public_id, name, amount, compute_credits, badge, is_enabled, sort_order, created_at, updated_at
 			FROM payment_packages WHERE public_id=$1 AND is_enabled=true`, publicID).
-			Scan(&item.ID, &item.PublicID, &item.Name, &item.Amount, &item.Badge, &item.IsEnabled, &item.SortOrder, &created, &updated)
+			Scan(&item.ID, &item.PublicID, &item.Name, &item.Amount, &item.ComputeCredits, &item.Badge, &item.IsEnabled, &item.SortOrder, &created, &updated)
 	} else {
-		err = s.db.QueryRow(ctx, `SELECT id, public_id, name, amount, badge, is_enabled, sort_order, created_at, updated_at
+		err = s.db.QueryRow(ctx, `SELECT id, public_id, name, amount, compute_credits, badge, is_enabled, sort_order, created_at, updated_at
 			FROM payment_packages WHERE amount=$1 AND is_enabled=true ORDER BY id LIMIT 1`, legacyAmount).
-			Scan(&item.ID, &item.PublicID, &item.Name, &item.Amount, &item.Badge, &item.IsEnabled, &item.SortOrder, &created, &updated)
+			Scan(&item.ID, &item.PublicID, &item.Name, &item.Amount, &item.ComputeCredits, &item.Badge, &item.IsEnabled, &item.SortOrder, &created, &updated)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errors.New("充值套餐不存在或已停用，请刷新后重新选择")
@@ -161,7 +166,22 @@ func (s *PaymentService) ResolveRechargePackage(ctx context.Context, publicID st
 	}
 	item.CreatedAt = created.Format(time.RFC3339)
 	item.UpdatedAt = updated.Format(time.RFC3339)
+	s.applyRechargePackageCredits(ctx, &item)
 	return &item, nil
+}
+
+func (s *PaymentService) applyRechargePackageCredits(ctx context.Context, item *RechargePackageDTO) {
+	if item.ComputeCredits != nil && *item.ComputeCredits > 0 {
+		item.EffectiveComputeCredits = roundCredits(*item.ComputeCredits)
+		item.CreditsMode = "manual"
+		return
+	}
+	item.EffectiveComputeCredits = roundCredits(item.Amount * s.computeRate(ctx))
+	item.CreditsMode = "formula"
+}
+
+func roundCredits(value float64) float64 {
+	return math.Round(value*1_000_000) / 1_000_000
 }
 
 func (s *PaymentService) UpsertRechargePackage(ctx context.Context, publicID string, input RechargePackageInput) (*RechargePackageDTO, error) {
@@ -169,6 +189,13 @@ func (s *PaymentService) UpsertRechargePackage(ctx context.Context, publicID str
 		return nil, errors.New("套餐金额需在 0.01 至 1000000 之间")
 	}
 	input.Amount = math.Round(input.Amount*100) / 100
+	if input.ComputeCredits != nil {
+		if math.IsNaN(*input.ComputeCredits) || math.IsInf(*input.ComputeCredits, 0) || *input.ComputeCredits <= 0 || *input.ComputeCredits > 1_000_000_000 {
+			return nil, errors.New("指定到账算力需大于 0，留空则按默认公式计算")
+		}
+		value := roundCredits(*input.ComputeCredits)
+		input.ComputeCredits = &value
+	}
 	input.Name = strings.TrimSpace(input.Name)
 	if input.Name == "" {
 		input.Name = strconv.FormatFloat(input.Amount, 'f', 2, 64)
@@ -183,14 +210,14 @@ func (s *PaymentService) UpsertRechargePackage(ctx context.Context, publicID str
 	}
 	if strings.TrimSpace(publicID) == "" {
 		publicID = util.NewPublicID("pay")
-		_, err := s.db.Exec(ctx, `INSERT INTO payment_packages (public_id, name, amount, badge, is_enabled, sort_order)
-			VALUES ($1,$2,$3,$4,$5,$6)`, publicID, input.Name, input.Amount, strings.TrimSpace(input.Badge), input.IsEnabled, input.SortOrder)
+		_, err := s.db.Exec(ctx, `INSERT INTO payment_packages (public_id, name, amount, compute_credits, badge, is_enabled, sort_order)
+			VALUES ($1,$2,$3,$4,$5,$6,$7)`, publicID, input.Name, input.Amount, input.ComputeCredits, strings.TrimSpace(input.Badge), input.IsEnabled, input.SortOrder)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		tag, err := s.db.Exec(ctx, `UPDATE payment_packages SET name=$1, amount=$2, badge=$3, is_enabled=$4, sort_order=$5, updated_at=now()
-			WHERE public_id=$6`, input.Name, input.Amount, strings.TrimSpace(input.Badge), input.IsEnabled, input.SortOrder, publicID)
+		tag, err := s.db.Exec(ctx, `UPDATE payment_packages SET name=$1, amount=$2, compute_credits=$3, badge=$4, is_enabled=$5, sort_order=$6, updated_at=now()
+			WHERE public_id=$7`, input.Name, input.Amount, input.ComputeCredits, strings.TrimSpace(input.Badge), input.IsEnabled, input.SortOrder, publicID)
 		if err != nil {
 			return nil, err
 		}
@@ -204,14 +231,15 @@ func (s *PaymentService) UpsertRechargePackage(ctx context.Context, publicID str
 func (s *PaymentService) ResolveRechargePackageAdmin(ctx context.Context, publicID string) (*RechargePackageDTO, error) {
 	var item RechargePackageDTO
 	var created, updated time.Time
-	err := s.db.QueryRow(ctx, `SELECT id, public_id, name, amount, badge, is_enabled, sort_order, created_at, updated_at
+	err := s.db.QueryRow(ctx, `SELECT id, public_id, name, amount, compute_credits, badge, is_enabled, sort_order, created_at, updated_at
 		FROM payment_packages WHERE public_id=$1`, publicID).
-		Scan(&item.ID, &item.PublicID, &item.Name, &item.Amount, &item.Badge, &item.IsEnabled, &item.SortOrder, &created, &updated)
+		Scan(&item.ID, &item.PublicID, &item.Name, &item.Amount, &item.ComputeCredits, &item.Badge, &item.IsEnabled, &item.SortOrder, &created, &updated)
 	if err != nil {
 		return nil, err
 	}
 	item.CreatedAt = created.Format(time.RFC3339)
 	item.UpdatedAt = updated.Format(time.RFC3339)
+	s.applyRechargePackageCredits(ctx, &item)
 	return &item, nil
 }
 
@@ -229,6 +257,15 @@ func (s *PaymentService) DeleteRechargePackage(ctx context.Context, publicID str
 // CreateMockOrder creates an order and, for the mock channel, immediately marks it
 // paid and credits compute balance to the user.
 func (s *PaymentService) CreateMockOrder(ctx context.Context, userID int64, amount float64, channel string, packageID ...int64) (*OrderDTO, error) {
+	return s.createMockOrder(ctx, userID, amount, channel, optionalPackageID(packageID), nil)
+}
+
+func (s *PaymentService) CreateMockPackageOrder(ctx context.Context, userID int64, pkg RechargePackageDTO, channel string) (*OrderDTO, error) {
+	credits := pkg.EffectiveComputeCredits
+	return s.createMockOrder(ctx, userID, pkg.Amount, channel, pkg.ID, &credits)
+}
+
+func (s *PaymentService) createMockOrder(ctx context.Context, userID int64, amount float64, channel string, packageID interface{}, creditsOverride *float64) (*OrderDTO, error) {
 	if amount <= 0 {
 		return nil, errors.New("充值金额必须大于 0")
 	}
@@ -244,12 +281,15 @@ func (s *PaymentService) CreateMockOrder(ctx context.Context, userID int64, amou
 		currency = cfg.Currency
 	}
 	credited := amount * rate
+	if creditsOverride != nil && *creditsOverride > 0 {
+		credited = roundCredits(*creditsOverride)
+	}
 	orderNo := fmt.Sprintf("ord_%d_%s", time.Now().UnixMilli(), util.NewPublicID("")[1:5])
 
 	_, err := s.db.Exec(ctx,
 		`INSERT INTO orders (order_no, user_id, channel, amount, currency, compute_credited, status, paid_at, payment_package_id)
 		 VALUES ($1,$2,$3,$4,$5,$6,'paid',now(),$7)`,
-		orderNo, userID, channel, amount, currency, credited, optionalPackageID(packageID))
+		orderNo, userID, channel, amount, currency, credited, packageID)
 	if err != nil {
 		return nil, err
 	}
@@ -362,6 +402,15 @@ func (c PaymentProviderConfig) PayPalWebhookReady() bool {
 // checkout. Money is never credited on this path; only a signed webhook can do
 // that.
 func (s *PaymentService) CreatePendingOrder(ctx context.Context, userID int64, amount float64, packageID ...int64) (*OrderDTO, error) {
+	return s.createPendingOrder(ctx, userID, amount, optionalPackageID(packageID), nil)
+}
+
+func (s *PaymentService) CreatePendingPackageOrder(ctx context.Context, userID int64, pkg RechargePackageDTO) (*OrderDTO, error) {
+	credits := pkg.EffectiveComputeCredits
+	return s.createPendingOrder(ctx, userID, pkg.Amount, pkg.ID, &credits)
+}
+
+func (s *PaymentService) createPendingOrder(ctx context.Context, userID int64, amount float64, packageID interface{}, creditsOverride *float64) (*OrderDTO, error) {
 	cfg, err := s.ProviderConfig(ctx)
 	if err != nil {
 		return nil, err
@@ -374,6 +423,9 @@ func (s *PaymentService) CreatePendingOrder(ctx context.Context, userID int64, a
 	}
 	rate := s.computeRate(ctx)
 	credited := amount * rate
+	if creditsOverride != nil && *creditsOverride > 0 {
+		credited = roundCredits(*creditsOverride)
+	}
 	orderNo := fmt.Sprintf("ord_%d_%s", time.Now().UnixMilli(), util.NewPublicID("")[1:7])
 	expireMinutes := cfg.ExpireMinutes
 	if cfg.Provider == "stripe" && expireMinutes < 30 {
@@ -385,7 +437,7 @@ func (s *PaymentService) CreatePendingOrder(ctx context.Context, userID int64, a
 	expiresAt := time.Now().Add(time.Duration(expireMinutes) * time.Minute)
 	_, err = s.db.Exec(ctx, `
 		INSERT INTO orders (order_no, user_id, channel, amount, currency, compute_credited, status, expires_at, payment_package_id)
-		VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8)`, orderNo, userID, cfg.Provider, amount, cfg.Currency, credited, expiresAt, optionalPackageID(packageID))
+		VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8)`, orderNo, userID, cfg.Provider, amount, cfg.Currency, credited, expiresAt, packageID)
 	if err != nil {
 		return nil, err
 	}

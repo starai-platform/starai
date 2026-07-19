@@ -32,6 +32,17 @@ func TestRechargePackageAmountValidation(t *testing.T) {
 	}
 }
 
+func TestRechargePackageManualCreditsValidation(t *testing.T) {
+	svc := &PaymentService{}
+	invalid := 0.0
+	if _, err := svc.UpsertRechargePackage(context.Background(), "", RechargePackageInput{Name: "invalid", Amount: 10, ComputeCredits: &invalid, IsEnabled: true}); err == nil {
+		t.Fatal("zero manual credits should be rejected; nil is required for formula mode")
+	}
+	if got := roundCredits(72.1234567); got != 72.123457 {
+		t.Fatalf("roundCredits=%v", got)
+	}
+}
+
 func TestOptionalPackageID(t *testing.T) {
 	if optionalPackageID(nil) != nil || optionalPackageID([]int64{0}) != nil {
 		t.Fatal("empty package id should be NULL")

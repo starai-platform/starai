@@ -11,26 +11,38 @@ interface Props {
   onSuccess?: () => void;
 }
 
-const AMOUNTS = [10, 30, 50, 100, 200];
+type PaymentPackage = { public_id: string; name: string; amount: number; badge?: string };
+type PaymentConfig = {
+  payment_enabled: boolean;
+  card_recharge_enabled: boolean;
+  payment_provider?: string;
+  payment_currency?: string;
+  payment_mock_mode?: boolean;
+  payment_packages?: PaymentPackage[];
+};
 
 export function RechargeModal({ open, onClose, onSuccess }: Props) {
   const { t } = useI18n();
   const [tab, setTab] = useState<"online" | "card">("card");
   const [code, setCode] = useState("");
-  const [amount, setAmount] = useState(30);
+  const [packageId, setPackageId] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [config, setConfig] = useState<{ payment_enabled: boolean; card_recharge_enabled: boolean; payment_provider?: string; payment_currency?: string; payment_mock_mode?: boolean } | null>(null);
+  const [config, setConfig] = useState<PaymentConfig | null>(null);
+  const packages = config?.payment_packages || [];
+  const selectedPackage = packages.find((item) => item.public_id === packageId) || packages[0];
+  const amount = selectedPackage?.amount || 0;
 
   useEffect(() => {
     if (!open) return;
     setMessage("");
     setError("");
-    api<{ payment_enabled: boolean; card_recharge_enabled: boolean; payment_provider?: string; payment_currency?: string; payment_mock_mode?: boolean }>("/api/payment/config")
+    api<PaymentConfig>("/api/payment/config")
       .then((c) => {
         setConfig(c);
         setTab(c.payment_enabled ? "online" : "card");
+        setPackageId((current) => c.payment_packages?.some((item) => item.public_id === current) ? current : c.payment_packages?.[0]?.public_id || "");
       })
       .catch(() => setConfig(null));
   }, [open]);
@@ -62,7 +74,7 @@ export function RechargeModal({ open, onClose, onSuccess }: Props) {
     try {
       const res = await api<{ compute_credited: number; status: string; checkout_url?: string }>("/api/payment/orders", {
         method: "POST",
-        body: JSON.stringify({ amount, channel: config?.payment_provider || "mock" }),
+        body: JSON.stringify({ package_id: selectedPackage?.public_id, channel: config?.payment_provider || "mock" }),
       });
       if (res.status === "pending" && res.checkout_url) {
         window.location.assign(res.checkout_url);
@@ -111,28 +123,30 @@ export function RechargeModal({ open, onClose, onSuccess }: Props) {
 
             {tab === "online" ? (
               <div className="space-y-4">
-                <div className="grid grid-cols-3 gap-2">
-                  {AMOUNTS.map((a) => (
+                {packages.length > 0 ? <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {packages.map((item) => (
                     <button
-                      key={a}
-                      onClick={() => setAmount(a)}
-                      className={`rounded-xl border py-3 text-sm font-semibold transition ${
-                        amount === a
+                      key={item.public_id}
+                      onClick={() => setPackageId(item.public_id)}
+                      className={`relative min-h-16 rounded-xl border px-2 py-3 text-sm font-semibold transition ${
+                        selectedPackage?.public_id === item.public_id
                           ? "border-primary bg-primary/10 text-primary dark:bg-primary/15"
                           : "border-gray-200 text-gray-600 hover:border-gray-300 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:border-white/20"
                       }`}
                     >
-                      {a} {config?.payment_currency || ""}
+                      {item.badge ? <span className="absolute -right-1.5 -top-2 max-w-[90%] truncate rounded-full bg-amber-500 px-1.5 py-0.5 text-[9px] font-medium text-white">{item.badge}</span> : null}
+                      <span className="block">{item.amount.toFixed(2).replace(/\.00$/, "")} {config?.payment_currency || ""}</span>
+                      {item.name && item.name !== `${item.amount} ${config?.payment_currency || ""}` ? <span className="mt-1 block truncate text-[10px] font-normal opacity-65">{item.name}</span> : null}
                     </button>
                   ))}
-                </div>
+                </div> : <div className="rounded-xl border border-dashed border-gray-200 px-4 py-6 text-center text-sm text-gray-400 dark:border-white/10">{t("recharge.noPackages")}</div>}
 
                 {error && <p className="text-sm text-danger">{error}</p>}
                 {message && <p className="text-sm text-primary">{message}</p>}
 
                 <button
                   onClick={handleOnline}
-                  disabled={loading}
+                  disabled={loading || !selectedPackage}
                   className="w-full rounded-xl bg-primary py-3 font-semibold text-dark disabled:opacity-50"
                 >
                   {loading ? t("recharge.paying") : t("recharge.payAmount", { amount: `${amount} ${config?.payment_currency || ""}`.trim() })}

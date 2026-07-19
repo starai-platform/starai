@@ -56,6 +56,7 @@ const NAV_GROUPS = [
     items: [
       { href: "/admin/card-batches", label: "卡密管理", icon: CreditCard },
       { href: "/admin/orders", label: "订单管理", icon: ReceiptText },
+      { href: "/admin/payment-packages", label: "充值套餐", icon: WalletCards },
       { href: "/admin/withdrawals", label: "提现管理", icon: WalletCards },
       { href: "/admin/announcements", label: "公告管理", icon: Bell },
       { href: "/admin/gallery", label: "灵感广场", icon: GalleryHorizontalEnd },

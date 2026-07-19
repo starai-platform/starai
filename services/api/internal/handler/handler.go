@@ -261,6 +261,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			adm.PATCH("/cards/:id/disable", superAdminOnly, h.AdminDisableCard)
 			adm.GET("/works", h.AdminListWorks)
 			adm.GET("/orders", h.AdminListOrders)
+			adm.GET("/payment-packages", h.AdminListPaymentPackages)
+			adm.POST("/payment-packages", superAdminOnly, h.AdminCreatePaymentPackage)
+			adm.PATCH("/payment-packages/:id", superAdminOnly, h.AdminUpdatePaymentPackage)
+			adm.DELETE("/payment-packages/:id", superAdminOnly, h.AdminDeletePaymentPackage)
 			adm.GET("/withdrawals", h.AdminListWithdrawals)
 			adm.PATCH("/withdrawals/:id", superAdminOnly, h.AdminReviewWithdrawal)
 			adm.GET("/operation-logs", h.AdminListOperationLogs)
@@ -842,6 +846,12 @@ func (h *Handler) PaymentConfig(c *gin.Context) {
 		return
 	}
 	providerCfg, providerErr := h.payment.ProviderConfig(c.Request.Context())
+	packages, packagesErr := h.payment.ListRechargePackages(c.Request.Context(), false)
+	if packagesErr != nil {
+		util.InternalError(c, packagesErr.Error())
+		return
+	}
+	cfg["payment_packages"] = packages
 	allowMockPayment := mockPaymentAllowed(h.cfg.AppEnv)
 	if allowMockPayment && providerErr == nil && !providerCfg.Ready() {
 		cfg["payment_provider"] = "mock"
@@ -867,19 +877,24 @@ func (h *Handler) CreatePaymentOrder(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Amount  float64 `json:"amount"`
-		Channel string  `json:"channel"`
+		PackageID string  `json:"package_id"`
+		Amount    float64 `json:"amount"`
+		Channel   string  `json:"channel"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		util.BadRequest(c, "参数错误")
 		return
 	}
 	userID := c.GetInt64("user_id")
+	selectedPackage, err := h.payment.ResolveRechargePackage(c.Request.Context(), req.PackageID, req.Amount)
+	if err != nil {
+		util.BadRequest(c, err.Error())
+		return
+	}
 	allowMockPayment := mockPaymentAllowed(h.cfg.AppEnv)
 	var order *service.OrderDTO
-	var err error
 	if allowMockPayment && (req.Channel == "" || req.Channel == "mock") {
-		order, err = h.payment.CreateMockOrder(c.Request.Context(), userID, req.Amount, "mock")
+		order, err = h.payment.CreateMockOrder(c.Request.Context(), userID, selectedPackage.Amount, "mock", selectedPackage.ID)
 	} else {
 		if req.Channel == "mock" {
 			util.Forbidden(c, "当前运行环境不支持模拟支付")
@@ -889,7 +904,7 @@ func (h *Handler) CreatePaymentOrder(c *gin.Context) {
 			util.BadRequest(c, "不支持的支付渠道")
 			return
 		}
-		order, err = h.payment.CreatePendingOrder(c.Request.Context(), userID, req.Amount)
+		order, err = h.payment.CreatePendingOrder(c.Request.Context(), userID, selectedPackage.Amount, selectedPackage.ID)
 	}
 	if err != nil {
 		util.BadRequest(c, err.Error())
@@ -2977,6 +2992,56 @@ func (h *Handler) AdminListOrders(c *gin.Context) {
 		return
 	}
 	util.OK(c, map[string]interface{}{"items": items, "total": total})
+}
+
+func (h *Handler) AdminListPaymentPackages(c *gin.Context) {
+	items, err := h.payment.ListRechargePackages(c.Request.Context(), true)
+	if err != nil {
+		util.InternalError(c, err.Error())
+		return
+	}
+	util.OK(c, map[string]interface{}{"items": items})
+}
+
+func (h *Handler) AdminCreatePaymentPackage(c *gin.Context) {
+	h.adminUpsertPaymentPackage(c, "")
+}
+
+func (h *Handler) AdminUpdatePaymentPackage(c *gin.Context) {
+	h.adminUpsertPaymentPackage(c, c.Param("id"))
+}
+
+func (h *Handler) adminUpsertPaymentPackage(c *gin.Context, publicID string) {
+	var input service.RechargePackageInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		util.BadRequest(c, "参数错误")
+		return
+	}
+	item, err := h.payment.UpsertRechargePackage(c.Request.Context(), publicID, input)
+	if err != nil {
+		util.BadRequest(c, err.Error())
+		return
+	}
+	action := "update_payment_package"
+	if publicID == "" {
+		action = "create_payment_package"
+	}
+	h.admin.LogOperation(c.Request.Context(), c.GetInt64("admin_id"), action, "payment_package", item.PublicID, map[string]interface{}{"amount": item.Amount, "enabled": item.IsEnabled})
+	if publicID == "" {
+		util.Created(c, item)
+	} else {
+		util.OK(c, item)
+	}
+}
+
+func (h *Handler) AdminDeletePaymentPackage(c *gin.Context) {
+	publicID := c.Param("id")
+	if err := h.payment.DeleteRechargePackage(c.Request.Context(), publicID); err != nil {
+		util.BadRequest(c, err.Error())
+		return
+	}
+	h.admin.LogOperation(c.Request.Context(), c.GetInt64("admin_id"), "delete_payment_package", "payment_package", publicID, nil)
+	util.OK(c, nil)
 }
 
 func (h *Handler) AdminListWithdrawals(c *gin.Context) {

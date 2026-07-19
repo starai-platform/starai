@@ -87,9 +87,148 @@ type AdminOrderDTO struct {
 	Nickname     string `json:"nickname"`
 }
 
+func optionalPackageID(values []int64) interface{} {
+	if len(values) > 0 && values[0] > 0 {
+		return values[0]
+	}
+	return nil
+}
+
+type RechargePackageDTO struct {
+	ID        int64   `json:"-"`
+	PublicID  string  `json:"public_id"`
+	Name      string  `json:"name"`
+	Amount    float64 `json:"amount"`
+	Badge     string  `json:"badge"`
+	IsEnabled bool    `json:"is_enabled"`
+	SortOrder int     `json:"sort_order"`
+	CreatedAt string  `json:"created_at,omitempty"`
+	UpdatedAt string  `json:"updated_at,omitempty"`
+}
+
+type RechargePackageInput struct {
+	Name      string  `json:"name"`
+	Amount    float64 `json:"amount"`
+	Badge     string  `json:"badge"`
+	IsEnabled bool    `json:"is_enabled"`
+	SortOrder int     `json:"sort_order"`
+}
+
+func (s *PaymentService) ListRechargePackages(ctx context.Context, includeDisabled bool) ([]RechargePackageDTO, error) {
+	where := "WHERE is_enabled=true"
+	if includeDisabled {
+		where = ""
+	}
+	rows, err := s.db.Query(ctx, `SELECT id, public_id, name, amount, badge, is_enabled, sort_order, created_at, updated_at
+		FROM payment_packages `+where+` ORDER BY sort_order ASC, amount ASC, id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RechargePackageDTO{}
+	for rows.Next() {
+		var item RechargePackageDTO
+		var created, updated time.Time
+		if err := rows.Scan(&item.ID, &item.PublicID, &item.Name, &item.Amount, &item.Badge, &item.IsEnabled, &item.SortOrder, &created, &updated); err != nil {
+			return nil, err
+		}
+		item.CreatedAt = created.Format(time.RFC3339)
+		item.UpdatedAt = updated.Format(time.RFC3339)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *PaymentService) ResolveRechargePackage(ctx context.Context, publicID string, legacyAmount float64) (*RechargePackageDTO, error) {
+	var item RechargePackageDTO
+	var created, updated time.Time
+	publicID = strings.TrimSpace(publicID)
+	var err error
+	if publicID != "" {
+		err = s.db.QueryRow(ctx, `SELECT id, public_id, name, amount, badge, is_enabled, sort_order, created_at, updated_at
+			FROM payment_packages WHERE public_id=$1 AND is_enabled=true`, publicID).
+			Scan(&item.ID, &item.PublicID, &item.Name, &item.Amount, &item.Badge, &item.IsEnabled, &item.SortOrder, &created, &updated)
+	} else {
+		err = s.db.QueryRow(ctx, `SELECT id, public_id, name, amount, badge, is_enabled, sort_order, created_at, updated_at
+			FROM payment_packages WHERE amount=$1 AND is_enabled=true ORDER BY id LIMIT 1`, legacyAmount).
+			Scan(&item.ID, &item.PublicID, &item.Name, &item.Amount, &item.Badge, &item.IsEnabled, &item.SortOrder, &created, &updated)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, errors.New("充值套餐不存在或已停用，请刷新后重新选择")
+	}
+	if err != nil {
+		return nil, err
+	}
+	item.CreatedAt = created.Format(time.RFC3339)
+	item.UpdatedAt = updated.Format(time.RFC3339)
+	return &item, nil
+}
+
+func (s *PaymentService) UpsertRechargePackage(ctx context.Context, publicID string, input RechargePackageInput) (*RechargePackageDTO, error) {
+	if math.IsNaN(input.Amount) || math.IsInf(input.Amount, 0) || input.Amount < 0.01 || input.Amount > 1_000_000 {
+		return nil, errors.New("套餐金额需在 0.01 至 1000000 之间")
+	}
+	input.Amount = math.Round(input.Amount*100) / 100
+	input.Name = strings.TrimSpace(input.Name)
+	if input.Name == "" {
+		input.Name = strconv.FormatFloat(input.Amount, 'f', 2, 64)
+	}
+	if len([]rune(input.Name)) > 128 || len([]rune(input.Badge)) > 64 {
+		return nil, errors.New("套餐名称或角标过长")
+	}
+	var duplicate bool
+	_ = s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM payment_packages WHERE amount=$1 AND public_id<>$2)`, input.Amount, strings.TrimSpace(publicID)).Scan(&duplicate)
+	if duplicate {
+		return nil, errors.New("已存在相同金额的充值套餐")
+	}
+	if strings.TrimSpace(publicID) == "" {
+		publicID = util.NewPublicID("pay")
+		_, err := s.db.Exec(ctx, `INSERT INTO payment_packages (public_id, name, amount, badge, is_enabled, sort_order)
+			VALUES ($1,$2,$3,$4,$5,$6)`, publicID, input.Name, input.Amount, strings.TrimSpace(input.Badge), input.IsEnabled, input.SortOrder)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		tag, err := s.db.Exec(ctx, `UPDATE payment_packages SET name=$1, amount=$2, badge=$3, is_enabled=$4, sort_order=$5, updated_at=now()
+			WHERE public_id=$6`, input.Name, input.Amount, strings.TrimSpace(input.Badge), input.IsEnabled, input.SortOrder, publicID)
+		if err != nil {
+			return nil, err
+		}
+		if tag.RowsAffected() == 0 {
+			return nil, pgx.ErrNoRows
+		}
+	}
+	return s.ResolveRechargePackageAdmin(ctx, publicID)
+}
+
+func (s *PaymentService) ResolveRechargePackageAdmin(ctx context.Context, publicID string) (*RechargePackageDTO, error) {
+	var item RechargePackageDTO
+	var created, updated time.Time
+	err := s.db.QueryRow(ctx, `SELECT id, public_id, name, amount, badge, is_enabled, sort_order, created_at, updated_at
+		FROM payment_packages WHERE public_id=$1`, publicID).
+		Scan(&item.ID, &item.PublicID, &item.Name, &item.Amount, &item.Badge, &item.IsEnabled, &item.SortOrder, &created, &updated)
+	if err != nil {
+		return nil, err
+	}
+	item.CreatedAt = created.Format(time.RFC3339)
+	item.UpdatedAt = updated.Format(time.RFC3339)
+	return &item, nil
+}
+
+func (s *PaymentService) DeleteRechargePackage(ctx context.Context, publicID string) error {
+	tag, err := s.db.Exec(ctx, `DELETE FROM payment_packages WHERE public_id=$1`, strings.TrimSpace(publicID))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
 // CreateMockOrder creates an order and, for the mock channel, immediately marks it
 // paid and credits compute balance to the user.
-func (s *PaymentService) CreateMockOrder(ctx context.Context, userID int64, amount float64, channel string) (*OrderDTO, error) {
+func (s *PaymentService) CreateMockOrder(ctx context.Context, userID int64, amount float64, channel string, packageID ...int64) (*OrderDTO, error) {
 	if amount <= 0 {
 		return nil, errors.New("充值金额必须大于 0")
 	}
@@ -108,9 +247,9 @@ func (s *PaymentService) CreateMockOrder(ctx context.Context, userID int64, amou
 	orderNo := fmt.Sprintf("ord_%d_%s", time.Now().UnixMilli(), util.NewPublicID("")[1:5])
 
 	_, err := s.db.Exec(ctx,
-		`INSERT INTO orders (order_no, user_id, channel, amount, currency, compute_credited, status, paid_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,'paid',now())`,
-		orderNo, userID, channel, amount, currency, credited)
+		`INSERT INTO orders (order_no, user_id, channel, amount, currency, compute_credited, status, paid_at, payment_package_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,'paid',now(),$7)`,
+		orderNo, userID, channel, amount, currency, credited, optionalPackageID(packageID))
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +361,7 @@ func (c PaymentProviderConfig) PayPalWebhookReady() bool {
 // CreatePendingOrder creates an unpaid order for a configured external
 // checkout. Money is never credited on this path; only a signed webhook can do
 // that.
-func (s *PaymentService) CreatePendingOrder(ctx context.Context, userID int64, amount float64) (*OrderDTO, error) {
+func (s *PaymentService) CreatePendingOrder(ctx context.Context, userID int64, amount float64, packageID ...int64) (*OrderDTO, error) {
 	cfg, err := s.ProviderConfig(ctx)
 	if err != nil {
 		return nil, err
@@ -245,8 +384,8 @@ func (s *PaymentService) CreatePendingOrder(ctx context.Context, userID int64, a
 	}
 	expiresAt := time.Now().Add(time.Duration(expireMinutes) * time.Minute)
 	_, err = s.db.Exec(ctx, `
-		INSERT INTO orders (order_no, user_id, channel, amount, currency, compute_credited, status, expires_at)
-		VALUES ($1,$2,$3,$4,$5,$6,'pending',$7)`, orderNo, userID, cfg.Provider, amount, cfg.Currency, credited, expiresAt)
+		INSERT INTO orders (order_no, user_id, channel, amount, currency, compute_credited, status, expires_at, payment_package_id)
+		VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8)`, orderNo, userID, cfg.Provider, amount, cfg.Currency, credited, expiresAt, optionalPackageID(packageID))
 	if err != nil {
 		return nil, err
 	}

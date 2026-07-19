@@ -23,6 +23,24 @@ func TestCreateMockOrderRejectsNonMockChannel(t *testing.T) {
 	}
 }
 
+func TestRechargePackageAmountValidation(t *testing.T) {
+	svc := &PaymentService{}
+	for _, amount := range []float64{0, -1, 1_000_000.01} {
+		if _, err := svc.UpsertRechargePackage(context.Background(), "", RechargePackageInput{Name: "invalid", Amount: amount, IsEnabled: true}); err == nil {
+			t.Fatalf("expected amount %v to be rejected", amount)
+		}
+	}
+}
+
+func TestOptionalPackageID(t *testing.T) {
+	if optionalPackageID(nil) != nil || optionalPackageID([]int64{0}) != nil {
+		t.Fatal("empty package id should be NULL")
+	}
+	if got := optionalPackageID([]int64{42}); got != int64(42) {
+		t.Fatalf("package id=%v", got)
+	}
+}
+
 func TestVerifyGenericPaymentSignature(t *testing.T) {
 	now := time.Unix(1_720_000_000, 0)
 	timestamp := strconv.FormatInt(now.Unix(), 10)

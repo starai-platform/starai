@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { Archive, ArrowUp, Check, Copy, Download, Folder, HelpCircle, History, ImageIcon, Loader2, Plus, RefreshCw, Settings2, Star, Trash2, Wand2, X } from "lucide-react";
@@ -2029,6 +2030,20 @@ function MediaTaskGrid({ tasks, generationType, onMore }: { tasks: MediaTask[]; 
           : "grid-cols-1 sm:grid-cols-2 xl:grid-cols-4";
   const mediaHeight = count <= 1 ? "h-[210px] sm:h-[240px] lg:h-[260px]" : "h-[150px] sm:h-[170px] lg:h-[190px]";
 
+  useEffect(() => {
+    if (!preview) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPreview(null);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [preview]);
+
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-3">
@@ -2051,20 +2066,20 @@ function MediaTaskGrid({ tasks, generationType, onMore }: { tasks: MediaTask[]; 
           />
         ))}
       </div>
-      {preview && (
-        <div className="fixed inset-0 z-[80] bg-black/70 flex items-center justify-center p-4" onClick={() => setPreview(null)}>
-          <div className="relative max-h-[88vh] w-full max-w-4xl rounded-2xl bg-black shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <button type="button" onClick={() => setPreview(null)} className="absolute right-3 top-3 z-10 w-9 h-9 rounded-xl border border-gray-200 bg-white/90 text-gray-900 flex items-center justify-center shadow dark:bg-gray-900/90 dark:text-white dark:border-white/10"><X size={16} /></button>
+      {preview && createPortal(
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-[200] flex h-[100dvh] w-screen items-center justify-center overflow-hidden bg-black/80 p-4" onClick={() => setPreview(null)}>
+          <div className={`relative flex max-h-[calc(100dvh-2rem)] w-full items-center justify-center overflow-hidden rounded-2xl bg-black shadow-2xl ${preview.type === "video" ? "max-w-6xl" : "max-w-4xl"}`} onClick={(e) => e.stopPropagation()}>
+            <button type="button" onClick={() => setPreview(null)} className="absolute right-3 top-3 z-20 flex h-9 w-9 items-center justify-center rounded-xl border border-gray-200 bg-white/90 text-gray-900 shadow dark:border-white/10 dark:bg-gray-900/90 dark:text-white" aria-label={t("common.close")}><X size={16} /></button>
             {preview.type === "video" ? (
-              <video src={preview.url} controls autoPlay className="max-h-[88vh] w-full object-contain" />
+              <video src={preview.url} controls autoPlay className="h-auto max-h-[82dvh] w-full object-contain" />
             ) : (
-              <div className="relative">
+              <div className="relative flex max-h-[82dvh] w-full items-center justify-center">
                 <a
                   href={preview.url}
                   download
                   target="_blank"
                   rel="noreferrer"
-                  className="absolute left-3 top-3 z-10 flex h-9 items-center gap-1.5 rounded-xl border border-gray-200 bg-white/90 px-3 text-sm font-medium text-gray-900 shadow dark:bg-gray-900/90 dark:text-white dark:border-white/10"
+                  className="absolute left-3 top-3 z-20 flex h-9 items-center gap-1.5 rounded-xl border border-gray-200 bg-white/90 px-3 text-sm font-medium text-gray-900 shadow dark:border-white/10 dark:bg-gray-900/90 dark:text-white"
                   title={t("common.download")}
                   onClick={(e) => e.stopPropagation()}
                 >
@@ -2072,11 +2087,12 @@ function MediaTaskGrid({ tasks, generationType, onMore }: { tasks: MediaTask[]; 
                   {t("common.download")}
                 </a>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <Image src={preview.url} alt="" width={1600} height={900} sizes="100vw" className="max-h-[88vh] w-full object-contain" />
+                <Image src={preview.url} alt="" width={1600} height={900} sizes="(max-width: 768px) 100vw, 896px" className="h-auto max-h-[82dvh] w-auto max-w-full object-contain" />
               </div>
             )}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

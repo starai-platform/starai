@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { clsx } from "clsx";
 import {
   ArrowUp,
   Bell,
   ChevronDown,
   Check,
-  Clipboard,
+  Copy,
   Download,
   History,
   Menu,
@@ -208,6 +209,11 @@ function isSucceededStatus(status: string) {
   return normalized === "succeeded" || normalized === "success";
 }
 
+function isFailedStatus(status: string) {
+  const normalized = status.toLowerCase();
+  return normalized === "failed" || normalized === "error";
+}
+
 function fallbackProgress(status: string, current = 0) {
   const normalized = status.toLowerCase();
   if (normalized === "pending") return Math.max(current, 8);
@@ -346,6 +352,21 @@ function ModelMediaResultGrid({
           ? "grid-cols-1 sm:grid-cols-3"
           : "grid-cols-1 sm:grid-cols-2 xl:grid-cols-4";
   const mediaHeight = count <= 1 ? "h-[210px] sm:h-[240px] lg:h-[260px]" : "h-[150px] sm:h-[170px] lg:h-[190px]";
+
+  useEffect(() => {
+    if (!preview) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPreview(null);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [preview]);
+
   if (items.length === 0) return null;
 
   return (
@@ -370,17 +391,17 @@ function ModelMediaResultGrid({
           />
         ))}
       </div>
-      {preview && (
-        <div className="fixed inset-0 z-[80] bg-black/70 flex items-center justify-center p-4" onClick={() => setPreview(null)}>
-          <div className="relative max-h-[88vh] w-full max-w-4xl rounded-2xl bg-black shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <button type="button" onClick={() => setPreview(null)} className="absolute right-3 top-3 z-10 w-9 h-9 rounded-xl border border-gray-200 bg-white/90 text-gray-900 flex items-center justify-center shadow dark:bg-gray-900/90 dark:text-white dark:border-white/10"><X size={16} /></button>
+      {preview && createPortal(
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-[200] flex h-[100dvh] w-screen items-center justify-center overflow-hidden bg-black/80 p-4" onClick={() => setPreview(null)}>
+          <div className={`relative flex max-h-[calc(100dvh-2rem)] w-full items-center justify-center overflow-hidden rounded-2xl bg-black shadow-2xl ${preview.type === "video" ? "max-w-6xl" : "max-w-4xl"}`} onClick={(e) => e.stopPropagation()}>
+            <button type="button" onClick={() => setPreview(null)} className="absolute right-3 top-3 z-20 flex h-9 w-9 items-center justify-center rounded-xl border border-gray-200 bg-white/90 text-gray-900 shadow dark:border-white/10 dark:bg-gray-900/90 dark:text-white" aria-label={t("common.close")}><X size={16} /></button>
             {preview.type === "video" ? (
-              <TaskMediaVideo src={preview.url} className="max-h-[88vh] w-full object-contain" />
+              <TaskMediaVideo src={preview.url} className="h-auto max-h-[82dvh] w-full object-contain" />
             ) : (
-              <div className="relative">
+              <div className="relative flex max-h-[82dvh] w-full items-center justify-center">
                 <button
                   type="button"
-                  className="absolute left-3 top-3 z-10 flex h-9 items-center gap-1.5 rounded-xl border border-gray-200 bg-white/90 px-3 text-sm font-medium text-gray-900 shadow dark:bg-gray-900/90 dark:text-white dark:border-white/10"
+                  className="absolute left-3 top-3 z-20 flex h-9 items-center gap-1.5 rounded-xl border border-gray-200 bg-white/90 px-3 text-sm font-medium text-gray-900 shadow dark:border-white/10 dark:bg-gray-900/90 dark:text-white"
                   title={t("workspace.downloadImage")}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -391,11 +412,12 @@ function ModelMediaResultGrid({
                   {t("common.download")}
                 </button>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={preview.url} alt="" className="max-h-[88vh] w-full object-contain" />
+                <img src={preview.url} alt="" className="h-auto max-h-[82dvh] w-auto max-w-full object-contain" />
               </div>
             )}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
@@ -645,12 +667,12 @@ function CopyOutputButton({ text, copied, onCopy }: { text: string; copied: bool
   return (
     <button
       type="button"
-      className="inline-flex h-8 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 text-xs font-medium text-gray-500 shadow-sm transition hover:border-primary/40 hover:text-gray-900 dark:bg-white/5 dark:border-white/10 dark:text-gray-300 dark:hover:text-gray-100"
+      className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-gray-200 bg-white/90 text-gray-500 shadow-sm transition hover:border-primary/40 hover:text-gray-900 dark:border-white/10 dark:bg-white/10 dark:text-gray-300 dark:hover:text-gray-100"
       onClick={onCopy}
-      title={UI_TEXT.copyContent}
+      title={copied ? UI_TEXT.copied : UI_TEXT.copyContent}
+      aria-label={copied ? UI_TEXT.copied : UI_TEXT.copyContent}
     >
-      {copied ? <Check size={14} className="text-emerald-600" /> : <Clipboard size={14} />}
-      {copied ? UI_TEXT.copied : UI_TEXT.copy}
+      {copied ? <Check size={14} className="text-emerald-600" /> : <Copy size={14} />}
     </button>
   );
 }
@@ -712,6 +734,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
   const [estimatedCost, setEstimatedCost] = useState<number | null>(null);
   const [estimateError, setEstimateError] = useState("");
   const [taskStatus, setTaskStatus] = useState("");
+  const [taskError, setTaskError] = useState("");
   const [taskOutput, setTaskOutput] = useState<string | null>(null);
   const [taskImages, setTaskImages] = useState<string[]>([]);
   const [taskVideos, setTaskVideos] = useState<VideoResult[]>([]);
@@ -1100,6 +1123,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
       }
       setConversationId(conv.public_id);
       setTaskStatus("");
+      setTaskError("");
       setTaskOutput(null);
       setTaskImages([]);
       setTaskVideos([]);
@@ -1116,6 +1140,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
         status: string;
         input?: Record<string, unknown>;
         output?: Record<string, unknown>;
+        error_message?: string;
       }>(`/api/tasks/${taskNo}`);
       const media = extractTaskOutput(task.output || {});
       setMessages([]);
@@ -1128,6 +1153,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
             : ""
       );
       setTaskStatus(task.status);
+      setTaskError(isFailedStatus(task.status) ? task.error_message?.trim() || "" : "");
       setTaskOutput(media.videoURLs[0]?.url || media.audioURL || media.imageURLs[0] || null);
       setTaskImages(media.imageURLs);
       setTaskVideos(media.videoURLs);
@@ -1417,6 +1443,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
     }
     if (!isVideo && !isAudio && !prompt.trim()) return;
     setTaskStatus("pending");
+    setTaskError("");
     setTaskOutput(null);
     setTaskImages([]);
     setTaskVideos([]);
@@ -1457,8 +1484,9 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
         body: JSON.stringify({ model_code: model.code, prompt, params: taskParams }),
       });
       setTaskStatus(task.status);
+      setTaskError(isFailedStatus(task.status) ? task.error_message?.trim() || "" : "");
       setTaskProgress(fallbackProgress(task.status, 8));
-      if (task.status === "failed") {
+      if (isFailedStatus(task.status)) {
         alert(task.error_message || t("workspace.insufficientBalance"));
         return;
       }
@@ -1469,6 +1497,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
           error_message?: string;
         }>(`/api/tasks/${task.task_no}`);
         setTaskStatus(nextTask.status);
+        setTaskError(isFailedStatus(nextTask.status) ? nextTask.error_message?.trim() || "" : "");
         api<unknown[]>(`/api/tasks/${task.task_no}/events`)
           .then((events) => {
             const progress = latestProgressFromEvents(events);
@@ -1483,14 +1512,16 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
           setTaskVideos(media.videoURLs);
           setTaskProgress(100);
           clearInterval(interval);
-        } else if (nextTask.status === "failed") {
+        } else if (isFailedStatus(nextTask.status)) {
           alert(nextTask.error_message || t("workspace.generationFailed"));
           clearInterval(interval);
         }
       }, 2000);
     } catch (err) {
-      setTaskStatus("");
-      alert(err instanceof Error ? err.message : t("workspace.submitFailed"));
+      const message = err instanceof Error ? err.message : t("workspace.submitFailed");
+      setTaskStatus("failed");
+      setTaskError(message);
+      alert(message);
     }
   };
 
@@ -1567,6 +1598,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
               setTaskImages([]);
               setTaskVideos([]);
               setTaskStatus("");
+              setTaskError("");
               setConversationId("");
             }}
             className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl bg-primary text-dark text-[13px] font-semibold shadow-sm hover:bg-primary/90 transition"
@@ -1775,6 +1807,13 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                     <div key={`mm-user-${i}`} className="mb-4 flex justify-end">
                       <div className="max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed bg-primary text-dark whitespace-pre-wrap">
                         {msg.content}
+                        <div className="mt-2 flex justify-end">
+                          <CopyOutputButton
+                            text={msg.content}
+                            copied={copiedOutputKey === `mm-user-${i}`}
+                            onCopy={() => handleCopyOutput(`mm-user-${i}`, msg.content)}
+                          />
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -1813,14 +1852,14 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
 
                 {mmActiveTab === "summary" ? (
                   <div className="mt-3 rounded-2xl bg-white border border-gray-100 px-4 py-4">
-                    <div className="mb-2 flex items-center justify-end">
+                    <RichMarkdown content={mmSummary} emptyText={streaming ? UI_TEXT.summaryGenerating : UI_TEXT.noSummary} />
+                    <div className="mt-2 flex items-center justify-end">
                       <CopyOutputButton
                         text={mmSummary}
                         copied={copiedOutputKey === "mm-summary"}
                         onCopy={() => handleCopyOutput("mm-summary", mmSummary)}
                       />
                     </div>
-                    <RichMarkdown content={mmSummary} emptyText={streaming ? UI_TEXT.summaryGenerating : UI_TEXT.noSummary} />
                   </div>
                 ) : (
                   <div className="mt-3 space-y-3">
@@ -1847,14 +1886,14 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                             <div className="text-sm text-red-600">[{r.error.message}]</div>
                           ) : (
                             <>
-                              <div className="mb-2 flex items-center justify-end">
+                              <RichMarkdown content={r.content} emptyText={streaming ? UI_TEXT.generating : ""} />
+                              <div className="mt-2 flex items-center justify-end">
                                 <CopyOutputButton
                                   text={r.content}
                                   copied={copiedOutputKey === `mm-${r.model_code}`}
                                   onCopy={() => handleCopyOutput(`mm-${r.model_code}`, r.content)}
                                 />
                               </div>
-                              <RichMarkdown content={r.content} emptyText={streaming ? UI_TEXT.generating : ""} />
                             </>
                           )}
                         </div>
@@ -1873,17 +1912,26 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                       }`}
                     >
                       {msg.role === "user" ? (
-                        msg.content
-                      ) : (
                         <>
-                          <div className="mb-2 flex items-center justify-end">
+                          {msg.content}
+                          <div className="mt-2 flex items-center justify-end">
                             <CopyOutputButton
                               text={msg.content}
                               copied={copiedOutputKey === `msg-${i}`}
                               onCopy={() => handleCopyOutput(`msg-${i}`, msg.content)}
                             />
                           </div>
+                        </>
+                      ) : (
+                        <>
                           <RichMarkdown content={msg.content} emptyText={streaming && i === messages.length - 1 ? UI_TEXT.thinking : ""} />
+                          <div className="mt-2 flex items-center justify-end">
+                            <CopyOutputButton
+                              text={msg.content}
+                              copied={copiedOutputKey === `msg-${i}`}
+                              onCopy={() => handleCopyOutput(`msg-${i}`, msg.content)}
+                            />
+                          </div>
                         </>
                       )}
                     </div>
@@ -1898,9 +1946,12 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
             {taskStatus && (
               <div className="soft-card p-5 mb-4 text-sm">
                 <div className="flex items-center justify-between gap-3">
-                  <div>
+                  <div className="min-w-0 flex-1">
                     <span className="text-gray-500">{UI_TEXT.taskStatus}:</span>
-                    <span className="font-medium ml-1">{statusLabel(taskStatus)}</span>
+                    <span className={`ml-1 font-medium ${isFailedStatus(taskStatus) ? "text-red-500 dark:text-red-300" : ""}`}>{statusLabel(taskStatus)}</span>
+                    {isFailedStatus(taskStatus) && taskError ? (
+                      <span className="ml-2 break-words text-red-500 dark:text-red-300">{taskError}</span>
+                    ) : null}
                   </div>
                   <div className="flex items-center gap-2 text-xs text-gray-400">
                     {isSucceededStatus(taskStatus) && isImage && taskImages.length > 0 && (
@@ -1909,12 +1960,12 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                     {isSucceededStatus(taskStatus) && isVideo && taskVideos.length > 0 && (
                       <span>{taskVideos.length} 个视频</span>
                     )}
-                    {!isSucceededStatus(taskStatus) && taskStatus.toLowerCase() !== "failed" && (
+                    {!isSucceededStatus(taskStatus) && !isFailedStatus(taskStatus) && (
                       <span>{Math.round(taskProgress)}%</span>
                     )}
                   </div>
                 </div>
-                {!isSucceededStatus(taskStatus) && taskStatus.toLowerCase() !== "failed" && (
+                {!isSucceededStatus(taskStatus) && !isFailedStatus(taskStatus) && (
                   <div className="mt-4 h-2 overflow-hidden rounded-full bg-gray-100">
                     <div
                       className="h-full rounded-full bg-secondary transition-all duration-500"
@@ -1933,7 +1984,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
             {isImage && taskImages.length > 0 && (
               <ModelMediaResultGrid type="image" images={taskImages} />
             )}
-            {isImage && taskImages.length === 0 && taskStatus && !isSucceededStatus(taskStatus) && taskStatus.toLowerCase() !== "failed" && (
+            {isImage && taskImages.length === 0 && taskStatus && !isSucceededStatus(taskStatus) && !isFailedStatus(taskStatus) && (
               <ModelMediaPendingGrid type="image" count={imageCount} />
             )}
             {isImage && isSucceededStatus(taskStatus) && taskImages.length === 0 && (

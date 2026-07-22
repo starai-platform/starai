@@ -15,6 +15,7 @@ import {
   History,
   Menu,
   Plus,
+  Settings2,
   Upload,
   X,
 } from "lucide-react";
@@ -136,6 +137,18 @@ type ChannelPreset = {
 };
 
 type ModelBadge = { code: string; icon?: string; label: string };
+type ChatModelOption = { code: string; display_name: string; icon_url?: string; description?: string };
+
+function normalizeModelCodes(codes?: string[]) {
+  const seen = new Set<string>();
+  return (codes || [])
+    .map((code) => (typeof code === "string" ? code.trim() : ""))
+    .filter((code) => {
+      if (!code || seen.has(code)) return false;
+      seen.add(code);
+      return true;
+    });
+}
 
 function BadgeCircle({ badge, size = 28 }: { badge: ModelBadge; size?: number }) {
   const dim = { width: size, height: size };
@@ -777,6 +790,15 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
   >([]);
   const [channelPresets, setChannelPresets] = useState<ChannelPreset[]>([]);
   const [modelMap, setModelMap] = useState<Record<string, { icon_url?: string; display_name?: string }>>({});
+  const [chatModels, setChatModels] = useState<ChatModelOption[]>([]);
+  const [selectedAnswerCodes, setSelectedAnswerCodes] = useState<string[]>([]);
+  const [selectedSummaryCode, setSelectedSummaryCode] = useState("");
+  const [selectionChannelKey, setSelectionChannelKey] = useState("");
+  const [customSelectionEnabled, setCustomSelectionEnabled] = useState(false);
+  const [draftAnswerCodes, setDraftAnswerCodes] = useState<string[]>([]);
+  const [draftSummaryCode, setDraftSummaryCode] = useState("");
+  const [modelSearch, setModelSearch] = useState("");
+  const [modelSelectionError, setModelSelectionError] = useState("");
   const [compactBadge, setCompactBadge] = useState(false);
   const [badgeOpen, setBadgeOpen] = useState(false);
   const [pricingOpen, setPricingOpen] = useState(false);
@@ -795,6 +817,21 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
   const isImage = model.category === "image";
   const isVideo = model.category === "video";
   const isAudio = model.category === "audio";
+  const currentPreset = useMemo(
+    () => (isMultiCollab ? channelPresets.find((preset) => preset.key === bottom.channel_key) : undefined),
+    [isMultiCollab, channelPresets, bottom.channel_key]
+  );
+  const presetAnswerCodes = useMemo(
+    () => normalizeModelCodes(currentPreset?.answer_model_codes?.length ? currentPreset.answer_model_codes : currentPreset?.model_codes),
+    [currentPreset]
+  );
+  const presetSummaryCodes = useMemo(() => normalizeModelCodes(currentPreset?.summary_model_codes), [currentPreset]);
+  const activeAnswerCodes = useMemo(
+    () => selectionChannelKey === bottom.channel_key && selectedAnswerCodes.length > 0 ? selectedAnswerCodes : presetAnswerCodes,
+    [selectionChannelKey, bottom.channel_key, selectedAnswerCodes, presetAnswerCodes]
+  );
+  const activeSummaryCode =
+    selectionChannelKey === bottom.channel_key && selectedSummaryCode ? selectedSummaryCode : presetSummaryCodes[0] || "";
   const workbenchInputSchema = useMemo(
     () => (isAudio ? singleResultAudioSchema(model.input_schema) : model.input_schema),
     [isAudio, model.input_schema]
@@ -882,7 +919,19 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
             ...selectedAssets,
             ...selectedReferenceAssets,
           }
-        : { ...params, ...(isMultiCollab ? { channel_key: bottom.channel_key, fallback_enabled: bottom.fallback_enabled } : {}), ...selectedAssets };
+        : {
+            ...params,
+            ...(isMultiCollab
+              ? {
+                  channel_key: bottom.channel_key,
+                  fallback_enabled: bottom.fallback_enabled,
+                  ...(customSelectionEnabled && activeAnswerCodes.length >= 2 && activeSummaryCode
+                    ? { answer_model_codes: activeAnswerCodes, summary_model_codes: [activeSummaryCode] }
+                    : {}),
+                }
+              : {}),
+            ...selectedAssets,
+          };
     setEstimateError("");
     api<{ estimated_cost: number }>(`/api/models/${model.code}/estimate`, {
       method: "POST",
@@ -916,6 +965,9 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
     bottom.channel_key,
     bottom.fallback_enabled,
     isMultiCollab,
+    activeAnswerCodes,
+    activeSummaryCode,
+    customSelectionEnabled,
     referenceAssetIds,
     t,
   ]);
@@ -934,17 +986,30 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
     api<{ items: ChannelPreset[] }>("/api/channel-presets")
       .then((r) => setChannelPresets(r.items || []))
       .catch(() => setChannelPresets([]));
-    api<any[]>("/api/models")
+    api<any[]>("/api/models?category=chat")
       .then((items) => {
         const map: Record<string, { icon_url?: string; display_name?: string }> = {};
+        const options: ChatModelOption[] = [];
         for (const m of items || []) {
           if (m && typeof m.code === "string") {
             map[m.code] = { icon_url: m.icon_url || undefined, display_name: m.display_name || undefined };
+            if (m.category === "chat" && m.code !== "multi_collab_chat") {
+              options.push({
+                code: m.code,
+                display_name: m.display_name || m.code,
+                icon_url: m.icon_url || undefined,
+                description: m.description || undefined,
+              });
+            }
           }
         }
         setModelMap(map);
+        setChatModels(options);
       })
-      .catch(() => setModelMap({}));
+      .catch(() => {
+        setModelMap({});
+        setChatModels([]);
+      });
   }, [isChat]);
 
   // Initialize the channel preset once per model. After this runs, the user is
@@ -966,6 +1031,22 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
       setBottom((prev) => ({ ...prev, channel_key: nextKey, fallback_enabled: preset?.is_fallback_enabled ?? prev.fallback_enabled }));
     }
   }, [isMultiCollab, channelPresets, model.code, model.default_params, bottom.channel_key]);
+
+  const collabSelectionInitRef = useRef("");
+  useEffect(() => {
+    if (!isMultiCollab) {
+      collabSelectionInitRef.current = "";
+      return;
+    }
+    if (!currentPreset) return;
+    const initKey = `${model.code}:${currentPreset.key}`;
+    if (collabSelectionInitRef.current === initKey) return;
+    collabSelectionInitRef.current = initKey;
+    setSelectedAnswerCodes(presetAnswerCodes);
+    setSelectedSummaryCode(presetSummaryCodes[0] || "");
+    setSelectionChannelKey(currentPreset.key);
+    setCustomSelectionEnabled(false);
+  }, [isMultiCollab, currentPreset, model.code, presetAnswerCodes, presetSummaryCodes]);
 
   useEffect(() => {
     if (!isChat) return;
@@ -1244,6 +1325,9 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                   fallback_enabled: bottom.fallback_enabled,
                   web_search: bottom.web_search,
                   timeout_sec: bottom.timeout_sec,
+                  ...(customSelectionEnabled && activeAnswerCodes.length >= 2 && activeSummaryCode
+                    ? { answer_model_codes: activeAnswerCodes, summary_model_codes: [activeSummaryCode] }
+                    : {}),
                 }
               : {}),
             ...(isChatSingle && capWebSearch ? { web_search: bottom.web_search } : {}),
@@ -1528,37 +1612,49 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
   const submit = () => (isChat ? handleChat() : handleMediaTask());
 
   const hasConversation = messages.length > 0 || !!taskOutput || taskImages.length > 0 || taskVideos.length > 0 || !!taskStatus;
-  const currentPreset = isChat ? channelPresets.find((p) => p.key === bottom.channel_key) : undefined;
-  const normalizePresetCodes = (codes?: string[]) => {
-    const seen = new Set<string>();
-    const hasModelMap = Object.keys(modelMap).length > 0;
-    return (codes || [])
-      .map((x) => (typeof x === "string" ? x.trim() : ""))
-      .filter((code) => {
-        if (!code || seen.has(code)) return false;
-        if (hasModelMap && !modelMap[code]) return false;
-        seen.add(code);
-        return true;
-      });
-  };
-  const presetAnswerCodes = normalizePresetCodes(
-    currentPreset?.answer_model_codes?.length ? currentPreset.answer_model_codes : currentPreset?.model_codes || []
-  );
-  const presetSummaryCodes = normalizePresetCodes(currentPreset?.summary_model_codes || []);
   const badgeFromCode = (code: string): ModelBadge => ({
     code,
     icon: modelMap[code]?.icon_url,
     label: modelMap[code]?.display_name || code,
   });
-  // Answer badges: prefer live multi-model results, otherwise show the preset's
-  // configured answer models so the UI always matches the backend preset.
-  const answerBadges: ModelBadge[] =
-    mmResults.length > 0
-      ? mmResults.map((r) => ({ code: r.model_code, icon: r.icon_url, label: r.display_name || r.model_code })).slice(0, 4)
-      : presetAnswerCodes.map(badgeFromCode).slice(0, 4);
+  const answerBadges: ModelBadge[] = activeAnswerCodes.map(badgeFromCode).slice(0, 8);
   const summaryBadge: ModelBadge | undefined =
-    presetSummaryCodes.length > 0 ? badgeFromCode(presetSummaryCodes[0]) : undefined;
+    activeSummaryCode ? badgeFromCode(activeSummaryCode) : undefined;
   const badgeBottom = "bottom-28 lg:bottom-20";
+  const visibleAnswerBadges = answerBadges.slice(0, 4);
+  const filteredChatModels = chatModels.filter((item) => {
+    const keyword = modelSearch.trim().toLowerCase();
+    return !keyword || item.display_name.toLowerCase().includes(keyword) || item.code.toLowerCase().includes(keyword);
+  });
+  const openModelSelector = () => {
+    setDraftAnswerCodes(activeAnswerCodes);
+    setDraftSummaryCode(activeSummaryCode);
+    setModelSearch("");
+    setModelSelectionError("");
+    setBadgeOpen(true);
+  };
+  const toggleDraftAnswer = (code: string) => {
+    setModelSelectionError("");
+    setDraftAnswerCodes((current) => {
+      if (current.includes(code)) return current.filter((item) => item !== code);
+      if (current.length >= 8) {
+        setModelSelectionError(t("channel.answerSelectionHint"));
+        return current;
+      }
+      return [...current, code];
+    });
+  };
+  const applyModelSelection = () => {
+    if (draftAnswerCodes.length < 2 || !draftSummaryCode) {
+      setModelSelectionError(t("channel.selectionRequired"));
+      return;
+    }
+    setSelectedAnswerCodes(normalizeModelCodes(draftAnswerCodes));
+    setSelectedSummaryCode(draftSummaryCode);
+    setSelectionChannelKey(bottom.channel_key);
+    setCustomSelectionEnabled(true);
+    setBadgeOpen(false);
+  };
 
   return (
     <div className="model-workspace workspace-surface flex flex-col h-full min-h-0">
@@ -2377,18 +2473,19 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
         <>
           {/* Full badge (desktop, enough space) */}
           {!compactBadge && (
-            <div className={`fixed ${badgeBottom} right-8 soft-card px-3 py-2 shadow-lg z-10 hidden lg:flex flex-col gap-2 w-[140px]`}>
+            <button type="button" onClick={openModelSelector} className={`fixed ${badgeBottom} right-8 soft-card px-3 py-2 shadow-lg z-10 hidden lg:flex flex-col gap-2 w-[160px] text-left transition hover:border-primary/30 hover:shadow-xl`} title={t("channel.customizeModels")}>
               <div className="flex items-center justify-between gap-1">
-                <div className="text-xs font-medium text-gray-700 shrink-0">{t("channel.answer")}</div>
+                <div className="flex items-center gap-1 text-xs font-medium text-gray-700 shrink-0 dark:text-gray-200"><Settings2 size={12} />{t("channel.answer")}</div>
                 <div className="flex -space-x-2">
-                  {answerBadges.map((b, i) => (
-                    <div key={b.code + i} style={{ zIndex: answerBadges.length - i }}>
+                  {visibleAnswerBadges.map((b, i) => (
+                    <div key={b.code + i} style={{ zIndex: visibleAnswerBadges.length - i }}>
                       <BadgeCircle badge={b} size={28} />
                     </div>
                   ))}
                   {answerBadges.length === 0 && <div className="text-[11px] text-gray-400">{t("channel.unconfigured")}</div>}
                 </div>
               </div>
+              {answerBadges.length > 4 && <div className="-mt-1 text-right text-[10px] text-gray-400">+{answerBadges.length - 4}</div>}
               <div className="h-px bg-gray-100 dark:bg-white/10" />
               <div className="flex items-center justify-between gap-1">
                 <div className="text-xs text-gray-500 shrink-0">{t("channel.summary")}</div>
@@ -2400,7 +2497,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                   )}
                 </div>
               </div>
-            </div>
+            </button>
           )}
 
           {/* Compact badge (small/zoomed screens) */}
@@ -2408,7 +2505,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
             <>
               <button
                 type="button"
-                onClick={() => setBadgeOpen(true)}
+                onClick={openModelSelector}
                 className={`fixed ${badgeBottom} right-4 z-10 soft-card w-10 h-10 flex items-center justify-center shadow-lg max-lg:hidden`}
                 title={`${t("channel.answer")} / ${t("channel.summary")}`}
               >
@@ -2420,41 +2517,87 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                   <div className="text-[11px] text-gray-400">MM</div>
                 )}
               </button>
-              {badgeOpen && (
-                <div className="fixed inset-0 z-[50] bg-black/40 flex items-center justify-center p-4" onClick={() => setBadgeOpen(false)}>
-                  <div className="bg-white rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden dark:bg-gray-900 dark:border dark:border-white/10" onClick={(e) => e.stopPropagation()}>
-                    <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between dark:border-white/10">
-                      <div className="font-bold text-gray-900 text-base dark:text-gray-100">{t("channel.answer")} / {t("channel.summary")}</div>
-                      <button className="w-9 h-9 rounded-xl bg-gray-50 border border-gray-200 flex items-center justify-center text-gray-500 dark:bg-white/5 dark:border-white/10 dark:text-gray-300" onClick={() => setBadgeOpen(false)}>
-                        <X size={16} />
-                      </button>
-                    </div>
-                    <div className="p-5 space-y-4">
-                      <div className="flex items-center justify-between">
-                        <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">{t("channel.answerModels")}</div>
-                        <div className="flex -space-x-2">
-                          {answerBadges.map((b, i) => (
-                            <div key={b.code + i} style={{ zIndex: answerBadges.length - i }}>
-                              <BadgeCircle badge={b} size={36} />
-                            </div>
-                          ))}
-                          {answerBadges.length === 0 && <div className="text-sm text-gray-400">{t("channel.unconfigured")}</div>}
-                        </div>
-                      </div>
-                      <div className="h-px bg-gray-100 dark:bg-white/10" />
-                      <div className="flex items-center justify-between">
-                        <div className="text-sm text-gray-600 dark:text-gray-300">{t("channel.summaryModels")}</div>
-                        {summaryBadge ? (
-                          <BadgeCircle badge={summaryBadge} size={36} />
-                        ) : (
-                          <div className="text-sm text-gray-400">{t("channel.unconfigured")}</div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
             </>
+          )}
+
+          {badgeOpen && (
+            <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/45 p-4" onClick={() => setBadgeOpen(false)}>
+              <div role="dialog" aria-modal="true" className="flex max-h-[86vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl dark:border dark:border-white/10 dark:bg-gray-900" onClick={(event) => event.stopPropagation()}>
+                <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-5 py-4 dark:border-white/10">
+                  <div>
+                    <div className="text-base font-bold text-gray-900 dark:text-gray-100">{t("channel.customizeModels")}</div>
+                    <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">{t("channel.selectionDescription")}</div>
+                  </div>
+                  <button type="button" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-gray-200 bg-gray-50 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-300" onClick={() => setBadgeOpen(false)} aria-label={t("common.close")}>
+                    <X size={16} />
+                  </button>
+                </div>
+
+                <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+                  <input
+                    value={modelSearch}
+                    onChange={(event) => setModelSearch(event.target.value)}
+                    placeholder={t("channel.searchModels")}
+                    className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-primary dark:border-white/10 dark:bg-white/5 dark:text-gray-100"
+                  />
+
+                  <section>
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">{t("channel.answerModels")}</div>
+                        <div className="mt-0.5 text-xs text-gray-400">{t("channel.answerSelectionHint")}</div>
+                      </div>
+                      <span className="rounded-full bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">{draftAnswerCodes.length}/8</span>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {filteredChatModels.map((item) => {
+                        const checked = draftAnswerCodes.includes(item.code);
+                        return (
+                          <button key={`answer-${item.code}`} type="button" onClick={() => toggleDraftAnswer(item.code)} className={`flex min-w-0 items-center gap-3 rounded-xl border p-3 text-left transition ${checked ? "border-primary bg-primary/10" : "border-gray-200 hover:border-primary/30 dark:border-white/10 dark:bg-white/5"}`}>
+                            <BadgeCircle badge={{ code: item.code, icon: item.icon_url, label: item.display_name }} size={34} />
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">{item.display_name}</div>
+                              <div className="truncate text-[11px] text-gray-400">{item.code}</div>
+                            </div>
+                            <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${checked ? "border-primary bg-primary text-white" : "border-gray-300 dark:border-white/20"}`}>{checked ? <Check size={13} /> : null}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+
+                  <section>
+                    <div className="mb-2">
+                      <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">{t("channel.summaryModels")}</div>
+                      <div className="mt-0.5 text-xs text-gray-400">{t("channel.summarySelectionHint")}</div>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {filteredChatModels.map((item) => {
+                        const checked = draftSummaryCode === item.code;
+                        return (
+                          <button key={`summary-${item.code}`} type="button" onClick={() => { setDraftSummaryCode(item.code); setModelSelectionError(""); }} className={`flex min-w-0 items-center gap-3 rounded-xl border p-3 text-left transition ${checked ? "border-secondary bg-secondary/10" : "border-gray-200 hover:border-secondary/30 dark:border-white/10 dark:bg-white/5"}`}>
+                            <BadgeCircle badge={{ code: item.code, icon: item.icon_url, label: item.display_name }} size={34} />
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">{item.display_name}</div>
+                              <div className="truncate text-[11px] text-gray-400">{item.code}</div>
+                            </div>
+                            <span className={`h-5 w-5 shrink-0 rounded-full border-[5px] ${checked ? "border-secondary bg-white" : "border-gray-300 bg-transparent dark:border-white/20"}`} />
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+
+                  {filteredChatModels.length === 0 && <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center text-sm text-gray-400 dark:border-white/10">{t("channel.unconfigured")}</div>}
+                  {modelSelectionError && <div className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-300">{modelSelectionError}</div>}
+                </div>
+
+                <div className="flex items-center justify-end gap-2 border-t border-gray-100 px-5 py-4 dark:border-white/10">
+                  <button type="button" onClick={() => setBadgeOpen(false)} className="rounded-xl border border-gray-200 px-4 py-2 text-sm text-gray-600 dark:border-white/10 dark:text-gray-300">{t("common.cancel")}</button>
+                  <button type="button" onClick={applyModelSelection} disabled={draftAnswerCodes.length < 2 || !draftSummaryCode} className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-dark disabled:cursor-not-allowed disabled:opacity-40">{t("channel.useCombination")}</button>
+                </div>
+              </div>
+            </div>
           )}
         </>
       )}

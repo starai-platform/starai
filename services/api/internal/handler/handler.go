@@ -728,18 +728,45 @@ func (h *Handler) EstimateModel(c *gin.Context) {
 				break
 			}
 		}
-		if preset == nil || len(preset.ModelCodes) == 0 {
+		_, hasAnswerOverride := req.Params["answer_model_codes"]
+		_, hasSummaryOverride := req.Params["summary_model_codes"]
+		if (preset == nil || len(preset.ModelCodes) == 0) && !hasAnswerOverride && !hasSummaryOverride {
 			util.BadRequest(c, "multi-collab channel has no enabled answer models")
 			return
 		}
-		codes := append([]string{}, preset.ModelCodes...)
-		codes = append(codes, preset.SummaryModelCodes...)
+		answerCodes := []string{}
+		summaryCodes := []string{}
+		if preset != nil {
+			answerCodes = append(answerCodes, preset.ModelCodes...)
+			summaryCodes = append(summaryCodes, preset.SummaryModelCodes...)
+		}
+		if hasAnswerOverride || hasSummaryOverride {
+			if !hasAnswerOverride || !hasSummaryOverride {
+				util.BadRequest(c, "自选模型必须同时指定问答模型和总结模型")
+				return
+			}
+			answerCodes, summaryCodes, err = h.validateCustomCollabModels(
+				c.Request.Context(),
+				stringListFromParam(req.Params["answer_model_codes"]),
+				stringListFromParam(req.Params["summary_model_codes"]),
+			)
+			if err != nil {
+				util.BadRequest(c, err.Error())
+				return
+			}
+		}
+		codes := append([]string{}, answerCodes...)
+		codes = append(codes, summaryCodes...)
 		cost := h.chat.EstimateModelsCost(c.Request.Context(), codes, req.Params)
 		if cost <= 0 {
 			util.BadRequest(c, "multi-collab channel has no priced models")
 			return
 		}
-		util.OK(c, map[string]interface{}{"estimated_cost": cost, "channel_key": preset.Key, "model_codes": codes})
+		resolvedChannelKey := channelKey
+		if preset != nil {
+			resolvedChannelKey = preset.Key
+		}
+		util.OK(c, map[string]interface{}{"estimated_cost": cost, "channel_key": resolvedChannelKey, "model_codes": codes, "answer_model_codes": answerCodes, "summary_model_codes": summaryCodes})
 		return
 	}
 	cost := h.models.EstimateCost(m, req.Params, 0, 0)
@@ -1104,6 +1131,42 @@ func stringListFromParam(v interface{}) []string {
 	return out
 }
 
+func uniqueModelCodes(codes []string) []string {
+	seen := make(map[string]struct{}, len(codes))
+	out := make([]string, 0, len(codes))
+	for _, code := range codes {
+		code = strings.TrimSpace(code)
+		if code == "" {
+			continue
+		}
+		if _, ok := seen[code]; ok {
+			continue
+		}
+		seen[code] = struct{}{}
+		out = append(out, code)
+	}
+	return out
+}
+
+func (h *Handler) validateCustomCollabModels(ctx context.Context, answerCodes, summaryCodes []string) ([]string, []string, error) {
+	answerCodes = uniqueModelCodes(answerCodes)
+	summaryCodes = uniqueModelCodes(summaryCodes)
+	if len(answerCodes) < 2 || len(answerCodes) > 8 {
+		return nil, nil, errors.New("问答模型需要选择 2 到 8 个")
+	}
+	if len(summaryCodes) != 1 {
+		return nil, nil, errors.New("总结模型需要选择 1 个")
+	}
+	allCodes := append(append([]string{}, answerCodes...), summaryCodes...)
+	for _, code := range uniqueModelCodes(allCodes) {
+		model, err := h.models.GetFullByCode(ctx, code)
+		if err != nil || model == nil || model.Category != "chat" || model.Code == "multi_collab_chat" {
+			return nil, nil, fmt.Errorf("模型 %q 不存在、未启用或不是可用的 chat 模型", code)
+		}
+	}
+	return answerCodes, summaryCodes, nil
+}
+
 func (h *Handler) assetContextLines(ctx context.Context, userID int64, ids []string) []string {
 	if h.assets == nil || len(ids) == 0 {
 		return nil
@@ -1378,6 +1441,23 @@ func (h *Handler) chatMultiStream(c *gin.Context, userID int64, input service.Co
 		modelCodes = append(modelCodes, preset.ModelCodes...)
 		summaryModelCodes = append(summaryModelCodes, preset.SummaryModelCodes...)
 		fallbackEnabled = preset.IsFallbackEnabled
+	}
+	_, hasAnswerOverride := input.Params["answer_model_codes"]
+	_, hasSummaryOverride := input.Params["summary_model_codes"]
+	if hasAnswerOverride || hasSummaryOverride {
+		if !hasAnswerOverride || !hasSummaryOverride {
+			util.BadRequest(c, "自选模型必须同时指定问答模型和总结模型")
+			return
+		}
+		modelCodes, summaryModelCodes, err = h.validateCustomCollabModels(
+			c.Request.Context(),
+			stringListFromParam(input.Params["answer_model_codes"]),
+			stringListFromParam(input.Params["summary_model_codes"]),
+		)
+		if err != nil {
+			util.BadRequest(c, err.Error())
+			return
+		}
 	}
 	// optional override from client
 	if v, ok := input.Params["fallback_enabled"].(bool); ok {

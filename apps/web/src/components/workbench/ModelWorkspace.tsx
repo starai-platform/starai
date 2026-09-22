@@ -1,6 +1,8 @@
-﻿"use client";
+"use client";
 
 import { readEventStream } from "@/lib/eventStream";
+import { pollAsync } from "@/lib/pollAsync";
+
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
@@ -20,7 +22,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { api, API_URL, hasUserSession, legacyAuthHeaders, uploadAsset } from "@/lib/api";
+import { api, apiCached, API_URL, hasUserSession, legacyAuthHeaders, uploadAsset } from "@/lib/api";
 import type { Model } from "@starai/shared-types";
 import {
   buildAudioTaskParams,
@@ -194,7 +196,7 @@ function BadgeCircle({ badge, size = 28 }: { badge: ModelBadge; size?: number })
     return (
       <div className="rounded-full border-2 border-white bg-gray-100 overflow-hidden flex items-center justify-center" style={dim} title={badge.label}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={badge.icon} alt={badge.label} className="w-full h-full object-cover" />
+        <img loading="lazy" decoding="async" src={badge.icon} alt={badge.label} className="w-full h-full object-cover" />
       </div>
     );
   }
@@ -463,7 +465,7 @@ function ModelMediaResultGrid({
                   {t("common.download")}
                 </button>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={preview.url} alt="" className="h-auto max-h-[82dvh] w-auto max-w-full object-contain" />
+                <img loading="lazy" decoding="async" src={preview.url} alt="" className="h-auto max-h-[82dvh] w-auto max-w-full object-contain" />
               </div>
             )}
           </div>
@@ -543,7 +545,7 @@ function ModelMediaResultCard({
           <div className="relative h-full w-full">
             <button type="button" onClick={() => onPreview(url, "image")} className="h-full w-full">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={url} alt={`Generated result ${index + 1}`} onError={() => setImageFailed(true)} className="w-full h-full object-contain" />
+              <img loading="lazy" decoding="async" src={url} alt={`Generated result ${index + 1}`} onError={() => setImageFailed(true)} className="w-full h-full object-contain" />
             </button>
             <button
               type="button"
@@ -714,14 +716,16 @@ function RichMarkdown({ content, emptyText }: { content: string; emptyText?: str
 }
 
 function CopyOutputButton({ text, copied, onCopy }: { text: string; copied: boolean; onCopy: () => void }) {
+  const { ts } = useI18n();
   if (!text.trim()) return null;
+  const copyLabel = ts(copied ? UI_TEXT.copied : UI_TEXT.copyContent);
   return (
     <button
       type="button"
       className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-gray-200 bg-white/90 text-gray-500 shadow-sm transition hover:border-primary/40 hover:text-gray-900 dark:border-white/10 dark:bg-white/10 dark:text-gray-300 dark:hover:text-gray-100"
       onClick={onCopy}
-      title={copied ? UI_TEXT.copied : UI_TEXT.copyContent}
-      aria-label={copied ? UI_TEXT.copied : UI_TEXT.copyContent}
+      title={copyLabel}
+      aria-label={copyLabel}
     >
       {copied ? <Check size={14} className="text-emerald-600" /> : <Copy size={14} />}
     </button>
@@ -846,6 +850,12 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
   const [imageSize, setImageSize] = useState("1K");
   const { languages: generationLanguages, selectedCode: languageCode, setSelectedCode: setLanguageCode, selectedLanguage } = useGenerationLanguages();
   const bottomRef = useRef<HTMLDivElement>(null);
+  const mediaPollRef = useRef<(() => void) | null>(null);
+  const mediaRequestRef = useRef(0);
+  useEffect(() => () => {
+    mediaRequestRef.current += 1;
+    mediaPollRef.current?.();
+  }, [model.code]);
   // IMPORTANT:
   // Your project uses a "pseudo model" for multi-collab chat (seeded as code=multi_collab_chat),
   // and historically it was still under category="chat". So multi-collab mode must be detected by code too,
@@ -1113,7 +1123,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
     api<{ items: ChannelPreset[] }>("/api/channel-presets")
       .then((r) => setChannelPresets(r.items || []))
       .catch(() => setChannelPresets([]));
-    api<any[]>("/api/models?category=chat")
+    apiCached<any[]>("/api/models?category=chat")
       .then((items) => {
         const map: Record<string, { icon_url?: string; display_name?: string }> = {};
         const options: ChatModelOption[] = [];
@@ -1195,8 +1205,8 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
       if (!target.closest("[data-starai-history]")) setHistoryOpen(false);
       if (!target.closest("[data-starai-notif]")) setNotifOpen(false);
     };
-    document.addEventListener("click", onDocClick);
-    return () => document.removeEventListener("click", onDocClick);
+    document.addEventListener("pointerdown", onDocClick, true);
+    return () => document.removeEventListener("pointerdown", onDocClick, true);
   }, []);
 
   useNotificationPolling();
@@ -1480,8 +1490,8 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
         if (json.data?.conversation_id) {
           setConversationId(json.data.conversation_id);
         }
-        throw new Error(json.error?.message || json.message || UI_TEXT.requestFailed);
-                                                                                                                                                                                                                                                                                                                      }
+        throw new Error(json.error?.message || json.message || ts(UI_TEXT.requestFailed));
+      }
 
       const body = res.body;
       setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
@@ -1517,7 +1527,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
         });
       };
 
-      if (!body) throw new Error("模型服务没有返回可读取的响应流，请稍后重试。");
+      if (!body) throw new Error(ts("模型服务没有返回可读取的响应流，请稍后重试。"));
       for await (const { event: eventType, data: dataStr } of readEventStream(body)) {
         if (!dataStr) continue;
         if (dataStr === "[DONE]") continue;
@@ -1531,7 +1541,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
         const streamError = data.error;
         if (streamError && typeof streamError === "object") {
           const error = streamError as { message?: unknown };
-          throw new Error(typeof error.message === "string" ? error.message : "模型服务返回了错误。");
+          throw new Error(typeof error.message === "string" ? error.message : ts("模型服务返回了错误。"));
         }
         if (eventType === "mm_start") {
           receivedMultiModelEvent = true;
@@ -1621,10 +1631,10 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
         }
       }
       if (!receivedReply && !receivedMultiModelEvent && !assistantContent.trim()) {
-        throw new Error("模型没有返回内容，请检查模型配置或上游服务。");
+        throw new Error(ts("模型没有返回内容，请检查模型配置或上游服务。"));
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Chat failed";
+      const msg = err instanceof Error ? err.message : ts("对话失败");
       setChatError(msg);
       setMessages((prev) => {
         const updated = [...prev];
@@ -1715,6 +1725,8 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
       alert(t("canvas.node.referenceVisualRequired"));
       return;
     }
+    const requestVersion = ++mediaRequestRef.current;
+    mediaPollRef.current?.();
     setTaskStatus("pending");
     setTaskError("");
     setTaskOutput(null);
@@ -1757,6 +1769,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
         method: "POST",
         body: JSON.stringify({ model_code: model.code, prompt, params: taskParams }),
       });
+      if (requestVersion !== mediaRequestRef.current) return;
       setTaskStatus(task.status);
       setTaskError(isFailedStatus(task.status) ? task.error_message?.trim() || "" : "");
       setTaskProgress(fallbackProgress(task.status, 8));
@@ -1764,34 +1777,42 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
         alert(task.error_message || t("workspace.insufficientBalance"));
         return;
       }
-      const interval = setInterval(async () => {
+      mediaPollRef.current = pollAsync(async (signal) => {
         const nextTask = await api<{
           status: string;
           output: Record<string, unknown>;
           error_message?: string;
-        }>(`/api/tasks/${task.task_no}`);
+        }>(`/api/tasks/${task.task_no}`, { signal });
+        if (signal.aborted) return;
         setTaskStatus(nextTask.status);
         setTaskError(isFailedStatus(nextTask.status) ? nextTask.error_message?.trim() || "" : "");
-        api<unknown[]>(`/api/tasks/${task.task_no}/events`)
-          .then((events) => {
-            const progress = latestProgressFromEvents(events);
-            if (progress >= 0) setTaskProgress((current) => Math.max(current, progress));
-            else setTaskProgress((current) => fallbackProgress(nextTask.status, current));
-          })
-          .catch(() => setTaskProgress((current) => fallbackProgress(nextTask.status, current)));
         if (nextTask.status === "succeeded") {
           const media = extractTaskOutput(nextTask.output);
           setTaskOutput(media.videoURLs[0]?.url || media.audioURL || media.imageURLs[0] || null);
           setTaskImages(media.imageURLs);
           setTaskVideos(media.videoURLs);
           setTaskProgress(100);
-          clearInterval(interval);
-        } else if (isFailedStatus(nextTask.status)) {
+          mediaPollRef.current?.();
+          return;
+        }
+        if (isFailedStatus(nextTask.status)) {
           alert(nextTask.error_message || t("workspace.generationFailed"));
-          clearInterval(interval);
+          mediaPollRef.current?.();
+          return;
+        }
+        try {
+          const events = await api<unknown[]>(`/api/tasks/${task.task_no}/events`, { signal });
+          if (signal.aborted) return;
+          const progress = latestProgressFromEvents(events);
+          if (progress >= 0) setTaskProgress((current) => Math.max(current, progress));
+          else setTaskProgress((current) => fallbackProgress(nextTask.status, current));
+        } catch {
+          if (signal.aborted) return;
+          setTaskProgress((current) => fallbackProgress(nextTask.status, current));
         }
       }, 2000);
     } catch (err) {
+      if (requestVersion !== mediaRequestRef.current) return;
       const message = err instanceof Error ? err.message : t("workspace.submitFailed");
       setTaskStatus("failed");
       setTaskError(message);
@@ -1904,7 +1925,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
             {historyOpen && (
               <div className="fixed sm:absolute left-4 right-4 sm:left-0 sm:right-auto sm:mt-2 sm:w-[300px] top-16 sm:top-auto soft-card p-2 z-30 max-h-[60vh] overflow-y-auto">
                 {historyItems.length === 0 ? (
-                  <div className="text-center text-xs text-gray-400 py-6">{UI_TEXT.historyEmpty}</div>
+                  <div className="text-center text-xs text-gray-400 py-6">{ts(UI_TEXT.historyEmpty)}</div>
                 ) : (
                   historyItems.map((item) => (
                     <button
@@ -1917,7 +1938,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                       </div>
                       <div className="text-[11px] text-gray-400 mt-0.5 flex items-center justify-between gap-2">
                         <span>{new Date(item.updated_at).toLocaleString()}</span>
-                        {item.status && <span>{statusLabel(item.status)}</span>}
+                        {item.status && <span>{ts(statusLabel(item.status))}</span>}
                       </div>
                     </button>
                   ))
@@ -2008,7 +2029,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                 <div className="tech-icon w-10 h-10 sm:w-14 sm:h-14 rounded-xl sm:rounded-2xl bg-white border border-gray-100 flex items-center justify-center text-xl sm:text-2xl mx-auto mb-3 sm:mb-4 overflow-hidden shadow-sm dark:bg-white/10 dark:border-white/10">
                   {model.icon_url ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={model.icon_url} alt="" className="w-full h-full object-cover" />
+                    <img loading="lazy" decoding="async" src={model.icon_url} alt="" className="w-full h-full object-cover" />
                   ) : (
                     MODEL_ICONS[model.category] || "AI"
                   )}
@@ -2067,7 +2088,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                         <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl flex items-center justify-center text-base sm:text-lg shrink-0 ${bg} overflow-hidden`}>
                           {f.icon_url ? (
                             // eslint-disable-next-line @next/next/no-img-element
-                            <img src={f.icon_url} alt="" className="w-full h-full object-cover" />
+                            <img loading="lazy" decoding="async" src={f.icon_url} alt="" className="w-full h-full object-cover" />
                           ) : (
                             f.icon_emoji || "AI"
                           )}
@@ -2127,7 +2148,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                       <div key={r.model_code} className="w-8 h-8 rounded-xl bg-white border border-gray-100 overflow-hidden flex items-center justify-center shadow-sm">
                         {r.icon_url ? (
                           // eslint-disable-next-line @next/next/no-img-element
-                          <img src={r.icon_url} alt="" className="w-full h-full object-cover" />
+                          <img loading="lazy" decoding="async" src={r.icon_url} alt="" className="w-full h-full object-cover" />
                         ) : (
                           <span className="text-xs text-gray-400">AI</span>
                         )}
@@ -2138,7 +2159,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
 
                 {mmActiveTab === "summary" ? (
                   <div className="mt-3 rounded-2xl bg-white border border-gray-100 px-4 py-4">
-                    <RichMarkdown content={mmSummary} emptyText={streaming ? UI_TEXT.summaryGenerating : UI_TEXT.noSummary} />
+                    <RichMarkdown content={mmSummary} emptyText={ts(streaming ? UI_TEXT.summaryGenerating : UI_TEXT.noSummary)} />
                     <div className="mt-2 flex items-center justify-end">
                       <CopyOutputButton
                         text={mmSummary}
@@ -2150,7 +2171,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                 ) : (
                   <div className="mt-3 space-y-3">
                     {mmResults.length === 0 ? (
-                      <div className="text-sm text-gray-500 px-2 py-6 text-center">{UI_TEXT.waitingModel}</div>
+                      <div className="text-sm text-gray-500 px-2 py-6 text-center">{ts(UI_TEXT.waitingModel)}</div>
                     ) : (
                       mmResults.map((r) => (
                         <div key={r.model_code} className="bg-white border border-gray-100 rounded-2xl p-4">
@@ -2158,7 +2179,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                             <div className="w-9 h-9 rounded-xl bg-gray-50 border border-gray-200 overflow-hidden flex items-center justify-center">
                               {r.icon_url ? (
                                 // eslint-disable-next-line @next/next/no-img-element
-                                <img src={r.icon_url} alt="" className="w-full h-full object-cover" />
+                                <img loading="lazy" decoding="async" src={r.icon_url} alt="" className="w-full h-full object-cover" />
                               ) : (
                                 <span className="text-xs text-gray-400">AI</span>
                               )}
@@ -2172,7 +2193,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                             <div className="text-sm text-red-600">[{r.error.message}]</div>
                           ) : (
                             <>
-                              <RichMarkdown content={r.content} emptyText={streaming ? UI_TEXT.generating : ""} />
+                              <RichMarkdown content={r.content} emptyText={streaming ? ts(UI_TEXT.generating) : ""} />
                               <div className="mt-2 flex items-center justify-end">
                                 <CopyOutputButton
                                   text={r.content}
@@ -2211,12 +2232,12 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                       ) : (
                         <>
                           {msg.reasoning_content && (
-                            <details className="mb-3 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs text-amber-900">
+                            <details open={streaming && i === messages.length - 1} className="mb-3 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs text-amber-900">
                               <summary className="cursor-pointer font-semibold">{streaming && i === messages.length - 1 ? t("workspace.reasoningThinking") : t("workspace.reasoningComplete")}</summary>
                               <div className="mt-2 whitespace-pre-wrap leading-relaxed">{msg.reasoning_content}</div>
                             </details>
                           )}
-                          <RichMarkdown content={msg.content} emptyText={streaming && i === messages.length - 1 ? UI_TEXT.thinking : ""} />
+                          <RichMarkdown content={msg.content} emptyText={streaming && i === messages.length - 1 ? ts(UI_TEXT.thinking) : ""} />
                           <div className="mt-2 flex items-center justify-end">
                             <CopyOutputButton
                               text={msg.content}
@@ -2244,18 +2265,18 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
               <div className="soft-card p-5 mb-4 text-sm">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0 flex-1">
-                    <span className="text-gray-500">{UI_TEXT.taskStatus}:</span>
-                    <span className={`ml-1 font-medium ${isFailedStatus(taskStatus) ? "text-red-500 dark:text-red-300" : ""}`}>{statusLabel(taskStatus)}</span>
+                    <span className="text-gray-500">{ts(UI_TEXT.taskStatus)}:</span>
+                    <span className={`ml-1 font-medium ${isFailedStatus(taskStatus) ? "text-red-500 dark:text-red-300" : ""}`}>{ts(statusLabel(taskStatus))}</span>
                     {isFailedStatus(taskStatus) && taskError ? (
                       <span className="ml-2 break-words text-red-500 dark:text-red-300">{taskError}</span>
                     ) : null}
                   </div>
                   <div className="flex items-center gap-2 text-xs text-gray-400">
                     {isSucceededStatus(taskStatus) && isImage && taskImages.length > 0 && (
-                      <span>{taskImages.length} {UI_TEXT.imageUnit}</span>
+                      <span>{taskImages.length} {ts(UI_TEXT.imageUnit)}</span>
                     )}
                     {isSucceededStatus(taskStatus) && isVideo && taskVideos.length > 0 && (
-                      <span>{taskVideos.length} 个视频</span>
+                      <span>{taskVideos.length} {ts("个视频")}</span>
                     )}
                     {!isSucceededStatus(taskStatus) && !isFailedStatus(taskStatus) && (
                       <span>{Math.round(taskProgress)}%</span>
@@ -2286,7 +2307,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
             )}
             {isImage && isSucceededStatus(taskStatus) && taskImages.length === 0 && (
               <div className="soft-card p-5 text-sm text-amber-700 bg-amber-50 border border-amber-100">
-                {UI_TEXT.noImageResult}
+                {ts(UI_TEXT.noImageResult)}
               </div>
             )}
           </div>
@@ -2358,7 +2379,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                         {refImages.map((img, i) => (
                           <div key={img.url} className="relative w-16 h-16 rounded-2xl overflow-hidden border-2 border-white shadow-lg bg-gray-100 shrink-0">
                             {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img src={img.url} alt={img.name} className="w-full h-full object-cover" />
+                            <img loading="lazy" decoding="async" src={img.url} alt={img.name} className="w-full h-full object-cover" />
                             <button
                               type="button"
                               onClick={() => setRefImages((prev) => prev.filter((_, idx) => idx !== i))}
@@ -2555,7 +2576,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                       {refImages.map((img, i) => (
                         <div key={img.url} className="relative w-12 h-12 rounded-lg overflow-hidden border border-gray-200">
                           {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={img.url} alt={img.name} className="w-full h-full object-cover" />
+                          <img loading="lazy" decoding="async" src={img.url} alt={img.name} className="w-full h-full object-cover" />
                           <button
                             onClick={() => setRefImages((prev) => prev.filter((_, idx) => idx !== i))}
                             className="absolute top-0 right-0 w-4 h-4 bg-black/60 text-white flex items-center justify-center rounded-bl"
@@ -2619,7 +2640,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                   rows={5}
                   className="min-h-28 min-w-0 flex-1 resize-none bg-transparent px-4 py-3 text-sm placeholder:text-gray-400 focus:outline-none"
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
                       e.preventDefault();
                       submit();
                     }
@@ -2635,7 +2656,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                   rows={5}
                   className="w-full px-4 py-3 text-sm resize-none focus:outline-none bg-transparent placeholder:text-gray-400"
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
                       e.preventDefault();
                       submit();
                     }
@@ -2650,7 +2671,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                   rows={5}
                   className="w-full px-4 py-3 text-sm resize-none focus:outline-none bg-transparent placeholder:text-gray-400"
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
                       e.preventDefault();
                       submit();
                     }
@@ -2665,7 +2686,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                 rows={isVideo || isAudio ? 4 : 3}
                 className="w-full px-4 py-3 text-sm resize-none focus:outline-none bg-transparent placeholder:text-gray-400"
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
+                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
                     e.preventDefault();
                     submit();
                   }

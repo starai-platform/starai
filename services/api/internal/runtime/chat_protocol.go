@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 )
 
@@ -46,20 +48,69 @@ func connectionValue(extra map[string]interface{}, key, fallback string) string 
 
 func prepareChatRequest(endpoint string, req ChatRequest, extra map[string]interface{}) (string, []byte, string, error) {
 	protocol := chatProtocol(extra)
+	if protocol == chatProtocolOpenAI && (strings.TrimRight(endpoint, "/") == "/v1/responses" || strings.HasSuffix(strings.TrimRight(endpoint, "/"), "/responses") || extra["request_mode"] == "responses") {
+		protocol = "responses"
+		if endpoint == "" {
+			endpoint = "/v1/responses"
+		}
+	}
 	endpoint = chatEndpoint(protocol, endpoint, req.Model, req.Stream)
 	var (
 		body []byte
 		err  error
 	)
 	switch protocol {
+	case "responses":
+		body, err = marshalResponsesRequest(req)
 	case chatProtocolClaude:
 		body, err = marshalClaudeRequest(req)
 	case chatProtocolGemini:
 		body, err = marshalGeminiRequest(req)
 	default:
-		body, err = marshalChatRequest(req)
+		req.Messages, err = openAIAudioMessages(req.Messages)
+		if err == nil {
+			body, err = marshalChatRequest(req)
+		}
 	}
 	return endpoint, body, protocol, err
+}
+
+// Keep audio as bytes in provider requests; a URL in a text prompt is not audio input.
+func openAIAudioMessages(messages interface{}) (interface{}, error) {
+	raw, err := json.Marshal(messages)
+	if err != nil {
+		return nil, err
+	}
+	var items []map[string]interface{}
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, err
+	}
+	changed := false
+	for _, message := range items {
+		parts, _ := message["content"].([]interface{})
+		for index, item := range parts {
+			part, _ := item.(map[string]interface{})
+			if part["type"] != "audio_url" {
+				continue
+			}
+			media, _ := part["audio_url"].(map[string]interface{})
+			ref, _ := media["url"].(string)
+			header, payload, ok := strings.Cut(ref, ",")
+			format := map[string]string{"data:audio/mpeg;base64": "mp3", "data:audio/mp3;base64": "mp3", "data:audio/wav;base64": "wav", "data:audio/x-wav;base64": "wav", "data:audio/wave;base64": "wav"}[header]
+			if !ok || format == "" {
+				return nil, &PlatformError{Code: "AUDIO_FORMAT_UNSUPPORTED", StatusCode: 400, Message: "当前聊天协议的音频理解需要MP3或WAV文件，请转换后上传，或选择支持该格式的Gemini原生线路"}
+			}
+			if decoded, err := base64.StdEncoding.DecodeString(payload); err != nil || len(decoded) == 0 {
+				return nil, errors.New("音频数据无效")
+			}
+			parts[index] = map[string]interface{}{"type": "input_audio", "input_audio": map[string]interface{}{"data": payload, "format": format}}
+			changed = true
+		}
+	}
+	if !changed {
+		return messages, nil
+	}
+	return items, nil
 }
 
 func chatEndpoint(protocol, endpoint, model string, stream bool) string {
@@ -172,7 +223,7 @@ func marshalClaudeRequest(req ChatRequest) ([]byte, error) {
 			body["stop_sequences"] = stop
 		}
 	}
-	for _, key := range []string{"tools", "tool_choice", "thinking", "metadata"} {
+	for _, key := range []string{"tools", "tool_choice", "thinking", "output_config", "metadata"} {
 		copyClaudeOption(body, req.Extra, key)
 	}
 	return json.Marshal(body)
@@ -201,6 +252,7 @@ func marshalGeminiRequest(req ChatRequest) ([]byte, error) {
 		body["systemInstruction"] = map[string]interface{}{"parts": systemParts}
 	}
 	generation := map[string]interface{}{}
+	copyGeminiOption(generation, req.Extra, "thinkingConfig", "thinkingConfig")
 	if req.Temperature != nil {
 		generation["temperature"] = *req.Temperature
 	}
@@ -293,11 +345,8 @@ func geminiParts(content interface{}) []interface{} {
 		switch part["type"] {
 		case "text":
 			parts = append(parts, map[string]interface{}{"text": part["text"]})
-		case "image_url", "video_url":
-			key := "image_url"
-			if part["type"] == "video_url" {
-				key = "video_url"
-			}
+		case "image_url", "video_url", "audio_url":
+			key, _ := part["type"].(string)
 			media, _ := part[key].(map[string]interface{})
 			parts = append(parts, geminiMediaPart(media))
 		default:
@@ -322,7 +371,13 @@ func geminiMediaPart(media map[string]interface{}) map[string]interface{} {
 			}
 		}
 	}
-	return map[string]interface{}{"fileData": map[string]interface{}{"mimeType": "application/octet-stream", "fileUri": mediaURL}}
+	mediaType := "application/octet-stream"
+	if parsed, err := url.Parse(mediaURL); err == nil {
+		if detected := mime.TypeByExtension(strings.ToLower(path.Ext(parsed.Path))); strings.HasPrefix(detected, "video/") || strings.HasPrefix(detected, "image/") || strings.HasPrefix(detected, "audio/") {
+			mediaType = strings.SplitN(detected, ";", 2)[0]
+		}
+	}
+	return map[string]interface{}{"fileData": map[string]interface{}{"mimeType": mediaType, "fileUri": mediaURL}}
 }
 
 func geminiTools(value interface{}) ([]interface{}, bool) {
@@ -386,12 +441,8 @@ func firstInt(values map[string]interface{}, keys ...string) int {
 }
 
 func decodeChatResponse(protocol string, raw []byte) (*ChatResponse, error) {
-	if protocol == chatProtocolOpenAI {
-		var result ChatResponse
-		if err := json.Unmarshal(raw, &result); err != nil {
-			return nil, err
-		}
-		return &result, nil
+	if protocol == chatProtocolOpenAI || protocol == "responses" {
+		return decodeOpenAIChatResponse(raw)
 	}
 	if protocol == chatProtocolClaude {
 		var payload struct {
@@ -406,14 +457,17 @@ func decodeChatResponse(protocol string, raw []byte) (*ChatResponse, error) {
 		if err := json.Unmarshal(raw, &payload); err != nil {
 			return nil, err
 		}
-		var builder strings.Builder
+		var builder, reasoning strings.Builder
 		for _, item := range payload.Content {
+			if item["type"] == "thinking" {
+				reasoning.WriteString(stringAnyRuntime(item["thinking"]))
+			}
 			if itemType := stringAnyRuntime(item["type"]); itemType == "text" || itemType == "" {
 				builder.WriteString(stringAnyRuntime(item["text"]))
 			}
 		}
 		usage := ChatUsage{PromptTokens: payload.Usage.InputTokens, CompletionTokens: payload.Usage.OutputTokens, TotalTokens: payload.Usage.InputTokens + payload.Usage.OutputTokens, CacheReadInputTokens: payload.Usage.CacheReadInputTokens, CacheCreationInputTokens: payload.Usage.CacheCreationInputTokens}
-		return &ChatResponse{Choices: []ChatChoice{{Message: ChatMessage{Role: "assistant", Content: builder.String()}}}, Usage: usage, ContentBlocks: mapSliceToInterfaces(payload.Content)}, nil
+		return &ChatResponse{Choices: []ChatChoice{{Message: ChatMessage{Role: "assistant", Content: builder.String(), ReasoningContent: reasoning.String()}}}, Usage: usage, ContentBlocks: mapSliceToInterfaces(payload.Content)}, nil
 	}
 	var payload struct {
 		Candidates []struct {
@@ -430,10 +484,14 @@ func decodeChatResponse(protocol string, raw []byte) (*ChatResponse, error) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return nil, err
 	}
-	var builder strings.Builder
+	var builder, reasoning strings.Builder
 	if len(payload.Candidates) > 0 {
 		for _, part := range payload.Candidates[0].Content.Parts {
-			builder.WriteString(stringAnyRuntime(part["text"]))
+			if part["thought"] == true {
+				reasoning.WriteString(stringAnyRuntime(part["text"]))
+			} else {
+				builder.WriteString(stringAnyRuntime(part["text"]))
+			}
 		}
 	}
 	usage := ChatUsage{PromptTokens: payload.Usage.PromptTokenCount, CompletionTokens: payload.Usage.CandidatesTokenCount, TotalTokens: payload.Usage.TotalTokenCount}
@@ -441,7 +499,7 @@ func decodeChatResponse(protocol string, raw []byte) (*ChatResponse, error) {
 	if len(payload.Candidates) > 0 {
 		blocks = mapSliceToInterfaces(payload.Candidates[0].Content.Parts)
 	}
-	return &ChatResponse{Choices: []ChatChoice{{Message: ChatMessage{Role: "assistant", Content: builder.String()}}}, Usage: usage, ContentBlocks: blocks}, nil
+	return &ChatResponse{Choices: []ChatChoice{{Message: ChatMessage{Role: "assistant", Content: builder.String(), ReasoningContent: reasoning.String()}}}, Usage: usage, ContentBlocks: blocks}, nil
 }
 
 func stringAnyRuntime(value interface{}) string {
@@ -467,7 +525,14 @@ func consumeChatStream(reader io.Reader, protocol string, ch chan<- StreamChunk)
 	scanner.Buffer(make([]byte, 4096), 4<<20)
 	eventName := ""
 	usage := ChatUsage{}
-	hasUsage := false
+	hasOutput := false
+	finish := func() {
+		if !hasOutput {
+			ch <- StreamChunk{Error: &PlatformError{Code: "MODEL_EMPTY_RESPONSE", StatusCode: 502, Message: "模型未返回可用正文，请稍后重试。"}}
+			return
+		}
+		ch <- StreamChunk{Done: true}
+	}
 	for scanner.Scan() {
 		line := strings.TrimSuffix(scanner.Text(), "\r")
 		if line == "" {
@@ -488,7 +553,7 @@ func consumeChatStream(reader io.Reader, protocol string, ch chan<- StreamChunk)
 			continue
 		}
 		if data == "[DONE]" {
-			ch <- StreamChunk{Done: true}
+			finish()
 			return
 		}
 		event, err := decodeChatStreamEvent(protocol, eventName, []byte(data))
@@ -496,20 +561,24 @@ func consumeChatStream(reader io.Reader, protocol string, ch chan<- StreamChunk)
 			ch <- StreamChunk{Error: err}
 			return
 		}
+		if event.FinalContent != "" && !hasOutput {
+			event.Content = event.FinalContent
+		}
 		if event.Content != "" || event.ReasoningContent != "" {
+			hasOutput = hasOutput || strings.TrimSpace(event.Content) != ""
 			ch <- StreamChunk{Content: event.Content, ReasoningContent: event.ReasoningContent}
 		}
 		if len(event.ToolCalls) > 0 {
+			hasOutput = true
 			ch <- StreamChunk{ToolCalls: event.ToolCalls}
 		}
 		if event.Usage != nil {
 			mergeChatUsage(&usage, event.Usage)
-			hasUsage = true
 			current := usage
 			ch <- StreamChunk{Usage: &current}
 		}
 		if event.Done {
-			ch <- StreamChunk{Done: true}
+			finish()
 			return
 		}
 	}
@@ -517,12 +586,12 @@ func consumeChatStream(reader io.Reader, protocol string, ch chan<- StreamChunk)
 		ch <- StreamChunk{Error: err}
 		return
 	}
-	_ = hasUsage
-	ch <- StreamChunk{Done: true}
+	finish()
 }
 
 type decodedChatStreamEvent struct {
 	Content          string
+	FinalContent     string
 	ReasoningContent string
 	ToolCalls        []map[string]interface{}
 	Usage            *ChatUsage
@@ -530,12 +599,22 @@ type decodedChatStreamEvent struct {
 }
 
 func decodeChatStreamEvent(protocol, eventName string, raw []byte) (decodedChatStreamEvent, error) {
+	if protocol == "responses" {
+		return decodeResponsesStreamEvent(raw)
+	}
 	if protocol == chatProtocolOpenAI {
 		var event struct {
+			Error   json.RawMessage `json:"error"`
 			Choices []struct {
-				Delta struct {
-					Content          string `json:"content"`
-					ReasoningContent string `json:"reasoning_content"`
+				FinishReason string          `json:"finish_reason"`
+				Message      json.RawMessage `json:"message"`
+				Text         string          `json:"text"`
+				Delta        struct {
+					Content          json.RawMessage `json:"content"`
+					Refusal          string          `json:"refusal"`
+					Text             string          `json:"text"`
+					ReasoningContent json.RawMessage `json:"reasoning_content"`
+					Reasoning        json.RawMessage `json:"reasoning"`
 					ToolCalls        []struct {
 						Index    int    `json:"index"`
 						ID       string `json:"id"`
@@ -549,12 +628,42 @@ func decodeChatStreamEvent(protocol, eventName string, raw []byte) (decodedChatS
 			Usage *ChatUsage `json:"usage"`
 		}
 		if err := json.Unmarshal(raw, &event); err != nil {
-			return decodedChatStreamEvent{}, nil
+			return decodedChatStreamEvent{}, &PlatformError{Code: "MODEL_INVALID_RESPONSE", StatusCode: 502, Message: "模型返回的数据格式无法解析，请检查模型线路配置。"}
+		}
+		if len(event.Error) > 0 && string(event.Error) != "null" {
+			return decodedChatStreamEvent{}, &PlatformError{Code: "MODEL_PROVIDER_ERROR", StatusCode: 502, Message: "模型服务返回错误，未能完成回答，请稍后重试。"}
 		}
 		result := decodedChatStreamEvent{Usage: event.Usage}
 		if len(event.Choices) > 0 {
-			result.Content = event.Choices[0].Delta.Content
-			result.ReasoningContent = event.Choices[0].Delta.ReasoningContent
+			choice := event.Choices[0]
+			if err := chatFinishError(choice.FinishReason); err != nil {
+				return decodedChatStreamEvent{}, err
+			}
+			if choice.Delta.Refusal != "" {
+				return decodedChatStreamEvent{}, chatFinishError("content_filter")
+			}
+			if len(choice.Message) > 0 && string(choice.Message) != "null" {
+				response, err := decodeOpenAIChatResponse(raw)
+				if err != nil {
+					return decodedChatStreamEvent{}, err
+				}
+				return decodedChatStreamEvent{Content: response.Choices[0].Message.Content, ReasoningContent: response.Choices[0].Message.ReasoningContent, ToolCalls: response.Choices[0].ToolCalls, Usage: &response.Usage, Done: true}, nil
+			}
+			content, err := openAIAnswerText(choice.Delta.Content)
+			if err != nil {
+				return decodedChatStreamEvent{}, err
+			}
+			if content == "" {
+				content = choice.Delta.Text
+			}
+			if content == "" {
+				content = choice.Text
+			}
+			result.Content = content
+			result.ReasoningContent = jsonText(choice.Delta.ReasoningContent)
+			if result.ReasoningContent == "" {
+				result.ReasoningContent = jsonText(choice.Delta.Reasoning)
+			}
 		}
 		if len(event.Choices) > 0 {
 			for _, call := range event.Choices[0].Delta.ToolCalls {
@@ -568,6 +677,7 @@ func decodeChatStreamEvent(protocol, eventName string, raw []byte) (decodedChatS
 			Type  string `json:"type"`
 			Delta struct {
 				Text        string `json:"text"`
+				Thinking    string `json:"thinking"`
 				Type        string `json:"type"`
 				PartialJSON string `json:"partial_json"`
 			} `json:"delta"`
@@ -598,6 +708,9 @@ func decodeChatStreamEvent(protocol, eventName string, raw []byte) (decodedChatS
 		case "message_delta":
 			return decodedChatStreamEvent{Usage: &ChatUsage{CompletionTokens: event.Usage.OutputTokens}}, nil
 		case "content_block_delta":
+			if event.Delta.Type == "thinking_delta" {
+				return decodedChatStreamEvent{ReasoningContent: event.Delta.Thinking}, nil
+			}
 			if event.Delta.Type == "input_json_delta" || event.Delta.PartialJSON != "" {
 				return decodedChatStreamEvent{ToolCalls: []map[string]interface{}{{"type": "input_json_delta", "partial_json": event.Delta.PartialJSON}}}, nil
 			}
@@ -620,6 +733,7 @@ func decodeChatStreamEvent(protocol, eventName string, raw []byte) (decodedChatS
 			Content struct {
 				Parts []struct {
 					Text         string                 `json:"text"`
+					Thought      bool                   `json:"thought"`
 					FunctionCall map[string]interface{} `json:"functionCall"`
 				} `json:"parts"`
 			} `json:"content"`
@@ -634,12 +748,16 @@ func decodeChatStreamEvent(protocol, eventName string, raw []byte) (decodedChatS
 	if err := json.Unmarshal(raw, &event); err != nil {
 		return decodedChatStreamEvent{}, err
 	}
-	var builder strings.Builder
+	var builder, reasoning strings.Builder
 	calls := make([]map[string]interface{}, 0)
 	done := false
 	if len(event.Candidates) > 0 {
 		for _, part := range event.Candidates[0].Content.Parts {
-			builder.WriteString(part.Text)
+			if part.Thought {
+				reasoning.WriteString(part.Text)
+			} else {
+				builder.WriteString(part.Text)
+			}
 			if len(part.FunctionCall) > 0 {
 				calls = append(calls, map[string]interface{}{"functionCall": part.FunctionCall})
 			}
@@ -650,7 +768,38 @@ func decodeChatStreamEvent(protocol, eventName string, raw []byte) (decodedChatS
 	if usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
 		usage = nil
 	}
-	return decodedChatStreamEvent{Content: builder.String(), ToolCalls: calls, Usage: usage, Done: done}, nil
+	return decodedChatStreamEvent{Content: builder.String(), ReasoningContent: reasoning.String(), ToolCalls: calls, Usage: usage, Done: done}, nil
+}
+
+func jsonText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var value interface{}
+	if json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	var out strings.Builder
+	var appendText func(interface{})
+	appendText = func(current interface{}) {
+		switch item := current.(type) {
+		case string:
+			out.WriteString(item)
+		case []interface{}:
+			for _, child := range item {
+				appendText(child)
+			}
+		case map[string]interface{}:
+			for _, key := range []string{"text", "value", "content", "summary"} {
+				if child, ok := item[key]; ok {
+					appendText(child)
+					return
+				}
+			}
+		}
+	}
+	appendText(value)
+	return out.String()
 }
 
 func mergeChatUsage(target *ChatUsage, source *ChatUsage) {

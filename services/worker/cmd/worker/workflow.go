@@ -2857,6 +2857,10 @@ func estimateMiniMaxH3PriceRuleCostWorker(rule, params map[string]interface{}) f
 	if rate <= 0 {
 		return floatAny(rule["fallback_cost"])
 	}
+	inputVideoRate := nestedWorkerFloat(rule["input_video_rates_per_second"], resolution, "")
+	if inputVideoRate <= 0 {
+		inputVideoRate = rate
+	}
 	outputSeconds := workerDurationSeconds(params)
 	if actual := floatAny(params["_actual_output_seconds"]); actual > 0 {
 		outputSeconds = actual
@@ -2905,7 +2909,7 @@ func estimateMiniMaxH3PriceRuleCostWorker(rule, params map[string]interface{}) f
 	if pointsPerCNY <= 0 {
 		pointsPerCNY = 1
 	}
-	return ((outputSeconds+inputSeconds)*rate + float64(excessImages)*imagePrice) * multiplier * pointsPerCNY
+	return (outputSeconds*rate + inputSeconds*inputVideoRate + float64(excessImages)*imagePrice) * multiplier * pointsPerCNY
 }
 
 func estimateSeedance2PriceRuleCostWorker(rule, params map[string]interface{}) float64 {

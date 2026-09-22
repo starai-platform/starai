@@ -6,6 +6,7 @@ import { adminApi, adminUploadFile } from "@/lib/api";
 import { UpstreamIncludeEditor } from "@/components/UpstreamIncludeEditor";
 import { AdminPagination } from "@/components/AdminPagination";
 import { ModelRoutesEditor } from "@/components/ModelRoutesEditor";
+import { imageInterfaceType, withImageInterfaceType } from "@/lib/image-interface";
 
 interface AdminModel {
   id: number;
@@ -90,9 +91,12 @@ const buildMiniMaxH3PriceRule = (variant: MiniMaxH3Variant = "standard") => ({
   rates_per_second: variant === "max"
     ? { "480p": 0.33, "768p": 0.5 }
     : { "768p": 0.5, "2k": 0.8 },
-  input_materials_billable: variant !== "max",
-  free_reference_images: 5,
-  excess_image_price: variant === "max" ? 0 : 0.2,
+  input_video_rates_per_second: variant === "max"
+    ? { "480p": 0.37, "768p": 0.97 }
+    : { "768p": 0.5, "2k": 0.8 },
+  input_materials_billable: true,
+  free_reference_images: variant === "max" ? 0 : 5,
+  excess_image_price: variant === "max" ? 0.5 : 0.2,
   fallback_cost: variant === "max" ? 2.5 : 4,
 });
 
@@ -476,10 +480,17 @@ const IMAGE_ENDPOINT_PRESETS = [
   },
   {
     key: "otuapi_images",
-    label: "章鱼哥 Image 生成",
+    label: "章鱼哥 Image 生成（同步）",
     endpoint: "/v1/images/generations",
     model: "gpt-image-1",
     description: "保留原图片向导的 1K / 2K / 4K、aspect_ratio 与分档模型路由格式。",
+  },
+  {
+    key: "otuapi_images_async",
+    label: "章鱼哥 GPT Image 2（异步）",
+    endpoint: "/v1/videos",
+    model: "gpt-image-2",
+    description: "通过 /v1/videos 创建图片任务，自动轮询并按图片展示结果。",
   },
   {
     key: "banana_async",
@@ -715,7 +726,13 @@ export default function ModelsPage() {
       price_rule: JSON.stringify(m.price_rule ?? {}, null, 2),
       runtime_rule: JSON.stringify(m.runtime_rule ?? {}, null, 2),
     });
-    if (m.new_api_endpoint === "/api/v1/services/audio/tts/SpeechSynthesizer") {
+    if (m.new_api_endpoint === "/minimax/v1/t2a_v2") {
+      setAudioTemplateKey("yunwu_minimax_speech");
+    } else if (m.new_api_endpoint === "/v1/t2a_v2") {
+      setAudioTemplateKey("minimax_official_speech");
+    } else if (m.new_api_endpoint === "/v1/music_generation") {
+      setAudioTemplateKey("minimax_official_music");
+    } else if (m.new_api_endpoint === "/api/v1/services/audio/tts/SpeechSynthesizer") {
       setAudioTemplateKey(m.new_api_model.startsWith("cosyvoice") ? "aliyun_cosyvoice" : "aliyun_qwen_audio_tts");
     } else if (m.new_api_endpoint === "/api/v1/services/audio/music/generation") {
       setAudioTemplateKey("aliyun_fun_music");
@@ -795,7 +812,9 @@ export default function ModelsPage() {
       rr,
       web_search: !!caps.web_search,
       deep_think: !!caps.deep_think,
-      video_analysis: !!caps.video_analysis,
+      vision: typeof caps.vision === "boolean" ? caps.vision : typeof caps.image_input === "boolean" ? caps.image_input : caps.multimodal === true,
+      video_analysis: typeof caps.video_analysis === "boolean" ? caps.video_analysis : typeof caps.video_input === "boolean" ? caps.video_input : caps.video_understanding === true,
+      audio_analysis: typeof caps.audio_analysis === "boolean" ? caps.audio_analysis : typeof caps.audio_input === "boolean" ? caps.audio_input : caps.audio_understanding === true,
     };
   };
 
@@ -980,8 +999,7 @@ export default function ModelsPage() {
   const isBananaImageForm = (state: FormState = form) =>
     state.category === "image" &&
     state.request_mode === "images" &&
-    state.new_api_endpoint === "/v1/videos" &&
-    state.new_api_model.startsWith("nano_banana");
+    imageInterfaceType(safeParseJson(state.runtime_rule, {}), state.new_api_endpoint, state.new_api_model) === "banana_async";
 
   const isAliyunQwenImageForm = (state: FormState = form) =>
     state.category === "image" &&
@@ -992,11 +1010,8 @@ export default function ModelsPage() {
     safeParseJson(state.runtime_rule, {})?.upstream?.adapter === "openai_images";
 
   const imagePresetKey = (state: FormState = form) => {
-    if (isAliyunQwenImageForm(state)) return ALIYUN_QWEN_IMAGE_TEMPLATE_KEY;
-    if (isBananaImageForm(state)) return "banana_async";
-    if (isOpenAIImagesForm(state)) return "openai_images";
-    if (state.new_api_endpoint === "/v1/images/generations") return "otuapi_images";
-    return "custom";
+    const key = imageInterfaceType(safeParseJson(state.runtime_rule, {}), state.new_api_endpoint, state.new_api_model);
+    return IMAGE_ENDPOINT_PRESETS.some((preset) => preset.key === key) ? key : "custom";
   };
 
   const setImageRule = (
@@ -1074,7 +1089,13 @@ export default function ModelsPage() {
   };
 
   const applyImageEndpointPreset = (prev: FormState, presetKey: string): FormState => {
-    const preset = IMAGE_ENDPOINT_PRESETS.find((x) => x.key === presetKey) || IMAGE_ENDPOINT_PRESETS[0];
+    if (presetKey !== "custom" && !IMAGE_ENDPOINT_PRESETS.some((preset) => preset.key === presetKey)) return prev;
+    const next = presetKey === "custom" ? prev : buildImageEndpointPreset(prev, presetKey);
+    return { ...next, runtime_rule: withImageInterfaceType(safeParseJson(next.runtime_rule, {}), presetKey) };
+  };
+
+  const buildImageEndpointPreset = (prev: FormState, presetKey: string): FormState => {
+    const preset = IMAGE_ENDPOINT_PRESETS.find((x) => x.key === presetKey)!;
     if (preset.key === ALIYUN_QWEN_IMAGE_TEMPLATE_KEY) {
       return applyAliyunQwenImageV3(prev);
     }
@@ -1103,8 +1124,10 @@ export default function ModelsPage() {
       };
     }
     const isBanana = preset.key === "banana_async";
+    const isAsync = isBanana || preset.key === "otuapi_images_async";
     const modelName = isBanana
       ? (BANANA_MODELS.includes(prev.new_api_model) ? prev.new_api_model : preset.model)
+      : isAsync ? (prev.new_api_model.startsWith("gpt-image-2") ? prev.new_api_model : preset.model)
       : (prev.new_api_model && !prev.new_api_model.startsWith("nano_banana") ? prev.new_api_model : preset.model);
     const defaultQuality = inferImageQualityFromModel(modelName);
     const modelBySize: Record<string, string> = isBanana
@@ -1134,9 +1157,9 @@ export default function ModelsPage() {
         default_quality: defaultQuality,
         supported_size_tiers: IMAGE_QUALITY_TIERS,
         model_by_size: modelBySize,
-        poll_path: isBanana ? "/v1/videos/{id}" : null,
-        poll_interval_sec: isBanana ? 5 : null,
-        poll_timeout_sec: isBanana ? 3600 : null,
+        poll_path: isAsync ? "/v1/videos/{id}" : null,
+        poll_interval_sec: isAsync ? 5 : null,
+        poll_timeout_sec: isAsync ? 3600 : null,
       }),
       price_rule: JSON.stringify({ billing_type: "per_image", currency: "¥", unit_price: 0.01, unit_price_by_size: { "1K": 0.01, "2K": 0.01, "4K": 0.01 } }, null, 2),
     };
@@ -1616,20 +1639,51 @@ export default function ModelsPage() {
       new_api_model: "speech-2.8-hd",
       new_api_endpoint: "/v1/t2a_v2",
       new_api_extra_params: setConnection(next.new_api_extra_params, {
-        base_url: "https://api.minimaxi.com",
+        base_url: "https://api.minimax.cn",
         auth_type: "bearer",
         api_key_header: "Authorization",
       }),
-      runtime_rule: withAudioUpstreamPatch(next.runtime_rule, {
-        static: {
-          stream: false,
-          subtitle_enable: false,
-          output_format: "hex",
-          voice_setting: { vol: 1, pitch: 0 },
-          audio_setting: { sample_rate: 32000, bitrate: 128000, channel: 1 },
+      runtime_rule: withAudioUpstreamPatch(
+        setAudioRule(next.runtime_rule, {
+          upstream_include: ["model_version", "voice_id", "speed", "vol", "pitch", "emotion", "language_boost", "format", "sample_rate", "bitrate", "channel", "output_format", "subtitle_enable", "subtitle_type", "aigc_watermark"],
+          upstream_map: JSON.stringify({
+            prompt: "text",
+            model_version: "model",
+            voice_id: "voice_setting.voice_id",
+            speed: "voice_setting.speed",
+            vol: "voice_setting.vol",
+            pitch: "voice_setting.pitch",
+            emotion: "voice_setting.emotion",
+            language_boost: "language_boost",
+            format: "audio_setting.format",
+            sample_rate: "audio_setting.sample_rate",
+            bitrate: "audio_setting.bitrate",
+            channel: "audio_setting.channel",
+          }, null, 2),
+        }),
+        { static: { stream: false }, request_timeout_sec: 900 }
+      ),
+      input_schema: JSON.stringify({
+        type: "object",
+        properties: {
+          model_version: { type: "string", title: "模型版本", enum: ["speech-2.8-hd", "speech-2.8-turbo"], enumLabels: { "speech-2.8-hd": "Speech 2.8 HD", "speech-2.8-turbo": "Speech 2.8 Turbo" }, default: "speech-2.8-hd", "x-order": 1, "x-widget": "option_menu", "x-icon": "compass", "x-placement": "top", "x-highlight": true },
+          voice_id: { type: "string", title: "Voice ID", enum: ["male-qn-qingse", "female-shaonv", "female-yujie", "male-qn-jingying", "male-qn-badao", "Chinese (Mandarin)_Warm_Bestie", "Chinese (Mandarin)_Gentleman", "English_Graceful_Lady", "English_Insightful_Speaker"], default: "male-qn-qingse", "x-order": 2, "x-widget": "option_menu", "x-icon": "voice", "x-placement": "top", "x-highlight": true },
+          speed: { type: "number", title: "语速", enum: [0.5, 0.8, 1, 1.2, 1.5, 2], default: 1, "x-order": 3, "x-widget": "option_menu", "x-icon": "speed" },
+          vol: { type: "number", title: "音量", enum: [0.5, 1, 2, 5, 10], default: 1, "x-order": 4, "x-widget": "option_menu", "x-icon": "audio" },
+          pitch: { type: "integer", title: "语调", enum: [-12, -6, 0, 6, 12], default: 0, "x-order": 5, "x-widget": "option_menu", "x-icon": "pitch" },
+          emotion: { type: "string", title: "情绪", enum: ["auto", "happy", "sad", "angry", "fearful", "disgusted", "surprised", "calm"], enumLabels: { auto: "自动", happy: "开心", sad: "悲伤", angry: "愤怒", fearful: "恐惧", disgusted: "厌恶", surprised: "惊讶", calm: "中性" }, default: "auto", "x-order": 6, "x-widget": "option_menu", "x-icon": "emotion", "x-omit-auto": true },
+          language_boost: { type: "string", title: "语言增强", enum: ["auto", "Chinese", "Chinese,Yue", "English", "Japanese", "Korean", "Vietnamese", "Spanish", "French", "German"], enumLabels: { auto: "自动识别", Chinese: "中文", "Chinese,Yue": "粤语", English: "英语", Japanese: "日语", Korean: "韩语", Vietnamese: "越南语", Spanish: "西班牙语", French: "法语", German: "德语" }, default: "auto", "x-order": 7, "x-widget": "option_menu", "x-icon": "language" },
+          format: { type: "string", title: "音频格式", enum: ["mp3", "wav", "flac", "pcm"], default: "mp3", "x-order": 8, "x-widget": "option_menu", "x-icon": "format", "x-placement": "top" },
+          sample_rate: { type: "integer", title: "采样率", enum: [16000, 24000, 32000, 44100], default: 32000, "x-order": 9, "x-widget": "option_menu", "x-icon": "audio" },
+          bitrate: { type: "integer", title: "码率", enum: [32000, 64000, 128000, 256000], default: 128000, "x-order": 10, "x-widget": "option_menu", "x-icon": "bitrate" },
+          channel: { type: "integer", title: "声道", enum: [1, 2], enumLabels: { "1": "单声道", "2": "双声道" }, default: 1, "x-order": 11, "x-widget": "option_menu", "x-icon": "audio" },
+          output_format: { type: "string", title: "返回格式", enum: ["hex", "url"], default: "hex", "x-order": 12, "x-widget": "option_menu", "x-icon": "format" },
+          subtitle_enable: { type: "boolean", title: "生成字幕", default: false, "x-order": 13, "x-widget": "boolean_toggle", "x-icon": "subtitle" },
+          subtitle_type: { type: "string", title: "字幕粒度", enum: ["sentence", "word"], enumLabels: { sentence: "句级", word: "词级" }, default: "sentence", "x-order": 14, "x-widget": "option_menu", "x-icon": "subtitle" },
+          aigc_watermark: { type: "boolean", title: "AIGC 水印", default: false, "x-order": 15, "x-widget": "boolean_toggle", "x-icon": "audio" },
         },
-        request_timeout_sec: 900,
-      }),
+      }, null, 2),
+      default_params: JSON.stringify({ model_version: "speech-2.8-hd", voice_id: "male-qn-qingse", speed: 1, vol: 1, pitch: 0, emotion: "auto", language_boost: "auto", format: "mp3", sample_rate: 32000, bitrate: 128000, channel: 1, output_format: "hex", subtitle_enable: false, subtitle_type: "sentence", aigc_watermark: false }, null, 2),
     };
   };
 
@@ -1806,8 +1860,13 @@ export default function ModelsPage() {
     ...prev,
     category: "audio",
     request_mode: "audio",
-    new_api_model: "music-2.6",
+    new_api_model: "music-3.0",
     new_api_endpoint: "/v1/music_generation",
+    new_api_extra_params: setConnection(prev.new_api_extra_params, {
+      base_url: "https://api.minimax.cn",
+      auth_type: "bearer",
+      api_key_header: "Authorization",
+    }),
     runtime_rule: withAudioUpstreamPatch(
       setAudioRule(clearModelCaps(prev.runtime_rule), {
         input_layout: "dual",
@@ -1829,9 +1888,9 @@ export default function ModelsPage() {
             format: "audio_setting.format",
             sample_rate: "audio_setting.sample_rate",
             bitrate: "audio_setting.bitrate",
-            is_instrumental: "audio_setting.is_instrumental",
-            lyrics_optimizer: "audio_setting.lyrics_optimizer",
-            aigc_watermark: "audio_setting.aigc_watermark",
+            is_instrumental: "is_instrumental",
+            lyrics_optimizer: "lyrics_optimizer",
+            aigc_watermark: "aigc_watermark",
           },
           null,
           2
@@ -1846,9 +1905,9 @@ export default function ModelsPage() {
           model_version: {
             type: "string",
             title: "模型版本",
-            enum: ["music-2.6", "music-2.6-free"],
-            enumLabels: { "music-2.6": "Music-2.6", "music-2.6-free": "Music-2.6 Free" },
-            default: "music-2.6",
+            enum: ["music-3.0", "music-2.6"],
+            enumLabels: { "music-3.0": "Music-3.0（推荐）", "music-2.6": "Music-2.6（兼容）" },
+            default: "music-3.0",
             "x-order": 1,
             "x-widget": "option_menu",
             "x-icon": "compass",
@@ -1868,8 +1927,8 @@ export default function ModelsPage() {
           format: {
             type: "string",
             title: "音频格式",
-            enum: ["mp3", "wav", "flac"],
-            enumLabels: { mp3: "MP3", wav: "WAV", flac: "FLAC" },
+            enum: ["mp3", "wav", "pcm"],
+            enumLabels: { mp3: "MP3", wav: "WAV", pcm: "PCM" },
             default: "mp3",
             "x-order": 3,
             "x-widget": "option_menu",
@@ -1879,8 +1938,8 @@ export default function ModelsPage() {
           sample_rate: {
             type: "number",
             title: "采样率",
-            enum: [32000, 44100],
-            enumLabels: { "32000": "32000 Hz", "44100": "44100 Hz" },
+            enum: [16000, 24000, 32000, 44100],
+            enumLabels: { "16000": "16000 Hz", "24000": "24000 Hz", "32000": "32000 Hz", "44100": "44100 Hz" },
             default: 44100,
             "x-order": 4,
             "x-widget": "option_menu",
@@ -1889,8 +1948,8 @@ export default function ModelsPage() {
           bitrate: {
             type: "number",
             title: "码率",
-            enum: [128000, 256000, 320000],
-            enumLabels: { "128000": "128 kbps", "256000": "256 kbps", "320000": "320 kbps" },
+            enum: [32000, 64000, 128000, 256000],
+            enumLabels: { "32000": "32 kbps", "64000": "64 kbps", "128000": "128 kbps", "256000": "256 kbps" },
             default: 256000,
             "x-order": 5,
             "x-widget": "option_menu",
@@ -1927,7 +1986,7 @@ export default function ModelsPage() {
     ),
     default_params: JSON.stringify(
       {
-        model_version: "music-2.6",
+        model_version: "music-3.0",
         output_format: "hex",
         format: "mp3",
         sample_rate: 44100,
@@ -2881,7 +2940,8 @@ export default function ModelsPage() {
       }
       if (parsedPriceRule.billing_type === "dynamic" && parsedPriceRule.strategy === "minimax_h3_seconds") {
         const invalidRate = supportedResolutions.find((resolution) => Number(parsedPriceRule.rates_per_second?.[resolution.toLowerCase()] ?? 0) <= 0);
-        if (invalidRate || (!isMax && (Number(parsedPriceRule.free_reference_images ?? -1) < 0 || Number(parsedPriceRule.excess_image_price ?? 0) <= 0))) {
+        const invalidInputRate = supportedResolutions.find((resolution) => Number(parsedPriceRule.input_video_rates_per_second?.[resolution.toLowerCase()] ?? 0) <= 0);
+        if (invalidRate || invalidInputRate || Number(parsedPriceRule.free_reference_images ?? -1) < 0 || Number(parsedPriceRule.excess_image_price ?? 0) <= 0) {
           setErr(`${miniMaxModel} 的分辨率秒价及输入素材价格必须有效`);
           return;
         }
@@ -3187,6 +3247,7 @@ export default function ModelsPage() {
       setErr("多模型协作请默认选择一个渠道预设");
       return;
     }
+    const imageMaxReferences = getImageRule(form.runtime_rule).max_reference_images;
     const payload = {
       code: form.code,
       display_name: form.display_name,
@@ -3215,7 +3276,12 @@ export default function ModelsPage() {
               image: isAliyunQwenImageForm()
                 ? {
                     ...(((runtimeRule as Record<string, any>)?.image ?? {}) as Record<string, unknown>),
-                    max_reference_images: getImageRule(form.runtime_rule).max_reference_images,
+                    max_reference_images: imageMaxReferences,
+                    reference_images: {
+                      ...(((runtimeRule as Record<string, any>)?.image?.reference_images ?? {}) as Record<string, unknown>),
+                      key: "reference_images",
+                      max: imageMaxReferences,
+                    },
                     default_size: getImageRule(form.runtime_rule).default_size,
                     default_quality: undefined,
                   }
@@ -3451,6 +3517,10 @@ export default function ModelsPage() {
       ...buildMiniMaxH3PriceRule(miniMaxH3Variant).rates_per_second,
       ...(currentPriceRule.rates_per_second || {}),
     },
+    input_video_rates_per_second: {
+      ...buildMiniMaxH3PriceRule(miniMaxH3Variant).input_video_rates_per_second,
+      ...(currentPriceRule.input_video_rates_per_second || {}),
+    },
   } as Record<string, any>;
   const isMiniMaxH3DynamicPrice =
     isMiniMaxH3VideoForm &&
@@ -3490,7 +3560,7 @@ export default function ModelsPage() {
       };
     });
   };
-  const setMiniMaxH3Rate = (resolution: string, value: number) => {
+  const setMiniMaxH3Rate = (resolution: string, value: number, rateKey = "rates_per_second") => {
     setForm((prev) => {
       const current = safeParseJson(prev.price_rule, {}) as Record<string, any>;
       return {
@@ -3498,9 +3568,9 @@ export default function ModelsPage() {
         price_rule: JSON.stringify({
           ...buildMiniMaxH3PriceRule(miniMaxH3Variant),
           ...current,
-          rates_per_second: {
-            ...buildMiniMaxH3PriceRule(miniMaxH3Variant).rates_per_second,
-            ...(current.rates_per_second || {}),
+          [rateKey]: {
+            ...(buildMiniMaxH3PriceRule(miniMaxH3Variant) as Record<string, any>)[rateKey],
+            ...(current[rateKey] || {}),
             [resolution]: value,
           },
         }, null, 2),
@@ -4150,30 +4220,31 @@ export default function ModelsPage() {
                 <select
                   className="w-full mt-1 px-3 py-2 rounded-lg border text-sm bg-white"
                   value={imagePresetKey()}
-                  onChange={(e) => {
-                    if (e.target.value === "custom") return;
-                    setForm((prev) => applyImageEndpointPreset(prev, e.target.value));
-                  }}
+                  onChange={(e) => setForm((prev) => applyImageEndpointPreset(prev, e.target.value))}
                 >
                   {IMAGE_ENDPOINT_PRESETS.map((preset) => (
                     <option key={preset.key} value={preset.key}>
                       {preset.label}
                     </option>
                   ))}
-                  <option value="custom">自定义 Endpoint</option>
+                  <option value="custom">自定义（保留当前配置）</option>
                 </select>
                 <input
                   className="w-full px-3 py-2 rounded-lg border text-sm"
                   value={form.new_api_endpoint}
                   placeholder="/v1/images/generations 或 /v1/videos"
-                  onChange={(e) => setForm({ ...form, new_api_endpoint: e.target.value })}
+                  onChange={(e) => setForm((prev) => ({
+                    ...prev,
+                    new_api_endpoint: e.target.value,
+                    runtime_rule: withImageInterfaceType(safeParseJson(prev.runtime_rule, {}), imagePresetKey(prev)),
+                  }))}
                 />
                 <div className="text-[11px] text-gray-400">
                   {isBananaImageForm()
-                    ? "香蕉图片接口固定使用 /v1/videos，系统会自动创建任务、轮询进度，并按图片结果展示。"
+                    ? "香蕉图片接口默认使用 /v1/videos；地址可修改，异步接口请同时检查轮询路径。"
                     : isOpenAIImagesForm()
                       ? "无参考图使用 /v1/images/generations；上传参考图后自动使用 /v1/images/edits。"
-                      : "普通图片接口通常使用 /v1/images/generations。"}
+                      : "Endpoint 可自由修改，不会改变已选接口类型。异步接口请同时检查轮询路径。"}
                 </div>
               </div>
             ) : (
@@ -4221,7 +4292,7 @@ export default function ModelsPage() {
                 <div>
                   <div className="text-sm font-semibold text-gray-900">图片接入向导</div>
                   <div className="mt-1 text-xs leading-6 text-gray-500">
-                    不懂 JSON 也可以在这里完成配置。选择香蕉接口后，系统会自动使用 /v1/videos 创建任务、轮询结果，并把结果按图片展示。
+                    选择接口类型可填入默认配置，Endpoint 可以单独修改。选择自定义会保留当前配置，可继续调整参数与轮询路径。
                   </div>
                 </div>
                 {(isBananaImageForm() || isOpenAIImagesForm()) && (
@@ -4241,6 +4312,7 @@ export default function ModelsPage() {
                     {IMAGE_ENDPOINT_PRESETS.map((preset) => (
                       <option key={preset.key} value={preset.key}>{preset.label}</option>
                     ))}
+                    <option value="custom">自定义（保留当前配置）</option>
                   </select>
                 </div>
                 <div>
@@ -4289,6 +4361,16 @@ export default function ModelsPage() {
                       placeholder="例如 gpt-image-1"
                     />
                   )}
+                </div>
+                <div className="col-span-2">
+                  <label className="text-xs text-gray-500">异步轮询路径（可选）</label>
+                  <input
+                    className="w-full mt-1 px-3 py-2 rounded-lg border text-sm bg-white"
+                    value={String(safeParseJson(form.runtime_rule, {})?.upstream?.poll_path || "")}
+                    placeholder="例如 /v1/videos/{id}"
+                    onChange={(e) => setForm((prev) => ({ ...prev, runtime_rule: setImageRule(prev.runtime_rule, { poll_path: e.target.value || null }) }))}
+                  />
+                  <div className="mt-1 text-[11px] text-gray-500">返回任务 ID 后自动轮询；留空时默认使用 Endpoint + /&#123;id&#125;。其他自定义映射可在下方 runtime_rule 中修改。</div>
                 </div>
                 <div>
                   <label className="text-xs text-gray-500">最多参考图</label>
@@ -4434,7 +4516,7 @@ export default function ModelsPage() {
               </div>
               {isBananaImageForm() && (
                 <div className="mt-4 rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-xs leading-6 text-gray-600">
-                  Base URL 填 <code className="rounded bg-white px-1 py-0.5">https://otuapi.com</code>，Endpoint 固定为 <code className="rounded bg-white px-1 py-0.5">/v1/videos</code>。用户选择批量生成时，系统会按数量创建多个上游任务并合并结果。
+                  Base URL 填 <code className="rounded bg-white px-1 py-0.5">https://otuapi.com</code>，默认 Endpoint 为 <code className="rounded bg-white px-1 py-0.5">/v1/videos</code>。用户选择批量生成时，系统会按数量创建多个上游任务并合并结果。
                 </div>
               )}
               {isOpenAIImagesForm() && (
@@ -4461,7 +4543,8 @@ export default function ModelsPage() {
                     value={getImageRule(form.runtime_rule).max_reference_images}
                     onChange={(e) =>
                       setForm((prev) => {
-                        const n = Math.max(0, Math.min(20, parseInt(e.target.value, 10) || 0));
+                        const maxLimit = 20;
+                        const n = Math.max(0, Math.min(maxLimit, parseInt(e.target.value, 10) || 0));
                         return {
                           ...prev,
                           runtime_rule: setImageMaxRefs(prev.runtime_rule, n),
@@ -4694,21 +4777,20 @@ export default function ModelsPage() {
                       <div className="text-sm font-semibold text-gray-900">{form.new_api_model} V2 动态计费</div>
                       <div className="mt-1 text-[11px] leading-5 text-gray-500">
                         {miniMaxH3Variant === "max"
-                          ? "H3-Max 仅按输出视频秒数与分辨率计费，输入图片不计费。"
-                          : "H3 按输出视频秒数、参考视频秒数及超出免费额度的参考图片数计费；参考音频不单独计费。"}
+                          ? "H3-Max 的输出视频、输入视频分别按分辨率和秒数计费；图片从第 1 张起按张计费，音频免费。"
+                          : "H3 的输出视频、输入视频分别按分辨率和秒数计费；图片前 5 张免费，超出部分按张计费，音频免费。"}
                       </div>
                     </div>
                     <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
                       {(miniMaxH3Variant === "max" ? ["480p", "768p"] : ["768p", "2k"]).map((resolution) => (
-                        <SeedancePriceInput key={resolution} label={`${resolution.toUpperCase()} 单价（元/秒）`} value={Number(minimaxH3PriceRule.rates_per_second?.[resolution] ?? 0)} step={0.01} onChange={(value) => setMiniMaxH3Rate(resolution, value)} />
+                        <SeedancePriceInput key={`output-${resolution}`} label={`${resolution.toUpperCase()} 输出（元/秒）`} value={Number(minimaxH3PriceRule.rates_per_second?.[resolution] ?? 0)} step={0.01} onChange={(value) => setMiniMaxH3Rate(resolution, value)} />
                       ))}
-                      {miniMaxH3Variant === "standard" && (
-                        <>
-                          <SeedancePriceInput label="免费参考图片数" value={Number(minimaxH3PriceRule.free_reference_images ?? 5)} step={1} onChange={(value) => setMiniMaxH3PriceValue("free_reference_images", value)} />
-                          <SeedancePriceInput label="超额图片（元/张）" value={Number(minimaxH3PriceRule.excess_image_price ?? 0.2)} step={0.01} onChange={(value) => setMiniMaxH3PriceValue("excess_image_price", value)} />
-                          <SeedancePriceInput label="默认参考视频秒数" value={Number(minimaxH3PriceRule.default_input_video_seconds ?? 4)} step={0.1} onChange={(value) => setMiniMaxH3PriceValue("default_input_video_seconds", value)} />
-                        </>
-                      )}
+                      {(miniMaxH3Variant === "max" ? ["480p", "768p"] : ["768p", "2k"]).map((resolution) => (
+                        <SeedancePriceInput key={`input-${resolution}`} label={`${resolution.toUpperCase()} 输入视频（元/秒）`} value={Number(minimaxH3PriceRule.input_video_rates_per_second?.[resolution] ?? 0)} step={0.01} onChange={(value) => setMiniMaxH3Rate(resolution, value, "input_video_rates_per_second")} />
+                      ))}
+                      <SeedancePriceInput label="免费参考图片数" value={Number(minimaxH3PriceRule.free_reference_images ?? (miniMaxH3Variant === "max" ? 0 : 5))} step={1} onChange={(value) => setMiniMaxH3PriceValue("free_reference_images", value)} />
+                      <SeedancePriceInput label="超额图片（元/张）" value={Number(minimaxH3PriceRule.excess_image_price ?? (miniMaxH3Variant === "max" ? 0.5 : 0.2))} step={0.01} onChange={(value) => setMiniMaxH3PriceValue("excess_image_price", value)} />
+                      <SeedancePriceInput label="默认参考视频秒数" value={Number(minimaxH3PriceRule.default_input_video_seconds ?? 4)} step={0.1} onChange={(value) => setMiniMaxH3PriceValue("default_input_video_seconds", value)} />
                       <SeedancePriceInput label="算力点/元" value={Number(minimaxH3PriceRule.points_per_cny ?? 1)} step={0.01} onChange={(value) => setMiniMaxH3PriceValue("points_per_cny", value)} />
                       <SeedancePriceInput label="平台倍率" value={Number(minimaxH3PriceRule.platform_multiplier ?? 1)} step={0.01} onChange={(value) => setMiniMaxH3PriceValue("platform_multiplier", value)} />
                       <SeedancePriceInput label="估价兜底算力" value={Number(minimaxH3PriceRule.fallback_cost ?? (miniMaxH3Variant === "max" ? 2.5 : 4))} step={0.01} onChange={(value) => setMiniMaxH3PriceValue("fallback_cost", value)} />
@@ -4899,7 +4981,7 @@ export default function ModelsPage() {
                         }));
                       }}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter") e.currentTarget.blur();
+                        if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) e.currentTarget.blur();
                       }}
                     />
                   </div>
@@ -4927,7 +5009,7 @@ export default function ModelsPage() {
                         }));
                       }}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter") e.currentTarget.blur();
+                        if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) e.currentTarget.blur();
                       }}
                     />
                   </div>
@@ -5022,19 +5104,24 @@ export default function ModelsPage() {
                     <option value="">选择模板后自动填充配置...</option>
                     <option disabled>单文本框（TTS / 克隆）</option>
                     <option value="yunwu_minimax_speech">云雾 API MiniMax Speech 2.8 HD（/minimax/v1/t2a_v2）</option>
-                    <option value="minimax_official_speech">MiniMax 官方 Speech 2.8 HD（api.minimaxi.com/v1/t2a_v2）</option>
+                    <option value="minimax_official_speech">MiniMax 官方 Speech 2.8（api.minimax.cn/v1/t2a_v2）</option>
                     <option value="minimax_official_tts">MiniMax / 海螺旧版兼容网关（/v1/audio/speech）</option>
                     <option value="openai_audio_speech">第三方 OpenAI 兼容 Speech（/v1/audio/speech，input/voice/metadata）</option>
                     <option value="aliyun_qwen_audio_tts">阿里云百炼 · Qwen-Audio-TTS</option>
                     <option value="aliyun_cosyvoice">阿里云百炼 · CosyVoice</option>
                     <option disabled>双文本框（音乐生成）</option>
-                    <option value="minimax_official_music">MiniMax 官方 Music-2.6（/v1/music_generation）</option>
+                    <option value="minimax_official_music">MiniMax 官方 Music-3.0 / 2.6（api.minimax.cn/v1/music_generation）</option>
                     <option value="openai_audio_music">第三方 OpenAI 兼容 Music（/v1/audio/speech，metadata.lyrics）</option>
                     <option value="aliyun_fun_music">阿里云百炼 · Fun-Music</option>
                   </select>
                   <div className="text-[11px] text-gray-400 mt-1">
                     模板会覆盖 endpoint、input_schema、default_params、runtime_rule；连接密钥仍在 new_api_extra_params.connection 中单独配置。
                   </div>
+                  {audioTemplateKey === "minimax_official_music" && (
+                    <div className="text-[11px] text-amber-600 mt-1">
+                      MiniMax 官方自 2026-08-20 起不再向新用户开放付费音乐 API，免费模型也已停服；此模板仅适用于已有音乐 API 权限的账号。
+                    </div>
+                  )}
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -5230,6 +5317,25 @@ export default function ModelsPage() {
                   {form.category === "chat" && <label className="flex items-center gap-2 text-sm">
                     <input
                       type="checkbox"
+                      checked={getCaps(form.runtime_rule).vision}
+                      onChange={(e) => {
+                        const { rr } = getCaps(form.runtime_rule);
+                        const next = {
+                          ...rr,
+                          capabilities: {
+                            ...(rr?.capabilities ?? {}),
+                            vision: e.target.checked,
+                            ...(!e.target.checked ? { multimodal: false, image_input: false } : {}),
+                          },
+                        };
+                        setForm((prev) => ({ ...prev, runtime_rule: JSON.stringify(next, null, 2) }));
+                      }}
+                    />
+                    图片理解（可接收参考图）
+                  </label>}
+                  {form.category === "chat" && <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
                       checked={getCaps(form.runtime_rule).video_analysis}
                       onChange={(e) => {
                         const { rr } = getCaps(form.runtime_rule);
@@ -5238,6 +5344,18 @@ export default function ModelsPage() {
                       }}
                     />
                     视频理解（可接收原始视频）
+                  </label>}
+                  {form.category === "chat" && <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={getCaps(form.runtime_rule).audio_analysis}
+                      onChange={(e) => {
+                        const { rr } = getCaps(form.runtime_rule);
+                        const next = { ...rr, capabilities: { ...(rr?.capabilities ?? {}), audio_analysis: e.target.checked } };
+                        setForm((prev) => ({ ...prev, runtime_rule: JSON.stringify(next, null, 2) }));
+                      }}
+                    />
+                    音频理解（可接收参考音频）
                   </label>}
                   {getCaps(form.runtime_rule).deep_think && (
                     <div className="w-full rounded-xl border border-amber-200 bg-amber-50/60 p-3">
@@ -5252,7 +5370,19 @@ export default function ModelsPage() {
                               setForm((prev) => ({ ...prev, runtime_rule: setReasoning(prev.runtime_rule, { mode: e.target.value }) }))
                             }
                           >
+                            <option value="">自动识别（按上游模型与协议）</option>
+                            <option value="unsupported">不支持思考开关</option>
+                            <option value="always_on">固定思考（不可切换）</option>
+                            <option value="thinking_type">GLM / DeepSeek · thinking.type</option>
+                            <option value="glm_thinking">GLM thinking（兼容已有配置）</option>
+                            <option value="reasoning_effort">OpenAI 兼容 · reasoning_effort</option>
+                            <option value="claude_budget">Claude · 思考预算</option>
+                            <option value="claude_adaptive">Claude · 自适应思考</option>
+                            <option value="gemini_level">Gemini 原生 · 思考等级</option>
+                            <option value="gemini_budget">Gemini 原生 · 思考预算</option>
+                            <option value="enable_thinking">Qwen / DashScope · enable_thinking</option>
                             <option value="nvidia_chat_template">NVIDIA chat_template_kwargs</option>
+                            <option value="custom">自定义开关参数（JSON）</option>
                           </select>
                         </label>
                         <label className="flex items-end gap-2 text-xs text-gray-500 pb-1.5">
@@ -5292,8 +5422,12 @@ export default function ModelsPage() {
                           />
                         </label>
                       </div>
+                      <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {([['on_effort', '开启强度（如 high）'], ['off_effort', '关闭时强度（如 none / low）']] as const).map(([key, label]) => <label key={key} className="flex flex-col gap-1 text-xs text-gray-500">{label}<input className="rounded-lg border bg-white px-2 py-1.5" value={String(getReasoning(form.runtime_rule).reasoning[key] || '')} onChange={(e) => setForm((prev) => ({ ...prev, runtime_rule: setReasoning(prev.runtime_rule, { [key]: e.target.value }) }))} /></label>)}
+                        {getReasoning(form.runtime_rule).mode === 'custom' && (['on_params', 'off_params'] as const).map((key) => <label key={key} className="flex flex-col gap-1 text-xs text-gray-500">{key === 'on_params' ? '开启参数 JSON' : '关闭参数 JSON'}<textarea key={`${form.code}-${key}`} className="rounded-lg border bg-white px-2 py-1.5 font-mono" rows={4} defaultValue={JSON.stringify(getReasoning(form.runtime_rule).reasoning[key] || {}, null, 2)} onBlur={(e) => { try { const value = JSON.parse(e.target.value); if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error(); setForm((prev) => ({ ...prev, runtime_rule: setReasoning(prev.runtime_rule, { [key]: value }) })); e.currentTarget.setCustomValidity(''); } catch { e.currentTarget.setCustomValidity('请输入有效 JSON 对象'); e.currentTarget.reportValidity(); } }} /></label>)}
+                      </div>
                       <p className="mt-2 text-[11px] leading-5 text-gray-400">
-                        开启思考时服务端发送 chat_template_kwargs.enable_thinking=true 与 reasoning_budget；关闭时发送 enable_thinking=false，防止上游默认开启思考。
+                        按实际线路协议转换参数；线路 runtime_rule.reasoning 可覆盖这里的设置。强度值必须符合该模型文档，不能关闭思考的模型请将关闭强度设为 low。自定义映射需同时提供不同的开启和关闭参数；关闭代表完全关闭时，可在运行规则 JSON 中设置 can_disable=true。
                       </p>
                     </div>
                   )}

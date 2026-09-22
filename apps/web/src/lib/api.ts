@@ -1,5 +1,12 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
+const responseCache = new Map<string, { expiresAt: number; promise: Promise<unknown> }>();
+const MAX_RESPONSE_CACHE_ENTRIES = 128;
+
+export function clearApiCache() {
+  responseCache.clear();
+}
+
 export function hasUserSession() {
   if (typeof window === "undefined") return false;
   return localStorage.getItem("starai_session") === "1" || !!localStorage.getItem("token");
@@ -34,6 +41,9 @@ async function parseResponse<T>(res: Response, fallback: string): Promise<T> {
   try {
     json = raw ? JSON.parse(raw) : null;
   } catch {
+    if (res.status >= 500 && /cloudflare|bad gateway|gateway time-?out|web server is down|host error/i.test(raw)) {
+      throw new Error(`${fallback}：服务网关暂时异常，请稍后重试`);
+    }
     const detail = raw.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160);
     throw new Error(`${fallback}（HTTP ${res.status}）${detail ? `：${detail}` : ""}`);
   }
@@ -89,6 +99,37 @@ export function apiForLocale<T>(
   });
 }
 
+function cachedRequest<T>(key: string, ttlMs: number, request: () => Promise<T>): Promise<T> {
+  const now = Date.now();
+  const cached = responseCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.promise as Promise<T>;
+
+  for (const [cacheKey, entry] of responseCache) {
+    if (entry.expiresAt <= now) responseCache.delete(cacheKey);
+  }
+  while (responseCache.size >= MAX_RESPONSE_CACHE_ENTRIES) {
+    responseCache.delete(responseCache.keys().next().value!);
+  }
+
+  const promise = request().catch((error) => {
+    if (responseCache.get(key)?.promise === promise) responseCache.delete(key);
+    throw error;
+  });
+  responseCache.set(key, { expiresAt: now + ttlMs, promise });
+  return promise;
+}
+
+export function apiCached<T>(path: string, ttlMs = 30_000, varyByLocale = true): Promise<T> {
+  const locale = varyByLocale && typeof window !== "undefined"
+    ? localStorage.getItem("site_locale") || "zh-CN"
+    : "shared";
+  return cachedRequest(`${locale}:${path}`, ttlMs, () => api<T>(path));
+}
+
+export function apiForLocaleCached<T>(path: string, locale: string, ttlMs = 30_000): Promise<T> {
+  return cachedRequest(`${locale}:${path}`, ttlMs, () => apiForLocale<T>(path, locale));
+}
+
 export async function uploadFile(file: File): Promise<string> {
   const form = new FormData();
   form.append("file", file);
@@ -108,7 +149,7 @@ export async function uploadAsset(
 ): Promise<{ public_id: string; url: string; name?: string; kind?: string; asset_type?: string; mime_type?: string; size_bytes?: number }> {
   const form = new FormData();
   form.append("file", file);
-  if (meta?.name) form.append("name", meta.name);
+  if (meta?.name) form.append("name", Array.from(meta.name).slice(0, 50).join(""));
   if (meta?.description) form.append("description", meta.description);
   if (meta?.kind) form.append("kind", meta.kind);
   if (meta?.asset_type) form.append("asset_type", meta.asset_type);

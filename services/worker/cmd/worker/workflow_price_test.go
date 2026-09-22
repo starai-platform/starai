@@ -98,6 +98,29 @@ func TestEstimateDynamicPriceRuleCostWorkerUsesMiniMaxActualUsage(t *testing.T) 
 	}
 }
 
+func TestEstimateDynamicPriceRuleCostWorkerMiniMaxH3MaxUsesSeparateInputRates(t *testing.T) {
+	rule := map[string]interface{}{
+		"billing_type":          "dynamic",
+		"strategy":              "minimax_h3_seconds",
+		"free_reference_images": float64(0),
+		"excess_image_price":    float64(0.5),
+		"rates_per_second":      map[string]interface{}{"768p": float64(0.5)},
+		"input_video_rates_per_second": map[string]interface{}{
+			"768p": float64(0.97),
+		},
+	}
+	params := map[string]interface{}{
+		"resolution":                "768P",
+		"_actual_output_seconds":    float64(6),
+		"_actual_input_seconds":     float64(4),
+		"_actual_input_image_count": float64(3),
+	}
+	want := float64(6)*0.5 + float64(4)*0.97 + float64(3)*0.5
+	if got := estimatePriceRuleCostWorker(rule, params, 0, 0, 0, 0); math.Abs(got-want) > 0.000001 {
+		t.Fatalf("H3-Max cost = %f, want %f", got, want)
+	}
+}
+
 func TestEstimatePriceRuleCostWorkerUsesImageSizeTier(t *testing.T) {
 	rule := map[string]interface{}{
 		"billing_type": "per_image",

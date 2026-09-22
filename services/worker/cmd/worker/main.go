@@ -627,6 +627,7 @@ type workerModelRoute struct {
 	Connection          connectionConfig
 	ExtraParams         map[string]interface{}
 	RuntimeRule         map[string]interface{}
+	MediaOverrides      map[string]interface{}
 	CostRule            map[string]interface{}
 	Priority            int
 	Weight              int
@@ -686,6 +687,7 @@ func loadWorkerModelRoutes(ctx context.Context, pool *pgxpool.Pool, modelID int6
 		}
 		_ = json.Unmarshal(extraRaw, &route.ExtraParams)
 		_ = json.Unmarshal(runtimeRaw, &route.RuntimeRule)
+		route.MediaOverrides = route.RuntimeRule
 		_ = json.Unmarshal(costRaw, &route.CostRule)
 		legacyExtraWithoutConnection := mergeWorkerMaps(legacyExtra, map[string]interface{}{})
 		delete(legacyExtraWithoutConnection, "connection")

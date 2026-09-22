@@ -83,14 +83,17 @@ func TestEstimateMiniMaxH3CostUsesActualUpstreamUsage(t *testing.T) {
 	}
 }
 
-func TestEstimateMiniMaxH3MaxDoesNotBillInputs(t *testing.T) {
+func TestEstimateMiniMaxH3MaxBillsInputsAtSeparateRates(t *testing.T) {
 	rule := map[string]interface{}{
-		"billing_type":             "dynamic",
-		"strategy":                 "minimax_h3_seconds",
-		"default_resolution":       "480P",
-		"input_materials_billable": false,
-		"excess_image_price":       float64(0),
-		"rates_per_second":         map[string]interface{}{"480p": float64(0.33)},
+		"billing_type":          "dynamic",
+		"strategy":              "minimax_h3_seconds",
+		"default_resolution":    "480P",
+		"free_reference_images": float64(0),
+		"excess_image_price":    float64(0.5),
+		"rates_per_second":      map[string]interface{}{"480p": float64(0.33)},
+		"input_video_rates_per_second": map[string]interface{}{
+			"480p": float64(0.37),
+		},
 	}
 	params := map[string]interface{}{
 		"resolution":                "480P",
@@ -99,7 +102,7 @@ func TestEstimateMiniMaxH3MaxDoesNotBillInputs(t *testing.T) {
 		"_actual_input_seconds":     float64(12),
 		"_actual_input_image_count": float64(9),
 	}
-	if got, want := estimateDynamicCost(rule, params), float64(5)*0.33; math.Abs(got-want) > 0.000001 {
-		t.Fatalf("H3-Max cost = %.6f, want output-only %.6f", got, want)
+	if got, want := estimateDynamicCost(rule, params), float64(5)*0.33+float64(12)*0.37+float64(9)*0.5; math.Abs(got-want) > 0.000001 {
+		t.Fatalf("H3-Max cost = %.6f, want %.6f", got, want)
 	}
 }

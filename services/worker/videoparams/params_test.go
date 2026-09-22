@@ -444,33 +444,39 @@ func TestBuildUpstreamPayloadSupportsNestedMap(t *testing.T) {
 func TestBuildUpstreamPayloadSupportsMinimaxMusicTemplate(t *testing.T) {
 	got := BuildUpstreamVideoPayload(
 		"audio_minimax_music_26",
-		"music-2.6",
+		"music-3.0",
 		map[string]interface{}{
 			"upstream": map[string]interface{}{
-				"include": []interface{}{"model_version", "music_prompt", "output_format", "format", "sample_rate", "bitrate"},
+				"include": []interface{}{"model_version", "music_prompt", "output_format", "format", "sample_rate", "bitrate", "is_instrumental", "lyrics_optimizer", "aigc_watermark"},
 				"map": map[string]interface{}{
-					"prompt":        "lyrics",
-					"music_prompt":  "prompt",
-					"model_version": "model",
-					"format":        "audio_setting.format",
-					"sample_rate":   "audio_setting.sample_rate",
-					"bitrate":       "audio_setting.bitrate",
+					"prompt":           "lyrics",
+					"music_prompt":     "prompt",
+					"model_version":    "model",
+					"format":           "audio_setting.format",
+					"sample_rate":      "audio_setting.sample_rate",
+					"bitrate":          "audio_setting.bitrate",
+					"is_instrumental":  "is_instrumental",
+					"lyrics_optimizer": "lyrics_optimizer",
+					"aigc_watermark":   "aigc_watermark",
 				},
 				"static": map[string]interface{}{"stream": false},
 			},
 		},
 		nil,
 		map[string]interface{}{
-			"prompt":        "[Verse] hello",
-			"music_prompt":  "upbeat pop",
-			"model_version": "music-2.6",
-			"output_format": "hex",
-			"format":        "mp3",
-			"sample_rate":   44100,
-			"bitrate":       256000,
+			"prompt":           "[Verse] hello",
+			"music_prompt":     "upbeat pop",
+			"model_version":    "music-3.0",
+			"output_format":    "hex",
+			"format":           "mp3",
+			"sample_rate":      44100,
+			"bitrate":          256000,
+			"is_instrumental":  false,
+			"lyrics_optimizer": true,
+			"aigc_watermark":   false,
 		},
 	)
-	if got["model"] != "music-2.6" || got["lyrics"] != "[Verse] hello" || got["prompt"] != "upbeat pop" {
+	if got["model"] != "music-3.0" || got["lyrics"] != "[Verse] hello" || got["prompt"] != "upbeat pop" {
 		t.Fatalf("unexpected MiniMax music payload: %#v", got)
 	}
 	if got["output_format"] != "hex" || got["stream"] != false {
@@ -479,6 +485,14 @@ func TestBuildUpstreamPayloadSupportsMinimaxMusicTemplate(t *testing.T) {
 	audio, ok := got["audio_setting"].(map[string]interface{})
 	if !ok || audio["format"] != "mp3" || audio["sample_rate"] != float64(44100) || audio["bitrate"] != float64(256000) {
 		t.Fatalf("unexpected MiniMax music audio_setting: %#v", got)
+	}
+	if got["is_instrumental"] != false || got["lyrics_optimizer"] != true || got["aigc_watermark"] != false {
+		t.Fatalf("MiniMax music flags must be top-level: %#v", got)
+	}
+	for _, key := range []string{"is_instrumental", "lyrics_optimizer", "aigc_watermark"} {
+		if _, nested := audio[key]; nested {
+			t.Fatalf("%s must not be nested under audio_setting: %#v", key, got)
+		}
 	}
 }
 

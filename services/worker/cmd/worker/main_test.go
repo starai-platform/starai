@@ -569,8 +569,8 @@ func TestSameOriginURLProtectsAuthorizationHeader(t *testing.T) {
 }
 
 func TestJoinBaseEndpointNormalizesMissingSlash(t *testing.T) {
-	got := joinBaseEndpoint("https://api.minimaxi.com/", "v1/music_generation")
-	if got != "https://api.minimaxi.com/v1/music_generation" {
+	got := joinBaseEndpoint("https://api.minimax.cn/", "v1/music_generation")
+	if got != "https://api.minimax.cn/v1/music_generation" {
 		t.Fatalf("url = %q", got)
 	}
 }

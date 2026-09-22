@@ -292,7 +292,7 @@ components:
       required: [model]
       properties:
         model: { type: string }
-        input: { type: string, description: TTS text or the model's primary music input. For MiniMax Music-2.6 this is lyrics; it may be empty only when the selected model and music mode allow it. }
+        input: { type: string, description: TTS text or the model's primary music input. For MiniMax Music 3.0 / 2.6 this is lyrics; it may be empty only when the selected model and music mode allow it. }
         voice: { type: string }
         voice_id: { type: string, description: Provider-native voice identifier. The generic voice field is automatically mapped when the selected model expects voice_id. }
         format: { type: string, enum: [mp3, opus, aac, flac, wav, pcm] }
@@ -304,7 +304,7 @@ components:
         count: { type: integer, minimum: 1, description: Number of outputs when supported by the selected model. }
         gender: { type: string, enum: [female, male] }
         is_instrumental: { type: boolean }
-        lyrics_optimizer: { type: boolean, description: MiniMax Music-2.6 can generate lyrics from music_prompt when input is empty. }
+        lyrics_optimizer: { type: boolean, description: MiniMax Music 3.0 / 2.6 can generate lyrics from music_prompt when input is empty. }
         output_format: { type: string, enum: [hex, url], description: Provider-native output transport when supported; the platform persists the result and returns a URL. }
         aigc_watermark: { type: boolean }
         response_format: { type: string, enum: [async, sync], default: async }

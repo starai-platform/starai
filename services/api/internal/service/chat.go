@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -159,10 +160,7 @@ func (s *ChatService) Completion(ctx context.Context, userID int64, input Comple
 	if err != nil {
 		return nil, err
 	}
-	upstreamParams, err := buildChatUpstreamParams(model, input.Params)
-	if err != nil {
-		return nil, err
-	}
+
 	prepareChatBillingParams(&input)
 	estimated := s.models.EstimateCost(model, input.Params, 0, 0)
 	requestID := util.NewRequestID()
@@ -182,10 +180,12 @@ func (s *ChatService) Completion(ctx context.Context, userID int64, input Comple
 		Model:       model.NewAPIModel,
 		Messages:    chatRequestMessages(input.Messages, input.Params),
 		Temperature: temperature,
-		Extra:       upstreamParams,
+		Extra:       nil,
 	}
 	start := time.Now()
-	resp, selectedRoute, err := s.chatCompletionWithFailover(ctx, requestID, model, req)
+	requestCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	resp, selectedRoute, err := s.chatCompletionWithFailover(requestCtx, requestID, model, req, input.Params)
 	duration := int(time.Since(start).Milliseconds())
 	if err != nil {
 		if unfreezeErr := s.billing.Unfreeze(ctx, userID, estimated, "chat", requestID); unfreezeErr != nil {
@@ -240,10 +240,7 @@ func (s *ChatService) CompletionStream(ctx context.Context, userID int64, input 
 	if err != nil {
 		return "", nil, 0, err
 	}
-	upstreamParams, err := buildChatUpstreamParams(model, input.Params)
-	if err != nil {
-		return "", nil, 0, err
-	}
+
 	prepareChatBillingParams(&input)
 	estimated := s.models.EstimateCost(model, input.Params, 0, 0)
 	requestID := util.NewRequestID()
@@ -257,14 +254,14 @@ func (s *ChatService) CompletionStream(ctx context.Context, userID int64, input 
 	if v, ok := input.Params["temperature"].(float64); ok {
 		temperature = runtime.Float64Ptr(v)
 	}
-	req := runtime.ChatRequest{Model: model.NewAPIModel, Messages: chatRequestMessages(input.Messages, input.Params), Temperature: temperature, Extra: upstreamParams}
+	req := runtime.ChatRequest{Model: model.NewAPIModel, Messages: chatRequestMessages(input.Messages, input.Params), Temperature: temperature, Extra: nil}
 	// per-request timeout override (seconds)
 	if v, ok := input.Params["timeout_sec"].(float64); ok && v > 0 && v <= 600 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(v)*time.Second)
 		defer cancel()
 	}
-	ch, _, err := s.chatCompletionStreamWithFailover(ctx, requestID, model, req)
+	ch, _, err := s.chatCompletionStreamWithFailover(ctx, requestID, model, req, input.Params)
 	if err != nil {
 		if unfreezeErr := s.billing.Unfreeze(ctx, userID, estimated, "chat", requestID); unfreezeErr != nil {
 			return "", nil, 0, fmt.Errorf("模型流启动失败: %v；释放冻结额度失败: %w", err, unfreezeErr)
@@ -277,7 +274,8 @@ func (s *ChatService) CompletionStream(ctx context.Context, userID int64, input 
 func chatRequestMessages(messages []runtime.ChatMessage, params map[string]interface{}) interface{} {
 	images := stringSliceParam(params["reference_images"])
 	videos := stringSliceParam(params["reference_videos"])
-	if len(images) == 0 && len(videos) == 0 {
+	audios := stringSliceParam(params["reference_audios"])
+	if len(images) == 0 && len(videos) == 0 && len(audios) == 0 {
 		return messages
 	}
 	out := make([]map[string]interface{}, 0, len(messages))
@@ -307,6 +305,11 @@ func chatRequestMessages(messages []runtime.ChatMessage, params map[string]inter
 				"video_url": map[string]interface{}{"url": url},
 			})
 		}
+		for _, url := range audios {
+			content = append(content, map[string]interface{}{
+				"type": "audio_url", "audio_url": map[string]interface{}{"url": url},
+			})
+		}
 		out = append(out, map[string]interface{}{"role": message.Role, "content": content})
 	}
 	return out
@@ -315,7 +318,7 @@ func chatRequestMessages(messages []runtime.ChatMessage, params map[string]inter
 func chatUpstreamParams(params map[string]interface{}) map[string]interface{} {
 	allowed := []string{
 		"max_tokens", "max_completion_tokens", "top_p", "response_format", "tools", "tool_choice",
-		"reasoning_effort", "seed", "stop", "presence_penalty", "frequency_penalty", "user", "n",
+		"reasoning_effort", "reasoning", "thinking", "enable_thinking", "thinking_budget", "thinkingConfig", "chat_template_kwargs", "reasoning_budget", "output_config", "seed", "stop", "presence_penalty", "frequency_penalty", "user", "n",
 	}
 	out := make(map[string]interface{}, len(allowed))
 	for _, key := range allowed {
@@ -327,35 +330,30 @@ func chatUpstreamParams(params map[string]interface{}) map[string]interface{} {
 }
 
 func buildChatUpstreamParams(model *ModelFull, params map[string]interface{}) (map[string]interface{}, error) {
-	merged := make(map[string]interface{}, len(model.DefaultParams)+len(params))
-	for key, value := range model.DefaultParams {
-		merged[key] = value
+	merged := mergeModelRouteMaps(model.NewAPIExtraParams, model.DefaultParams)
+	merged = mergeModelRouteMaps(merged, params)
+	if limit := firstPositiveIntValue(params, "_agent_plan_output_limit"); limit > 0 {
+		cfg := chatReasoningConfig(model)
+		if enabled, _ := reasoningEnabled(merged, cfg); enabled && stringValue(cfg["mode"]) == "claude_budget" {
+			budget, _ := reasoningBudget(merged, cfg)
+			if budget+1024 > limit {
+				limit = budget + 1024 // Preserve valid configured thinking budgets.
+			}
+		}
+		key := "max_tokens"
+		name := strings.ToLower(model.NewAPIModel)
+		if merged["max_completion_tokens"] != nil || strings.HasPrefix(name, "gpt-5") || strings.HasPrefix(name, "gpt-6") || strings.HasPrefix(name, "o1") || strings.HasPrefix(name, "o3") || strings.HasPrefix(name, "o4") {
+			key = "max_completion_tokens"
+		}
+		for _, existing := range []string{"max_tokens", "max_completion_tokens"} {
+			if n := firstPositiveIntValue(merged, existing); n > 0 && n < limit {
+				limit = n
+			}
+			delete(merged, existing)
+		}
+		merged[key] = limit
 	}
-	for key, value := range params {
-		merged[key] = value
-	}
-	out := chatUpstreamParams(merged)
-	reasoning, _ := model.RuntimeRule["reasoning"].(map[string]interface{})
-	if strings.ToLower(strings.TrimSpace(stringValue(reasoning["mode"]))) != "nvidia_chat_template" {
-		return out, nil
-	}
-
-	enabled, err := reasoningEnabled(merged, reasoning)
-	if err != nil {
-		return nil, err
-	}
-	out["chat_template_kwargs"] = map[string]interface{}{"enable_thinking": enabled}
-	if !enabled {
-		return out, nil
-	}
-	budget, err := reasoningBudget(merged, reasoning)
-	if err != nil {
-		return nil, err
-	}
-	if budget > 0 {
-		out["reasoning_budget"] = budget
-	}
-	return out, nil
+	return applyChatReasoning(model, merged, chatUpstreamParams(merged))
 }
 
 func reasoningEnabled(params, config map[string]interface{}) (bool, error) {
@@ -428,7 +426,7 @@ func legacyModelRoute(model *ModelFull) ModelRoute {
 		APIKey: stringValue(conn["api_key"]), AuthType: stringValue(conn["auth_type"]),
 		APIKeyHeader: stringValue(conn["api_key_header"]), Protocol: stringValue(conn["protocol"]),
 		Headers: mapValue(conn["headers"]), ExtraParams: copyMap(model.NewAPIExtraParams),
-		TimeoutSeconds: 120, IsEnabled: true, HealthStatus: "healthy", Weight: 100,
+		TimeoutSeconds: 90, MaxRetries: 1, IsEnabled: true, HealthStatus: "healthy", Weight: 100,
 	}
 }
 
@@ -466,6 +464,9 @@ func shouldRetrySameRoute(err error) bool {
 	if !errors.As(err, &platformErr) {
 		return true
 	}
+	if platformErr.Code == "MODEL_TIMEOUT" || platformErr.Code == "CONTENT_REJECTED" || platformErr.Code == "MODEL_BAD_REQUEST" {
+		return false
+	}
 	if platformErr.StatusCode == 408 || platformErr.StatusCode >= 500 {
 		return true
 	}
@@ -497,7 +498,7 @@ func (s *ChatService) modelRuntimeRoutes(ctx context.Context, model *ModelFull) 
 	return routes, nil
 }
 
-func (s *ChatService) chatCompletionWithFailover(ctx context.Context, requestID string, model *ModelFull, req runtime.ChatRequest) (*runtime.ChatResponse, *ModelRoute, error) {
+func (s *ChatService) chatCompletionWithFailover(ctx context.Context, requestID string, model *ModelFull, req runtime.ChatRequest, params map[string]interface{}) (*runtime.ChatResponse, *ModelRoute, error) {
 	routes, err := s.modelRuntimeRoutes(ctx, model)
 	if err != nil {
 		return nil, nil, err
@@ -507,6 +508,15 @@ func (s *ChatService) chatCompletionWithFailover(ctx context.Context, requestID 
 routeLoop:
 	for i := range routes {
 		route := &routes[i]
+		if mediaErr := chatRouteMediaError(model, route, req.Messages); mediaErr != nil {
+			lastErr = mediaErr
+			continue
+		}
+		attemptReq, mappingErr := chatRouteRequest(req, model, *route, params)
+		if mappingErr != nil {
+			lastErr = mappingErr
+			continue
+		}
 		if !s.models.AcquireRouteProbe(ctx, route) {
 			continue
 		}
@@ -515,8 +525,6 @@ routeLoop:
 				break routeLoop
 			}
 			attempt++
-			attemptReq := req
-			attemptReq.Model = route.UpstreamModel
 			started := time.Now()
 			attemptCtx := ctx
 			var cancel context.CancelFunc
@@ -535,13 +543,16 @@ routeLoop:
 			}
 			lastErr = callErr
 			statusCode, errorCode := routeErrorDetails(callErr)
+			if platformErr, ok := callErr.(*runtime.PlatformError); ok && platformErr.Detail != "" {
+				log.Printf("model route failed: request_id=%s route_id=%d status=%d code=%s detail=%q", requestID, route.ID, statusCode, errorCode, platformErr.Detail)
+			}
 			if !isRouteFailoverError(callErr) {
 				s.models.LogRouteAttempt(ctx, requestID, model.ID, route.ID, attempt, "rejected", statusCode, errorCode, latency, 0)
 				return nil, route, callErr
 			}
 			s.models.MarkRouteFailure(ctx, route.ID)
 			s.models.LogRouteAttempt(ctx, requestID, model.ID, route.ID, attempt, "failed", statusCode, errorCode, latency, 0)
-			if retry < route.MaxRetries && shouldRetrySameRoute(callErr) && waitRouteRetry(ctx, retry) {
+			if retry < route.MaxRetries && latency < 15_000 && shouldRetrySameRoute(callErr) && waitRouteRetry(ctx, retry) {
 				continue
 			}
 			break
@@ -553,7 +564,7 @@ routeLoop:
 	return nil, nil, lastErr
 }
 
-func (s *ChatService) chatCompletionStreamWithFailover(ctx context.Context, requestID string, model *ModelFull, req runtime.ChatRequest) (<-chan runtime.StreamChunk, *ModelRoute, error) {
+func (s *ChatService) chatCompletionStreamWithFailover(ctx context.Context, requestID string, model *ModelFull, req runtime.ChatRequest, params map[string]interface{}) (<-chan runtime.StreamChunk, *ModelRoute, error) {
 	routes, err := s.modelRuntimeRoutes(ctx, model)
 	if err != nil {
 		return nil, nil, err
@@ -563,6 +574,15 @@ func (s *ChatService) chatCompletionStreamWithFailover(ctx context.Context, requ
 routeLoop:
 	for i := range routes {
 		route := &routes[i]
+		if mediaErr := chatRouteMediaError(model, route, req.Messages); mediaErr != nil {
+			lastErr = mediaErr
+			continue
+		}
+		attemptReq, mappingErr := chatRouteRequest(req, model, *route, params)
+		if mappingErr != nil {
+			lastErr = mappingErr
+			continue
+		}
 		if !s.models.AcquireRouteProbe(ctx, route) {
 			continue
 		}
@@ -571,8 +591,6 @@ routeLoop:
 				break routeLoop
 			}
 			attempt++
-			attemptReq := req
-			attemptReq.Model = route.UpstreamModel
 			started := time.Now()
 			chunks, callErr := s.runtime.ChatCompletionStreamWithConfig(ctx, route.Endpoint, attemptReq, route.RequestExtraForRequest(model, requestID))
 			latency := int(time.Since(started).Milliseconds())
@@ -582,29 +600,34 @@ routeLoop:
 				forwarded := make(chan runtime.StreamChunk, 32)
 				go func(selectedRouteID int64, selectedAttempt int) {
 					defer close(forwarded)
-					streamFailed := false
+					var streamError error
 					for chunk := range chunks {
 						if chunk.Error != nil {
-							streamFailed = true
+							streamError = chunk.Error
 						}
 						forwarded <- chunk
 					}
-					if streamFailed {
-						s.models.MarkRouteFailure(context.Background(), selectedRouteID)
-						s.models.MarkStreamRouteAttemptFailed(context.Background(), requestID, selectedRouteID, selectedAttempt)
+					if streamError != nil {
+						if isRouteFailoverError(streamError) {
+							s.models.MarkRouteFailure(context.Background(), selectedRouteID)
+						}
+						s.models.MarkStreamRouteAttemptFailed(context.Background(), requestID, selectedRouteID, selectedAttempt, streamError)
 					}
 				}(route.ID, attempt)
 				return forwarded, route, nil
 			}
 			lastErr = callErr
 			statusCode, errorCode := routeErrorDetails(callErr)
+			if platformErr, ok := callErr.(*runtime.PlatformError); ok && platformErr.Detail != "" {
+				log.Printf("model stream route failed: request_id=%s route_id=%d status=%d code=%s detail=%q", requestID, route.ID, statusCode, errorCode, platformErr.Detail)
+			}
 			if !isRouteFailoverError(callErr) {
 				s.models.LogRouteAttempt(ctx, requestID, model.ID, route.ID, attempt, "rejected", statusCode, errorCode, latency, 0)
 				return nil, route, callErr
 			}
 			s.models.MarkRouteFailure(ctx, route.ID)
 			s.models.LogRouteAttempt(ctx, requestID, model.ID, route.ID, attempt, "failed", statusCode, errorCode, latency, 0)
-			if retry < route.MaxRetries && shouldRetrySameRoute(callErr) && waitRouteRetry(ctx, retry) {
+			if retry < route.MaxRetries && latency < 15_000 && shouldRetrySameRoute(callErr) && waitRouteRetry(ctx, retry) {
 				continue
 			}
 			break
@@ -801,10 +824,12 @@ func (s *ChatService) logCallWithRoute(ctx context.Context, requestID string, us
 	if selectedRouteID <= 0 {
 		routeRef = nil
 	}
-	s.db.Exec(ctx, `
+	if _, execErr := s.db.Exec(ctx, `
 		INSERT INTO ai_call_logs (request_id, user_id, model_id, route_id, conversation_id, prompt_tokens, completion_tokens, total_tokens, cost, provider_cost, gross_profit, status, error_code, duration_ms)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$9-$10,$11,$12,$13)`,
-		requestID, userID, modelID, routeRef, convID, prompt, completion, total, cost, providerCost, status, errCode, duration)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$9::numeric-$10::numeric,$11,$12,$13)`,
+		requestID, userID, modelID, routeRef, convID, prompt, completion, total, cost, providerCost, status, errCode, duration); execErr != nil {
+		log.Printf("ai call log insert failed request_id=%s: %v", requestID, execErr)
+	}
 }
 
 func (s *ChatService) saveMessages(ctx context.Context, convPublicID string, userID int64, messages []runtime.ChatMessage, assistantContent, reasoningContent string) {

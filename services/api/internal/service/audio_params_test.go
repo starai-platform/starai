@@ -6,6 +6,9 @@ func TestBuildUpstreamAudioPayloadSupportsNestedMap(t *testing.T) {
 	model := &ModelFull{
 		ModelDTO:    ModelDTO{Code: "audio_minimax_speech_28_hd"},
 		NewAPIModel: "speech-2.8-hd",
+		NewAPIExtraParams: map[string]interface{}{
+			"connection": map[string]interface{}{"base_url": "https://api.minimax.cn"},
+		},
 		RuntimeRule: map[string]interface{}{
 			"upstream": map[string]interface{}{
 				"include": []interface{}{"voice_id", "speed", "format"},
@@ -56,6 +59,9 @@ func TestBuildUpstreamAudioPayloadSupportsNestedMap(t *testing.T) {
 	}
 	if _, ok := got["response_format"]; ok {
 		t.Fatalf("response_format should not be sent: %#v", got)
+	}
+	if _, ok := got["connection"]; ok {
+		t.Fatalf("connection must not be sent upstream: %#v", got)
 	}
 }
 
@@ -109,7 +115,7 @@ func TestValidateAudioTaskParamsForOptionalMusicInputs(t *testing.T) {
 
 func minimaxMusicValidationModel() *ModelFull {
 	return &ModelFull{
-		NewAPIModel: "music-2.6", NewAPIEndpoint: "/v1/music_generation",
+		NewAPIModel: "music-3.0", NewAPIEndpoint: "/v1/music_generation",
 		RuntimeRule: map[string]interface{}{
 			"audio":    map[string]interface{}{"prompt_required": false},
 			"upstream": map[string]interface{}{"map": map[string]interface{}{"prompt": "lyrics"}},

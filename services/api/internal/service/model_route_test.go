@@ -108,6 +108,9 @@ func TestRouteFailureClassification(t *testing.T) {
 	if !shouldRetrySameRoute(&runtime.PlatformError{Code: "MODEL_PROVIDER_ERROR", StatusCode: 503}) {
 		t.Fatal("503 should retry the same route when configured")
 	}
+	if shouldRetrySameRoute(&runtime.PlatformError{Code: "MODEL_TIMEOUT"}) {
+		t.Fatal("a full timeout must not repeat the same slow request")
+	}
 }
 
 func TestRouteRequestAddsIdempotencyKey(t *testing.T) {

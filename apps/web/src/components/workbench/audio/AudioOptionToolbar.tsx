@@ -2,7 +2,7 @@
 
 import { useState, type ReactNode } from "react";
 import { useI18n } from "@/i18n/I18nProvider";
-import { AudioLines, Compass, FileAudio, Gauge, Grid3X3, Sparkles, Target } from "lucide-react";
+import { AudioLines, Compass, FileAudio, Gauge, Grid3X3, Settings2, Sparkles, Target } from "lucide-react";
 import { MediaOptionMenu } from "../MediaOptionMenu";
 import {
   DEFAULT_AUDIO_COUNT_OPTIONS,
@@ -221,6 +221,101 @@ function renderFieldControl(
   );
 }
 
+const MINIMAX_SPEECH_SETTINGS_KEYS = new Set([
+  "speed",
+  "vol",
+  "pitch",
+  "sample_rate",
+  "bitrate",
+  "channel",
+  "output_format",
+  "subtitle_enable",
+  "subtitle_type",
+  "aigc_watermark",
+]);
+
+function isMiniMaxSpeech28Schema(entries: Array<[string, SchemaFieldMeta]>) {
+  const modelVersion = entries.find(([key]) => key === "model_version")?.[1];
+  return modelVersion?.enum?.some((value) => /^speech-2\.8-(hd|turbo)$/i.test(String(value))) ?? false;
+}
+
+function AdvancedAudioSettings({
+  entries,
+  values,
+  onChange,
+  translate,
+}: {
+  entries: Array<[string, SchemaFieldMeta]>;
+  values: Record<string, unknown>;
+  onChange: (key: string, val: unknown) => void;
+  translate: (source: string) => string;
+}) {
+  return (
+    <MediaOptionMenu
+      icon={<Settings2 size={16} />}
+      activeLabel={translate("设置")}
+      title={translate("语音设置")}
+      subtitle={translate("调整语速、音量、字幕与输出参数")}
+      menuWidth={320}
+    >
+      {() => (
+        <div className="space-y-1.5">
+          {entries.map(([key, prop]) => {
+            const label = translate(prop.title || key);
+            const value = values[key] ?? prop.default ?? prop.enum?.[0];
+
+            if (prop["x-widget"] === "boolean_toggle") {
+              const enabled = Boolean(value);
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  role="switch"
+                  aria-checked={enabled}
+                  onClick={() => onChange(key, !enabled)}
+                  className="flex h-10 w-full items-center justify-between rounded-xl bg-gray-50 px-3 text-sm font-medium text-gray-800 transition hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 dark:bg-white/5 dark:text-gray-200 dark:hover:bg-white/10"
+                >
+                  <span>{label}</span>
+                  <span className={`relative h-5 w-9 rounded-full transition ${enabled ? "bg-primary" : "bg-gray-300 dark:bg-gray-600"}`}>
+                    <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${enabled ? "translate-x-[18px]" : "translate-x-0.5"}`} />
+                  </span>
+                </button>
+              );
+            }
+
+            const options = prop.enum || [];
+            const subtitleTypeDisabled = key === "subtitle_type" && !Boolean(values.subtitle_enable);
+            return (
+              <label
+                key={key}
+                className={`flex min-h-10 items-center justify-between gap-3 rounded-xl bg-gray-50 px-3 py-1.5 dark:bg-white/5 ${subtitleTypeDisabled ? "opacity-50" : ""}`}
+              >
+                <span className="shrink-0 text-sm font-medium text-gray-800 dark:text-gray-200">{label}</span>
+                <select
+                  value={String(value ?? "")}
+                  disabled={subtitleTypeDisabled}
+                  aria-label={label}
+                  onChange={(event) => {
+                    const selected = options.find((option) => String(option) === event.target.value);
+                    onChange(key, selected ?? event.target.value);
+                  }}
+                  className="min-w-0 max-w-[170px] rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-right text-xs text-gray-800 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:cursor-not-allowed dark:border-white/10 dark:bg-gray-900 dark:text-gray-200 dark:[color-scheme:dark]"
+                >
+                  {options.map((option) => (
+                    <option key={String(option)} value={String(option)}>
+                      {translate(enumLabel(prop, option))}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            );
+          })}
+        </div>
+      )}
+    </MediaOptionMenu>
+  );
+}
+
 export function AudioOptionToolbar({
   schema,
   values,
@@ -234,8 +329,23 @@ export function AudioOptionToolbar({
 }) {
   const { ts } = useI18n();
   const set = (key: string, val: unknown) => onChange({ ...values, [key]: val });
-  const entries = schemaFieldEntries(schema).filter(([, prop]) => !isTopPlacementField(prop));
+  const allEntries = schemaFieldEntries(schema);
+  const entries = allEntries.filter(([, prop]) => !isTopPlacementField(prop));
   if (entries.length === 0) return null;
+
+  if (isMiniMaxSpeech28Schema(allEntries)) {
+    const quickEntries = entries.filter(([key]) => !MINIMAX_SPEECH_SETTINGS_KEYS.has(key));
+    const settingsEntries = entries.filter(([key]) => MINIMAX_SPEECH_SETTINGS_KEYS.has(key));
+    return (
+      <>
+        {quickEntries.map(([key, prop]) => (
+          <span key={key}>{renderFieldControl(key, prop, values[key], set, audioConfig, ts)}</span>
+        ))}
+        {settingsEntries.length > 0 && <AdvancedAudioSettings entries={settingsEntries} values={values} onChange={set} translate={ts} />}
+      </>
+    );
+  }
+
   return <>{entries.map(([key, prop]) => <span key={key}>{renderFieldControl(key, prop, values[key], set, audioConfig, ts)}</span>)}</>;
 }
 

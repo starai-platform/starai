@@ -166,6 +166,10 @@ func TestTestModelConnectionPreservesCustomMediaEndpoint(t *testing.T) {
 func TestTestImageConnectionUsesNonGeneratingValidationProbe(t *testing.T) {
 	var body map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
@@ -176,11 +180,29 @@ func TestTestImageConnectionUsesNonGeneratingValidationProbe(t *testing.T) {
 
 	client := NewClient(server.URL, "token", 5, 5)
 	result := client.TestModelConnection(context.Background(), "/v1/images/generations", "images", "gpt-image-2-2k", nil)
-	if !result.OK || body["model"] != "gpt-image-2-2k" || body["prompt"] != "" || body["n"] != float64(0) {
+	if !result.OK || len(body) != 0 {
 		t.Fatalf("body=%#v result=%#v", body, result)
 	}
 	if !strings.Contains(result.Message, "未提交生图") {
 		t.Fatalf("message = %q", result.Message)
+	}
+}
+
+func TestTestImageConnectionUsesModelListWithoutGenerating(t *testing.T) {
+	postCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			postCount++
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-image-2-2k","object":"model"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token", 5, 5)
+	result := client.TestModelConnection(context.Background(), "/v1/images/generations", "images", "gpt-image-2-2k", nil)
+	if !result.OK || postCount != 0 || !strings.Contains(result.Message, "未提交生图") {
+		t.Fatalf("postCount=%d result=%#v", postCount, result)
 	}
 }
 

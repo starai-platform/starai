@@ -113,6 +113,12 @@ func (s *AssetService) Get(ctx context.Context, userID int64, publicID string) (
 	return bucket, objectKey, &a, nil
 }
 
+func (s *AssetService) IDByObjectKey(ctx context.Context, userID int64, key string) (string, error) {
+	var id string
+	err := s.db.QueryRow(ctx, `SELECT public_id FROM assets WHERE user_id=$1 AND object_key=$2 LIMIT 1`, userID, key).Scan(&id)
+	return id, err
+}
+
 func (s *AssetService) Delete(ctx context.Context, userID int64, publicID string) error {
 	var assetID int64
 	if err := s.db.QueryRow(ctx, `SELECT id FROM assets WHERE user_id=$1 AND public_id=$2`, userID, publicID).Scan(&assetID); err != nil {

@@ -514,7 +514,7 @@ export function CreativeAgentWorkspace({
     try {
       const uploaded: BottomBarState["files"] = [];
       for (const file of selected) {
-        const kind = file.type.startsWith("image/") ? "image" : file.type.startsWith("video/") ? "video" : file.type.startsWith("audio/") ? "audio" : "doc";
+        const kind = file.type.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(file.name) ? "image" : file.type.startsWith("video/") || /\.(mp4|mov|webm|mkv|avi)$/i.test(file.name) ? "video" : file.type.startsWith("audio/") || /\.(mp3|wav|m4a|aac|ogg|oga|flac|opus|aiff|aif|wma)$/i.test(file.name) ? "audio" : "doc";
         const asset = await uploadAsset(file, { name: file.name, kind, asset_type: "prop" });
         uploaded.push({ public_id: asset.public_id, url: asset.url, name: file.name });
       }

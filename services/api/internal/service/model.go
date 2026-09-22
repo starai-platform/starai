@@ -520,6 +520,10 @@ func estimateMiniMaxH3Cost(rule map[string]interface{}, params map[string]interf
 	if rate <= 0 {
 		return floatValue(rule["fallback_cost"])
 	}
+	inputVideoRate := mapFloatValue(rule["input_video_rates_per_second"], resolution)
+	if inputVideoRate <= 0 {
+		inputVideoRate = rate
+	}
 
 	outputSeconds := parseDurationSeconds(params)
 	if actual := floatValue(params["_actual_output_seconds"]); actual > 0 {
@@ -569,7 +573,7 @@ func estimateMiniMaxH3Cost(rule map[string]interface{}, params map[string]interf
 	if multiplier <= 0 {
 		multiplier = 1
 	}
-	return ((outputSeconds+inputSeconds)*rate + float64(excessImages)*imagePrice) * pointsPerCNY * multiplier
+	return (outputSeconds*rate + inputSeconds*inputVideoRate + float64(excessImages)*imagePrice) * pointsPerCNY * multiplier
 }
 
 func estimateSeedance2TokenCost(rule map[string]interface{}, params map[string]interface{}) float64 {
@@ -1290,7 +1294,7 @@ func defaultAPIDocParameters(doc *APIDocDTO) []map[string]interface{} {
 		}
 		return appendSchemaAPIDocParameters(doc, []map[string]interface{}{
 			{"name": "model", "type": "string", "required": true, "description": "平台模型编码或后台接入模型名，例如 " + doc.ModelCode},
-			{"name": "input", "type": "string", "required": inputRequired, "description": "TTS 文本或模型的主音乐输入；MiniMax Music-2.6 中作为歌词"},
+			{"name": "input", "type": "string", "required": inputRequired, "description": "TTS 文本或模型的主音乐输入；MiniMax Music 3.0 / 2.6 中作为歌词"},
 			{"name": "voice", "type": "string", "required": false, "description": "音色，以后台模型支持为准"},
 			{"name": "format", "type": "string", "required": false, "description": "输出格式，例如 mp3 / wav"},
 			{"name": "sample_rate", "type": "integer", "required": false, "description": "采样率，以模型支持范围为准"},
@@ -1383,7 +1387,8 @@ func defaultAPIDocRequestExample(doc *APIDocDTO) map[string]interface{} {
 			"input": text,
 		})
 		audioRule, _ := doc.RuntimeRule["audio"].(map[string]interface{})
-		if audioRule["prompt_required"] == false && strings.HasPrefix(strings.ToLower(doc.NewAPIModel), "music-2.6") {
+		modelName := strings.ToLower(doc.NewAPIModel)
+		if audioRule["prompt_required"] == false && (strings.HasPrefix(modelName, "music-3.0") || strings.HasPrefix(modelName, "music-2.6")) {
 			example["input"] = "[Verse]\n夜风轻轻掠过窗前\n[Chorus]\n让星光照亮明天"
 			example["music_prompt"] = "独立民谣，温暖，木吉他，中速"
 		}

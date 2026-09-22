@@ -31,7 +31,7 @@ export interface BottomBarState {
 
 const TIMEOUTS = [10, 20, 30, 60, 120];
 
-type AssetKind = "image" | "video" | "doc";
+type AssetKind = "image" | "video" | "audio" | "doc";
 type AssetType = "role" | "scene" | "prop";
 type AssetItem = { public_id: string; name?: string; mime_type?: string; url: string; kind?: string; asset_type?: string };
 
@@ -61,6 +61,7 @@ function inferAssetKind(file: File): AssetKind {
   const name = file.name.toLowerCase();
   if (file.type.startsWith("image/")) return "image";
   if (file.type.startsWith("video/")) return "video";
+  if (file.type.startsWith("audio/") || /\.(mp3|wav|m4a|aac|ogg|oga|flac|opus|aiff|aif|wma)$/i.test(name)) return "audio";
   if (/\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(name)) return "image";
   if (/\.(mp4|mov|webm|mkv|avi)$/i.test(name)) return "video";
   return "doc";
@@ -455,6 +456,7 @@ export function ChatTopTools({
     const v = (k || "").toLowerCase();
     if (v === "image") return t("asset.image");
     if (v === "video") return t("asset.video");
+    if (v === "audio") return t("common.audio");
     if (v === "doc") return t("asset.doc");
     return t("common.asset");
   }, [t]);
@@ -1336,6 +1338,7 @@ export function ChatTopTools({
                 <button className={pill(assetType === "scene")} onClick={() => setAssetType("scene")}>{t("asset.scene")}</button>
                 <button className={pill(assetType === "prop")} onClick={() => setAssetType("prop")}>{t("asset.prop")}</button>
                 <button className={pill(assetKind === "video")} onClick={() => setAssetKind("video")}>{t("asset.video")}</button>
+                <button className={pill(assetKind === "audio")} onClick={() => setAssetKind("audio")}>{t("common.audio")}</button>
                 <button className={pill(assetKind === "doc")} onClick={() => setAssetKind("doc")}>{t("asset.doc")}</button>
               </div>
 
@@ -1459,6 +1462,7 @@ export function ChatTopTools({
                 <div className="flex items-center gap-3">
                   <button className={pill(uploadKind === "image")} onClick={() => setUploadKind("image")}>{t("asset.image")}</button>
                   <button className={pill(uploadKind === "video")} onClick={() => setUploadKind("video")}>{t("asset.video")}</button>
+                  <button className={pill(uploadKind === "audio")} onClick={() => setUploadKind("audio")}>{t("common.audio")}</button>
                   <button className={pill(uploadKind === "doc")} onClick={() => setUploadKind("doc")}>{t("asset.doc")}</button>
                 </div>
               )}
@@ -1471,7 +1475,7 @@ export function ChatTopTools({
                   <Upload size={20} />
                 </div>
                 <div className="text-base font-semibold text-gray-800 dark:text-gray-100">
-                  {t("asset.chooseLocalFile", { kind: uploadKind === "image" ? t("asset.image") : uploadKind === "video" ? t("asset.video") : t("common.document") })}
+                  {t("asset.chooseLocalFile", { kind: kindText(uploadKind) })}
                 </div>
                 <div className="text-sm text-gray-500 dark:text-gray-400">
                   {t("asset.supportedFileDesc")}
@@ -1480,7 +1484,7 @@ export function ChatTopTools({
                   ref={uploadFileRef}
                   type="file"
                   className="hidden"
-                  accept={referencePickMode ? "image/*" : uploadKind === "image" ? "image/*" : uploadKind === "video" ? "video/*" : DOC_ACCEPT}
+                  accept={referencePickMode ? "image/*" : uploadKind === "image" ? "image/*" : uploadKind === "video" ? "video/*" : uploadKind === "audio" ? "audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.opus" : DOC_ACCEPT}
                   onChange={(e) => {
                     const f = e.target.files?.[0];
                     e.target.value = "";

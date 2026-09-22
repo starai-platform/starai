@@ -78,8 +78,8 @@ const emptyRoute = (defaults: { upstreamModel: string; endpoint: string; billing
     : { billing_type: defaults.billingType, unit_cost: 0 },
   priority: 100,
   weight: 100,
-  timeout_seconds: defaults.requestMode === "images" ? 600 : 120,
-  max_retries: 0,
+  timeout_seconds: defaults.requestMode === "images" ? 600 : (["chat_completions", "responses"].includes(defaults.requestMode) ? 90 : 120),
+  max_retries: ["chat_completions", "responses"].includes(defaults.requestMode) ? 1 : 0,
   is_enabled: true,
 });
 
@@ -344,8 +344,8 @@ export function ModelRoutesEditor({ modelId, upstreamModel, endpoint, requestMod
           <label className="text-xs text-gray-600">API Key<input type="password" value={form.api_key || ""} onChange={(e) => setForm({ ...form, api_key: e.target.value })} className="mt-1 w-full rounded-lg border p-2 font-mono text-sm" placeholder="留空或保留掩码表示不修改" /></label>
           <label className="text-xs text-gray-600">优先级<input type="number" value={form.priority} onChange={(e) => setForm({ ...form, priority: Number(e.target.value) })} className="mt-1 w-full rounded-lg border p-2 text-sm" /></label>
           <label className="text-xs text-gray-600">同优先级权重<input type="number" min={1} value={form.weight} onChange={(e) => setForm({ ...form, weight: Number(e.target.value) })} className="mt-1 w-full rounded-lg border p-2 text-sm" /></label>
-          <label className="text-xs text-gray-600">超时秒数{requestMode === "images" && <span className="ml-1 text-gray-400">（图片建议至少 600）</span>}<input type="number" min={1} value={form.timeout_seconds} onChange={(e) => setForm({ ...form, timeout_seconds: Number(e.target.value) })} className="mt-1 w-full rounded-lg border p-2 text-sm" /></label>
-          <label className="text-xs text-gray-600">单线路重试次数<input type="number" min={0} max={3} value={form.max_retries} onChange={(e) => setForm({ ...form, max_retries: Number(e.target.value) })} className="mt-1 w-full rounded-lg border p-2 text-sm" /></label>
+          <label className="text-xs text-gray-600">超时秒数{requestMode === "images" ? <span className="ml-1 text-gray-400">（图片建议至少 600）</span> : ["chat_completions", "responses"].includes(requestMode) && <span className="ml-1 text-gray-400">（建议不超过 90）</span>}<input type="number" min={1} value={form.timeout_seconds} onChange={(e) => setForm({ ...form, timeout_seconds: Number(e.target.value) })} className="mt-1 w-full rounded-lg border p-2 text-sm" /></label>
+          <label className="text-xs text-gray-600">单线路重试次数{["chat_completions", "responses"].includes(requestMode) && <span className="ml-1 text-gray-400">（瞬时网关错误建议 1）</span>}<input type="number" min={0} max={3} value={form.max_retries} onChange={(e) => setForm({ ...form, max_retries: Number(e.target.value) })} className="mt-1 w-full rounded-lg border p-2 text-sm" /></label>
           <div className="col-span-2 rounded-lg border border-emerald-100 bg-emerald-50/50 p-3">
           <div className="mb-1 text-xs font-medium text-gray-800">上游成本（平台算力单位）</div>
           <p className="mb-3 text-[11px] text-gray-500">这里填写折算后的平台算力成本，用于和用户实际扣费计算毛利；不会向用户展示，也不会改变模型售价。</p>
@@ -364,6 +364,27 @@ export function ModelRoutesEditor({ modelId, upstreamModel, endpoint, requestMod
             </div>
           </div>
           <details className="col-span-2 rounded-lg border p-3"><summary className="cursor-pointer text-xs font-medium text-gray-700">高级配置</summary><div className="mt-3 grid grid-cols-3 gap-3"><label className="text-xs text-gray-600">请求头 JSON<textarea value={advanced.headers} onChange={(e) => setAdvanced({ ...advanced, headers: e.target.value })} className="mt-1 h-28 w-full rounded-lg border p-2 font-mono text-xs" /></label><label className="text-xs text-gray-600">附加参数 JSON<textarea value={advanced.extra} onChange={(e) => setAdvanced({ ...advanced, extra: e.target.value })} className="mt-1 h-28 w-full rounded-lg border p-2 font-mono text-xs" /></label><label className="text-xs text-gray-600">线路运行规则 JSON<textarea value={advanced.runtime} onChange={(e) => setAdvanced({ ...advanced, runtime: e.target.value })} className="mt-1 h-28 w-full rounded-lg border p-2 font-mono text-xs" /></label></div></details>
+          <div className="col-span-2 grid grid-cols-2 gap-3 rounded-lg border p-3">
+            {([ ["vision", "图片理解"], ["video_analysis", "视频理解"] ] as const).map(([key, label]) => {
+              let rule: Record<string, unknown> = {};
+              try { rule = JSON.parse(advanced.runtime || "{}"); } catch { /* Keep the JSON editor editable. */ }
+              const caps = (rule?.capabilities || {}) as Record<string, unknown>;
+              const aliases = key === "vision" ? ["vision", "image_input", "multimodal"] : ["video_analysis", "video_input", "video_understanding"];
+              const declared = aliases.find((alias) => typeof caps[alias] === "boolean");
+              return <label key={key} className="text-xs text-gray-600">{label}
+                <select className="mt-1 w-full rounded-lg border p-2" value={declared ? String(caps[declared]) : "inherit"} onChange={(e) => {
+                  try {
+                    const next = JSON.parse(advanced.runtime || "{}");
+                    const capabilities = { ...(next.capabilities || {}) };
+                    aliases.forEach((alias) => delete capabilities[alias]);
+                    if (e.target.value !== "inherit") capabilities[key] = e.target.value === "true";
+                    setAdvanced({ ...advanced, runtime: JSON.stringify({ ...next, capabilities }, null, 2) });
+                  } catch { setMessage("请先修正线路运行规则 JSON"); }
+                }}><option value="inherit">继承模型设置</option><option value="true">支持</option><option value="false">不支持</option></select>
+              </label>;
+            })}
+            <p className="col-span-2 text-xs text-gray-500">作用于聊天、画布和工作流的分析请求；不支持所需媒体的线路会被跳过。勾选不会赋予上游模型本身不具备的能力。</p>
+          </div>
           <label className="col-span-2 flex items-center gap-2 text-xs text-gray-700"><input type="checkbox" checked={form.is_enabled} onChange={(e) => setForm({ ...form, is_enabled: e.target.checked })} />启用该线路</label>
           <div className="col-span-2 flex items-center justify-between"><span className="text-xs text-red-500">{message}</span><div className="flex gap-2"><button type="button" onClick={() => setEditingId(null)} className="rounded-lg border px-4 py-2 text-xs">取消</button><button type="button" disabled={busy} onClick={save} className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-medium text-white disabled:opacity-50">{busy ? "保存中…" : "保存线路"}</button></div></div>
         </div>

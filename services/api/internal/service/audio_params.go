@@ -26,6 +26,9 @@ func BuildUpstreamAudioPayload(model *ModelFull, params map[string]interface{}) 
 		setPayloadValue(out, mappedUpstreamKey(upCfg, "input", "input"), text)
 	}
 	for k, v := range model.NewAPIExtraParams {
+		if k == "connection" {
+			continue
+		}
 		out[k] = v
 	}
 	if upCfg.Static != nil {
@@ -77,7 +80,7 @@ func validateAudioTaskParams(model *ModelFull, params map[string]interface{}) er
 			return errors.New("音乐描述和歌词至少填写一项")
 		}
 	}
-	if strings.Contains(endpoint, "music_generation") && strings.HasPrefix(modelName, "music-2.6") {
+	if strings.Contains(endpoint, "music_generation") && (strings.HasPrefix(modelName, "music-3.0") || strings.HasPrefix(modelName, "music-2.6")) {
 		instrumental := audioBoolValue(params["is_instrumental"])
 		optimizer := audioBoolValue(params["lyrics_optimizer"])
 		if instrumental && musicPrompt == "" {

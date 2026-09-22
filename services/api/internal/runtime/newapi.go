@@ -309,6 +309,7 @@ type PlatformError struct {
 	Code       string
 	Message    string
 	StatusCode int
+	Detail     string
 }
 
 func (e *PlatformError) Error() string {
@@ -323,21 +324,29 @@ func mapError(err error) error {
 }
 
 func normalizeHTTPError(resp *http.Response) error {
-	body, _ := io.ReadAll(resp.Body)
-	msg := string(body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	detail := connectionTestMessage(body)
+	msg := strings.ToLower(detail)
+	platformError := func(code, message string) error {
+		return &PlatformError{Code: code, Message: message, StatusCode: resp.StatusCode, Detail: detail}
+	}
+	if strings.Contains(msg, "content_policy") || strings.Contains(msg, "content filter") || strings.Contains(msg, "safety") {
+		return platformError("CONTENT_REJECTED", "内容不符合平台规范")
+	}
+	if strings.Contains(msg, "insufficient_quota") || strings.Contains(msg, "insufficient quota") {
+		return platformError("MODEL_QUOTA_EXHAUSTED", "模型额度不足，平台处理中")
+	}
 	switch resp.StatusCode {
+	case 400, 422:
+		return platformError("MODEL_BAD_REQUEST", "模型请求参数或内容不兼容，请检查线路配置后重试")
 	case 401, 403:
-		return &PlatformError{Code: "MODEL_AUTH_FAILED", Message: "模型暂不可用", StatusCode: resp.StatusCode}
+		return platformError("MODEL_AUTH_FAILED", "模型线路鉴权失败，平台处理中")
 	case 429:
-		return &PlatformError{Code: "MODEL_RATE_LIMITED", Message: "当前使用人数较多，请稍后重试", StatusCode: resp.StatusCode}
+		return platformError("MODEL_RATE_LIMITED", "当前使用人数较多，请稍后重试")
+	case 502, 503, 504, 520, 521, 522, 523, 524:
+		return platformError("MODEL_GATEWAY_ERROR", "模型线路网关暂时异常，系统已尝试恢复，请稍后重试")
 	default:
-		if strings.Contains(msg, "content_policy") || strings.Contains(msg, "CONTENT") {
-			return &PlatformError{Code: "CONTENT_REJECTED", Message: "内容不符合平台规范", StatusCode: resp.StatusCode}
-		}
-		if strings.Contains(msg, "insufficient_quota") {
-			return &PlatformError{Code: "MODEL_QUOTA_EXHAUSTED", Message: "模型额度不足，平台处理中", StatusCode: resp.StatusCode}
-		}
-		return &PlatformError{Code: "MODEL_PROVIDER_ERROR", Message: "模型服务异常", StatusCode: resp.StatusCode}
+		return platformError("MODEL_PROVIDER_ERROR", "模型服务异常")
 	}
 }
 
@@ -479,23 +488,33 @@ func (c *Client) TestModelConnection(ctx context.Context, endpoint, requestMode,
 		result.Message = "未配置上游 Base URL"
 		return result
 	}
-	if requestMode == "chat_completions" {
-		models, listErr := c.ListModels(ctx, extra)
+	probeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if requestMode == "chat_completions" || requestMode == "images" {
+		listCtx, listCancel := context.WithTimeout(probeCtx, 5*time.Second)
+		models, listErr := c.ListModels(listCtx, extra)
+		listCancel()
 		if listErr == nil {
 			for _, item := range models {
 				if item.ID == model {
 					result.OK = true
-					result.Message = "连接、鉴权及模型列表正常"
+					if requestMode == "images" {
+						result.Message = "图片服务连接、鉴权及模型列表正常（未提交生图；参考图编辑接口未实际生成验证）"
+					} else {
+						result.Message = "连接、鉴权及模型列表正常"
+					}
 					result.StatusCode = http.StatusOK
 					return result
 				}
 			}
-			result.StatusCode = http.StatusOK
-			result.Message = fmt.Sprintf("连接与鉴权正常，但上游模型列表中没有 %q", model)
-			return result
+			if requestMode == "chat_completions" {
+				result.StatusCode = http.StatusOK
+				result.Message = fmt.Sprintf("连接与鉴权正常，但上游模型列表中没有 %q", model)
+				return result
+			}
 		}
 		// Some OpenAI-compatible providers omit GET /v1/models. Fall back to
-		// a valid, minimal chat request instead of treating a 404 as a bad key.
+		// endpoint validation instead of treating a 404 as a bad key.
 	}
 	if strings.TrimSpace(endpoint) == "" {
 		switch requestMode {
@@ -527,9 +546,9 @@ func (c *Client) TestModelConnection(ctx context.Context, endpoint, requestMode,
 		}
 	} else if requestMode == "images" {
 		protocol = mediaProtocol(extra)
-		// Only probe endpoint/auth validation. A valid prompt would start a paid,
-		// long-running image job and commonly outlive the admin HTTP request.
-		body, _ = json.Marshal(map[string]interface{}{"model": model, "prompt": "", "n": 0})
+		// An empty request can only exercise endpoint/auth/validation. Supplying a
+		// model can make some providers enqueue a paid job despite an invalid prompt.
+		body = []byte(`{}`)
 	} else if requestMode == "video" {
 		protocol = mediaProtocol(extra)
 		body, err = prepareVideoRequest(VideoRequest{
@@ -560,8 +579,6 @@ func (c *Client) TestModelConnection(ctx context.Context, endpoint, requestMode,
 		}
 		body, _ = json.Marshal(probePayload)
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodPost, joinEndpoint(cfg.BaseURL, endpoint), bytes.NewReader(body))
 	if err != nil {
 		result.Message = "测试请求创建失败：" + err.Error()

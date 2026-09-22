@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/starai/api/internal/runtime"
 	"github.com/starai/api/internal/util"
 )
 
@@ -391,6 +392,9 @@ func (r ModelRoute) RequestExtraForRequest(model *ModelFull, requestID string) m
 		"api_key_header": r.APIKeyHeader, "headers": headers, "protocol": r.Protocol,
 	}
 	out["connection"] = connection
+	if strings.HasSuffix(strings.TrimRight(r.Endpoint, "/"), "/responses") || (r.Endpoint == "" && model.RequestMode == "responses") {
+		out["request_mode"] = "responses"
+	}
 	if r.TimeoutSeconds > 0 {
 		out["timeout_seconds"] = r.TimeoutSeconds
 	}
@@ -698,9 +702,17 @@ func (s *ModelService) UpdateSuccessfulRouteAttemptCost(ctx context.Context, req
 	)`, providerCost, requestID, routeID)
 }
 
-func (s *ModelService) MarkStreamRouteAttemptFailed(ctx context.Context, requestID string, routeID int64, attempt int) {
-	_, _ = s.db.Exec(ctx, `UPDATE model_route_attempts SET status='failed',error_code='STREAM_ERROR'
-		WHERE id=(SELECT id FROM model_route_attempts WHERE request_id=$1 AND route_id=$2 AND attempt=$3 ORDER BY id DESC LIMIT 1)`, requestID, routeID, attempt)
+func (s *ModelService) MarkStreamRouteAttemptFailed(ctx context.Context, requestID string, routeID int64, attempt int, err error) {
+	status, code := "failed", "STREAM_ERROR"
+	var pe *runtime.PlatformError
+	if errors.As(err, &pe) {
+		code = pe.Code
+	}
+	if !isRouteFailoverError(err) {
+		status = "rejected"
+	}
+	_, _ = s.db.Exec(ctx, `UPDATE model_route_attempts SET status=$4,error_code=$5
+		WHERE id=(SELECT id FROM model_route_attempts WHERE request_id=$1 AND route_id=$2 AND attempt=$3 ORDER BY id DESC LIMIT 1)`, requestID, routeID, attempt, status, code)
 }
 
 func (s *ModelService) SuccessfulRouteForRequest(ctx context.Context, requestID string) (*ModelRoute, error) {

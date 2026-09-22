@@ -127,7 +127,7 @@ func TestStandardAPIDocContentSupportsFunMusicLyricsOnly(t *testing.T) {
 
 func TestStandardAPIDocContentExplainsMiniMaxMusicInputs(t *testing.T) {
 	doc := &APIDocDTO{
-		Slug: "minimax-music", ModelCode: "minimax-music", RequestMode: "audio", NewAPIModel: "music-2.6",
+		Slug: "minimax-music", ModelCode: "minimax-music", RequestMode: "audio", NewAPIModel: "music-3.0",
 		RuntimeRule: map[string]interface{}{"audio": map[string]interface{}{"prompt_required": false}},
 	}
 	content := standardAPIDocContent(doc, nil)

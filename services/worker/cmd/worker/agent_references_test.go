@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -51,6 +52,31 @@ func TestAnalysisRequiresDeclaredImageSupport(t *testing.T) {
 	model := agentAnalysisModel{RuntimeRule: map[string]interface{}{"capabilities": map[string]interface{}{"vision": true}}}
 	if !agentAnalysisModelAcceptsImages(model) {
 		t.Fatal("vision model rejected image content")
+	}
+}
+
+func TestLLMMediaValidationAndVideoSerialization(t *testing.T) {
+	ctx := context.Background()
+	for _, ref := range []string{"invalid", "data:image/png;base64,aGVsbG8=", "data:image/png;base64,"} {
+		if _, err := normalizeLLMImages(ctx, []string{ref}); err == nil {
+			t.Fatalf("accepted invalid reference %q", ref)
+		}
+	}
+	allowed, exists := workerMediaCapability(map[string]interface{}{"capabilities": map[string]interface{}{"vision": false, "multimodal": true}}, "vision", "image_input", "multimodal")
+	if allowed || !exists {
+		t.Fatal("explicit false did not override alias")
+	}
+	ref := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString([]byte("video fixture"))
+	for _, protocol := range []string{"openai", "gemini"} {
+		body, _ := buildWorkerLLMRequest(workerModelRoute{Protocol: protocol}, "chat", "model", "system", "user", 0.3)
+		applyAgentVisionContent(ctx, body, protocol, "chat", "system", "user", nil)
+		if err := applyWorkerVideoContent(ctx, body, protocol, []string{ref}); err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := json.Marshal(body)
+		if !strings.Contains(string(raw), strings.SplitN(ref, ",", 2)[1]) {
+			t.Fatalf("%s lost video: %s", protocol, raw)
+		}
 	}
 }
 

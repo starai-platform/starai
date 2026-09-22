@@ -1113,10 +1113,12 @@ function storyNarrationAudioModels(models: Model[]) {
 function preferredMultimodalChatModel(models: Model[]) {
   const explicit = models.find((model) => {
     const capabilities = (model.runtime_rule?.capabilities || {}) as Record<string, unknown>;
-    return capabilities.vision === true || capabilities.multimodal === true || capabilities.image_input === true || capabilities.video_input === true;
+    for (const key of ["vision", "image_input", "multimodal"]) {
+      if (typeof capabilities[key] === "boolean") return capabilities[key] === true;
+    }
+    return false;
   });
-  const modelHint = /(vision|multimodal|(?:^|[-_\s])vl(?:[-_\s]|$)|gpt[-_\s]?(?:4o|5)|gemini|claude)/i;
-  return explicit || models.find((model) => modelHint.test(`${model.code} ${model.display_name}`)) || models[0];
+  return explicit;
 }
 
 function preferredVideoAnalysisChatModel(models: Model[]) {
@@ -3021,9 +3023,9 @@ function CanvasEditor({
     }
     update(id, { status: "running", error: "" });
     try {
-      const kind: GeneratorKind = file.type.startsWith("video/")
+      const kind: GeneratorKind = file.type.startsWith("video/") || /\.(mp4|mov|webm|mkv|avi)$/i.test(file.name)
         ? "video"
-        : file.type.startsWith("audio/")
+        : file.type.startsWith("audio/") || /\.(mp3|wav|m4a|aac|ogg|oga|flac|opus|aiff|aif|wma)$/i.test(file.name)
           ? "audio"
           : "image";
       const asset = await uploadAsset(file, { name: file.name, kind, asset_type: "prop" });

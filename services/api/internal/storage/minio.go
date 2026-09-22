@@ -61,6 +61,7 @@ func (c *Client) Upload(ctx context.Context, objectName, contentType string, r i
 	_, err := c.mc.PutObject(ctx, c.bucket, objectName, r, size, minio.PutObjectOptions{
 		ContentType:        contentType,
 		ContentDisposition: "inline",
+		CacheControl:       "public, max-age=86400, stale-while-revalidate=604800",
 	})
 	if err != nil {
 		return "", err

@@ -148,7 +148,7 @@ export default function RoleTemplatesPage() {
       <div className="flex items-start justify-between gap-6 mb-6">
         <div>
           <h1 className="text-2xl font-bold">角色模板</h1>
-          <p className="text-sm text-gray-500 mt-1">维护前台“创建角色”可选模板（支持上传 LOGO）。</p>
+          <p className="text-sm text-gray-500 mt-1">维护工作台可直接选择的平台角色，也作为“创建角色”的可选模板（支持上传 LOGO）。</p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <button onClick={refresh} className="px-4 py-2 rounded-xl border text-sm hover:bg-gray-50">
@@ -169,7 +169,7 @@ export default function RoleTemplatesPage() {
           </button>
         </div>
         <div className="col-span-2 px-4 py-3 rounded-2xl bg-gray-50 border border-gray-100 text-sm text-gray-600">
-          模板将出现在用户端“角色管理 → 创建角色 → 选择模板”中。建议填入清晰的系统提示词，并设置合适的排序。
+          模板会出现在用户端“已有角色”的平台角色列表，也可用于“创建角色 → 选择模板”。建议填入清晰的系统提示词，并设置合适的排序。
         </div>
         <div>
           <label className="text-xs text-gray-500">code（唯一）</label>
@@ -325,4 +325,3 @@ export default function RoleTemplatesPage() {
     </div>
   );
 }
-

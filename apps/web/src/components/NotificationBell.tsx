@@ -34,8 +34,8 @@ export function NotificationBell() {
       const target = e.target as HTMLElement | null;
       if (!target?.closest("[data-starai-notif]")) setOpen(false);
     };
-    document.addEventListener("click", onDocClick);
-    return () => document.removeEventListener("click", onDocClick);
+    document.addEventListener("pointerdown", onDocClick, true);
+    return () => document.removeEventListener("pointerdown", onDocClick, true);
   }, []);
 
   const load = async () => {
@@ -81,6 +81,7 @@ export function NotificationBell() {
     <div className="relative" data-starai-notif>
       <button
         type="button"
+        aria-expanded={open}
         onClick={() => {
           setOpen((v) => !v);
           if (!open) load();

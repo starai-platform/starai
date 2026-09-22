@@ -3,7 +3,7 @@ const path = require("path");
 
 const root = path.resolve(__dirname, "..");
 const srcDir = path.join(root, "apps", "web", "src");
-const outputFile = path.join(root, "docs", "i18n-missing-web-zh.md");
+const outputFile = path.join(root, "docs", "local", "i18n-missing-web-zh.md");
 const includeExt = new Set([".ts", ".tsx"]);
 const exclude = [
   path.join("apps", "web", "src", "i18n", "dictionaries.ts"),
@@ -28,6 +28,7 @@ function rel(file) {
 
 function isExcluded(file) {
   const relative = rel(file);
+  if (relative.startsWith("apps/web/src/i18n/") || relative.endsWith(".test.ts")) return true;
   return exclude.some((item) => relative === item.replace(/\\/g, "/"));
 }
 
@@ -67,5 +68,6 @@ for (const [file, items] of grouped) {
   out += "\n";
 }
 
+fs.mkdirSync(path.dirname(outputFile), { recursive: true });
 fs.writeFileSync(outputFile, out, "utf8");
 console.log(`Wrote ${rel(outputFile)} (${matches.length} matches)`);

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -63,6 +64,29 @@ func AgentVideoLayout(model *ModelFull, target int) (count, seconds int, err err
 
 // ValidateVideoParams checks upload slots + input_schema enums/required fields.
 func ValidateVideoParams(model *ModelFull, params map[string]interface{}) error {
+	if config, ok := model.RuntimeRule["lip_sync"].(map[string]interface{}); ok && (config["provider"] == "sync" || config["protocol"] == "sync_v2" || config["protocol"] == "video_audio") {
+		inputs, ok := params["input"].([]interface{})
+		if !ok || len(inputs) != 2 {
+			return errors.New("口型同步需要一个视频和一个已定稿的配音")
+		}
+		counts := map[string]int{}
+		for _, raw := range inputs {
+			item, ok := raw.(map[string]interface{})
+			if !ok {
+				return errors.New("口型同步输入格式无效")
+			}
+			kind, _ := item["type"].(string)
+			address, _ := item["url"].(string)
+			parsed, err := url.Parse(address)
+			if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+				return errors.New("口型同步素材地址无效")
+			}
+			counts[kind]++
+		}
+		if counts["video"] != 1 || counts["audio"] != 1 {
+			return errors.New("口型同步需要恰好一个视频和一个音频")
+		}
+	}
 	normalizeVideoSchemaParamTypes(model.InputSchema, params)
 	cfg := parseVideoRuntimeConfig(model.RuntimeRule)
 	if err := validateVideoUpload(cfg, params); err != nil {

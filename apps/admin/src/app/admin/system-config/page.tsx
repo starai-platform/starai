@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useState } from "react";
 import { adminApi, adminUploadFile } from "@/lib/api";
@@ -80,6 +80,7 @@ const BASE_ITEMS: ConfigItem[] = [
 ];
 
 const MEMBER_ITEMS: ConfigItem[] = [
+  { key: "user_login_days", label: "用户登录有效期（天）", type: "number", min: 1, step: 1, hint: "1–365 天，默认 3 天，可设为 30 天。从登录时开始计算，保存后对新登录生效；已登录用户重新登录后使用新有效期。" },
   { key: "site_base_url", label: "前台站点地址", type: "text", hint: "OAuth 登录完成后的前台地址，例如 https://starai.example.com" },
   { key: "signup_bonus", label: "注册赠送算力", type: "number", hint: "新用户注册赠送的算力，0 表示不赠送。" },
   { key: "image_captcha_enabled", label: "启用图形验证码", type: "checkbox", hint: "关闭后，前台登录和注册/邮箱验证码获取不再显示或校验图形验证码。" },
@@ -271,6 +272,9 @@ function mergeTranslationRows(current: UITranslationRow[], incoming: UITranslati
 
 export default function SystemConfigPage() {
   const [configs, setConfigs] = useState<Record<string, unknown>>({});
+  const lipProvider = String(configs.sync_provider || "sync");
+  const lipPrefix = lipProvider === "sync" ? "sync_" : `sync_${lipProvider}_`;
+  const lipWaveSpeed = lipProvider === "wavespeed";
   const [saved, setSaved] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
   const [saveErr, setSaveErr] = useState("");
@@ -312,14 +316,26 @@ export default function SystemConfigPage() {
               String(cfg.customer_service_enabled).toLowerCase() === "false"
             );
       setConfigs({
+        sync_provider: "sync",
+        sync_wavespeed_base_url: "https://api.wavespeed.ai", sync_wavespeed_api_key: "", sync_wavespeed_unit_price: 0, sync_wavespeed_unit_cost: 0,
+        sync_enabled: false,
+        sync_base_url: "https://api.sync.so",
+        sync_model: "sync-3",
+        sync_api_key: "",
+        sync_unit_price: 0,
+        sync_unit_cost: 0,
+        sync_timeout_sec: 1800,
         workbench_default_theme: "dark",
         web_search_enabled: false,
         web_search_provider: "tavily",
         web_search_api_key: "",
+        web_search_exa_api_key: "",
         web_search_base_url: "",
         web_search_redfox_api_key: "",
         web_search_redfox_base_url: "",
         web_search_redfox_engine: "kimi",
+        douyin_import_redfox_api_key: "",
+        douyin_import_redfox_base_url: "",
         web_search_depth: "basic",
         web_search_max_results: 5,
         web_search_timeout_sec: 12,
@@ -340,6 +356,7 @@ export default function SystemConfigPage() {
         home_meta_title: "",
         home_meta_description: "",
         email_provider: "smtp",
+        user_login_days: 3,
         ...cfg,
         customer_service_enabled: customerServiceEnabled,
         customer_service_mode: cfg.customer_service_mode === "custom_script" ? "custom_script" : "builtin",
@@ -1390,17 +1407,19 @@ export default function SystemConfigPage() {
             {renderItem({ key: "web_search_enabled", label: "启用智能搜索", type: "checkbox", hint: "关闭后用户端不显示智能搜索按钮。" })}
             {renderItem({ key: "web_search_provider", label: "搜索服务商", type: "select", options: [
               { value: "tavily", label: "Tavily（推荐）" },
+              { value: "exa", label: "Exa Search API" },
               { value: "hybrid", label: "混合模式（SearXNG 优先，Tavily 兜底）" },
               { value: "brave", label: "Brave Search API" },
               { value: "searxng", label: "SearXNG（自建）" },
               { value: "redfox", label: "RedFox 抖音数据 API" },
             ], onChange: (value) => setConfigs((prev) => ({ ...prev, web_search_provider: value, web_search_enabled: true })), hint: "切换服务商时会同步开启智能搜索；如需停用，请在切换后手动关闭。" })}
             {["tavily", "brave", "hybrid"].includes(String(configs.web_search_provider || "tavily")) && renderItem({ key: "web_search_api_key", label: "搜索 API Key", type: "password", hint: "Tavily / Brave 使用；保存后只显示脱敏值，不会下发到用户端。" })}
+            {String(configs.web_search_provider || "tavily") === "exa" && renderItem({ key: "web_search_exa_api_key", label: "Exa API Key", type: "password", hint: "在 Exa 控制台获取；独立保存，不覆盖其他搜索服务的密钥。使用标准搜索并获取相关网页摘录，消耗 Exa 账户额度。" })}
             {["searxng", "hybrid"].includes(String(configs.web_search_provider || "tavily")) && renderItem({ key: "web_search_base_url", label: "SearXNG 服务地址", type: "text", hint: "内置生产环境填写 http://searxng:8080；本地开发填写 http://127.0.0.1:8888。" })}
             {String(configs.web_search_provider || "tavily") === "redfox" && renderItem({ key: "web_search_base_url", label: "备用 SearXNG 地址", type: "text", hint: "RedFox 未返回可核验网页来源时自动回退；留空则不回退。本地开发可填写 http://127.0.0.1:8888。" })}
             {String(configs.web_search_provider || "tavily") === "redfox" && renderItem({ key: "web_search_api_key", label: "二级备用 Tavily API Key", type: "password", hint: "RedFox 和 SearXNG 都无可核验结果时使用；留空则不启用二级回退。保存后仅显示脱敏值。" })}
-            {String(configs.web_search_provider || "tavily") === "redfox" && renderItem({ key: "web_search_redfox_api_key", label: "RedFox API Key", type: "password", hint: "在 RedFoxHub 获取；独立保存，切换到其他搜索服务商时不会被覆盖。" })}
-            {String(configs.web_search_provider || "tavily") === "redfox" && renderItem({ key: "web_search_redfox_base_url", label: "RedFox 服务地址", type: "text", hint: "留空使用官方地址 https://redfox.hk；仅代理或私有网关场景需要修改。" })}
+            {String(configs.web_search_provider || "tavily") === "redfox" && renderItem({ key: "web_search_redfox_api_key", label: "RedFox 搜索 API Key", type: "password", hint: "只用于 Agent 联网搜索；保存后只显示脱敏值。" })}
+            {String(configs.web_search_provider || "tavily") === "redfox" && renderItem({ key: "web_search_redfox_base_url", label: "RedFox 搜索服务地址", type: "text", hint: "留空使用官方地址 https://redfox.hk；仅代理或私有网关场景需要修改。" })}
             {renderItem({ key: "agent_default_timezone", label: "Agent 默认时区", type: "text", hint: "IANA 时区，例如 Asia/Shanghai、Asia/Tokyo、America/New_York。用于可信系统时间工具。" })}
             {renderItem({ key: "web_search_router_model_code", label: "模糊问题路由模型", type: "select", options: [
               { value: "", label: "跟随 Agent 主模型" },
@@ -1421,6 +1440,35 @@ export default function SystemConfigPage() {
               {webSearchTesting ? "测试中..." : "测试搜索连接"}
             </button>
             <span className="text-xs text-gray-400">测试会发起一次真实搜索，可能消耗服务商免费额度。</span>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm shadow-gray-950/5 xl:col-span-2">
+          <div className="mb-1 text-sm font-semibold text-gray-900">口型同步</div>
+          <p className="mb-5 text-xs leading-relaxed text-gray-400">视频创作、爆款复刻与 AI 漫剧共用。人物对白按镜头同步口型，旁白跳过。保存后自动维护专用模型和线路；关闭后保留素材与历史记录。</p>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {renderItem({ key: "sync_provider", label: "口型同步服务", type: "select", options: [
+              { value: "sync", label: "Sync（商业付费）" },
+              { value: "wavespeed", label: "WaveSpeed LatentSync（经济型商业 API）" },
+            ] })}
+            {renderItem({ key: "sync_enabled", label: "启用人物口型同步", type: "checkbox", hint: "启用前请填写密钥并确认价格；人物对白缺少可用接口时会提示配置。" })}
+            {renderItem({ key: `${lipPrefix}base_url`, label: lipWaveSpeed ? "WaveSpeed 服务地址" : "Sync 服务地址", type: "text", hint: lipWaveSpeed ? "默认 https://api.wavespeed.ai；使用托管 LatentSync，无需部署 GPU。" : "默认 https://api.sync.so；接口为 /v2/generate。" })}
+            {renderItem({ key: `${lipPrefix}api_key`, label: lipWaveSpeed ? "WaveSpeed API Key" : "Sync API Key", type: "password", hint: "密钥加密保存；已保存的掩码保持原密钥，清空会删除密钥。认证由所选服务自动设置。" })}
+            {!lipWaveSpeed && renderItem({ key: "sync_model", label: "上游模型", type: "text", hint: "默认 sync-3，请填写账户可调用的 Sync 模型名称。" })}
+            {renderItem({ key: `${lipPrefix}unit_price`, label: "每秒售价（算力）", type: "number", min: 0, step: 0.001, hint: lipWaveSpeed ? "可设为0，对用户免费；平台仍需支付商业 API 费用。" : "按处理秒数计费，0 表示用户免费；上游仍可能收费。" })}
+            {renderItem({ key: `${lipPrefix}unit_cost`, label: "每秒上游成本（平台成本单位）", type: "number", min: 0, step: 0.001, hint: "用于成本统计，按实际服务商价格换算填写。" })}
+            {renderItem({ key: "sync_timeout_sec", label: "任务超时（秒）", type: "number", min: 60, step: 1, hint: "允许60–7200秒，默认1800秒。" })}
+          </div>
+          {lipWaveSpeed && <p className="mt-4 rounded-xl bg-amber-50 p-3 text-xs leading-relaxed text-amber-900">WaveSpeed 官方文档标注最低 $0.09（不足3秒按3秒，时长向上取整）；实际价格以服务商账单为准。每秒成本为平台估算，短镜头最低收费可能使实际成本更高。切换前请等待在途任务完成。</p>}
+          <button type="button" disabled={saving} onClick={() => handleSave(Object.fromEntries(Object.entries(configs).filter(([key]) => key.startsWith("sync_"))))} className="mt-5 rounded-xl bg-gray-950 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">{saving ? "保存中..." : "保存口型同步配置"}</button>
+        </section>
+
+        <section className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm shadow-gray-950/5 xl:col-span-2">
+          <div className="mb-1 text-sm font-semibold text-gray-900">抖音视频链接导入</div>
+          <p className="mb-5 text-xs leading-relaxed text-gray-400">与“Agent 联网搜索”无关。系统先尝试公共解析器；公共服务出现 502/503 时自动使用 RedFox，可能产生接口费用。</p>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {renderItem({ key: "douyin_import_redfox_api_key", label: "视频解析 RedFox API Key", type: "password", hint: "在 RedFoxHub 获取；未配置时公共解析器熔断将无法导入抖音视频。" })}
+            {renderItem({ key: "douyin_import_redfox_base_url", label: "视频解析 RedFox 服务地址", type: "text", hint: "留空使用 https://redfox.hk；一般无需修改。" })}
           </div>
         </section>
 

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   BadgeDollarSign,
@@ -45,6 +45,25 @@ export function WorkbenchUserMenu({ onRecharge }: Props) {
   const apiDocsVisible = api_docs_enabled !== false && (!api_docs_operations || Object.keys(api_docs_operations).length === 0 || Object.values(api_docs_operations).some((value) => value !== false));
   const { logout } = useAuthStore();
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (!triggerRef.current?.contains(target) && !panelRef.current?.contains(target)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { setOpen(false); triggerRef.current?.focus(); }
+    };
+    document.addEventListener("pointerdown", dismiss, true);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss, true);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [open]);
   const [user, setUser] = useState<StoredUser | null>(null);
   const [wallet, setWallet] = useState<{ compute_balance?: number; cash_balance?: number } | null>(null);
   const [announceOpen, setAnnounceOpen] = useState(false);
@@ -113,6 +132,8 @@ export function WorkbenchUserMenu({ onRecharge }: Props) {
     <>
       <div className="relative" data-starai-user-menu>
         <button
+          ref={triggerRef}
+          aria-expanded={open}
           type="button"
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
@@ -127,8 +148,7 @@ export function WorkbenchUserMenu({ onRecharge }: Props) {
 
         {open && typeof document !== "undefined" && createPortal(
           <>
-          <button type="button" aria-label={t("common.close")} className="fixed inset-0 z-[100] cursor-default bg-transparent" onClick={() => setOpen(false)} />
-          <div className="fixed left-4 right-4 top-16 z-[110] rounded-2xl border border-white/80 bg-white p-3 shadow-xl sm:left-auto sm:right-4 sm:w-[340px] dark:border-white/10 dark:bg-gray-900" onClick={(e) => e.stopPropagation()}>
+          <div ref={panelRef} className="fixed left-4 right-4 top-16 z-[110] rounded-2xl border border-white/80 bg-white p-3 shadow-xl sm:left-auto sm:right-4 sm:w-[340px] dark:border-white/10 dark:bg-gray-900" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">{user?.nickname || t("common.notLoggedIn")}</div>

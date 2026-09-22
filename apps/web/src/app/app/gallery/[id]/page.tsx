@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/api";
+import { useI18n } from "@/i18n/I18nProvider";
 
 interface GalleryItem {
   public_id: string;
@@ -21,6 +22,7 @@ interface GalleryItem {
 }
 
 export default function GalleryDetailPage() {
+  const { t } = useI18n();
   const params = useParams();
   const router = useRouter();
   const id = params?.id as string;
@@ -45,7 +47,7 @@ export default function GalleryDetailPage() {
         router.push(`/app?prompt=${encodeURIComponent(prompt)}`);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "生成同款失败");
+      setError(err instanceof Error ? err.message : t("生成同款失败"));
       setCloning(false);
     }
   };
@@ -69,7 +71,7 @@ export default function GalleryDetailPage() {
               <video src={mediaURL} poster={poster || undefined} controls playsInline className="w-full bg-gray-950" />
             ) : mediaURL ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={mediaURL} alt={item.title || ""} className="w-full object-cover" />
+              <img loading="lazy" decoding="async" src={mediaURL} alt={item.title || ""} className="w-full object-cover" />
             ) : (
               <div className="aspect-[4/3] bg-gray-100" />
             )}
@@ -93,7 +95,7 @@ export default function GalleryDetailPage() {
               disabled={cloning}
               className="w-full py-3 rounded-xl bg-primary text-dark font-semibold disabled:opacity-50"
             >
-              {cloning ? "跳转中..." : item.is_paid ? `付费生成同款（${item.price || 0} 算力点）` : "生成同款"}
+              {cloning ? t("跳转中...") : item.is_paid ? `付费生成同款（${item.price || 0} 算力点）` : t("生成同款")}
             </button>
             {error && <div className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div>}
           </div>

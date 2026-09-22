@@ -7,6 +7,8 @@ out/
 dist/
 build/
 apps/*/.next/
+apps/*/.next-corrupt-*/
+apps/*/.next-stale-*/
 apps/*/out/
 apps/*/dist/
 apps/*/build/
@@ -84,3 +86,11 @@ StarAI-系统缺陷分析报告.md
 *-分析报告.md
 *-缺陷分析报告.md
 *.superseded
+
+# Local dated audits, review notes, and fix reports (do not commit)
+docs/local/
+docs/*-audit-*.md
+docs/*-review-*.md
+docs/*-fix-*.md
+docs/*-acceptance-*.md
+docs/*-lipsync-*.md

@@ -6,7 +6,7 @@ export type PublicSystemConfig = Partial<SystemConfig>;
 
 export async function getPublicSystemConfig(): Promise<PublicSystemConfig> {
   try {
-    const res = await fetch(`${API_URL}/api/system-configs/public`, { cache: "no-store" });
+    const res = await fetch(`${API_URL}/api/system-configs/public`, { next: { revalidate: 60 }, signal: AbortSignal.timeout(5_000) });
     if (!res.ok) return {};
     const json = await res.json();
     return (json?.data || {}) as PublicSystemConfig;

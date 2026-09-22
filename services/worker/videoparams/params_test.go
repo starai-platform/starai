@@ -6,6 +6,28 @@ import (
 	"testing"
 )
 
+func TestWaveSpeedLipSyncPayload(t *testing.T) {
+	input := []interface{}{map[string]interface{}{"type": "video", "url": "https://example.com/v.mp4"}, map[string]interface{}{"type": "audio", "url": "https://example.com/a.wav"}}
+	got := BuildUpstreamVideoPayload("video_sync_lipsync", "wavespeed-ai/latentsync", map[string]interface{}{"upstream": map[string]interface{}{"adapter": "wavespeed_lipsync"}}, nil, map[string]interface{}{"input": input, "duration": 8, "prompt": "do not send"})
+	if len(got) != 2 || got["video"] != "https://example.com/v.mp4" || got["audio"] != "https://example.com/a.wav" {
+		t.Fatalf("wrong WaveSpeed payload: %#v", got)
+	}
+}
+
+func TestSyncPayloadUsesOnlyLockedMedia(t *testing.T) {
+	input := []interface{}{map[string]interface{}{"type": "video", "url": "https://example.com/v.mp4"}, map[string]interface{}{"type": "audio", "url": "https://example.com/a.wav"}}
+	got := BuildUpstreamVideoPayload("video_sync_lipsync", "sync-3", map[string]interface{}{"upstream": map[string]interface{}{"adapter": "sync_lipsync"}}, nil,
+		map[string]interface{}{"input": input, "duration": 8, "prompt": "not sent", "user_prompt": "not sent"})
+	if len(got) != 2 || got["model"] != "sync-3" {
+		t.Fatalf("Sync payload leaked generation parameters: %#v", got)
+	}
+	encoded, _ := json.Marshal(got["input"])
+	expected, _ := json.Marshal(input)
+	if string(encoded) != string(expected) {
+		t.Fatalf("Sync input changed: %s", encoded)
+	}
+}
+
 func TestBuildUpstreamPayloadPreservesConfiguredVideoDurations(t *testing.T) {
 	for _, seconds := range []int{5, 6, 8, 10, 12, 15} {
 		t.Run(strconv.Itoa(seconds)+"s", func(t *testing.T) {

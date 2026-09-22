@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"time"
 
@@ -53,7 +54,6 @@ func main() {
 	contentI18nSvc := service.NewContentI18nService(pool)
 	rtClient := runtime.NewClient(cfg.NewAPIBaseURL, cfg.NewAPIToken, cfg.NewAPITimeoutSec, cfg.NewAPIStreamTimeoutSec)
 	opsSvc := service.NewOpsService(pool, billingSvc, cfg.AdminJWT)
-	startBillingReconciler(ctx, opsSvc, billingSvc)
 	chatSvc := service.NewChatService(pool, modelSvc, billingSvc, rtClient, opsSvc)
 	taskSvc := service.NewTaskService(pool, modelSvc, billingSvc, qClient, opsSvc)
 	worksSvc := service.NewWorksService(pool)
@@ -115,6 +115,7 @@ func main() {
 	}
 	startExpiredWorksCleaner(ctx, worksSvc, storageClient)
 	agentSvc := service.NewAgentService(pool, billingSvc, qClient, storageClient)
+	startBillingReconciler(ctx, opsSvc, billingSvc, agentSvc)
 	if count, syncErr := contentI18nSvc.SyncCatalog(ctx, modelSvc, agentSvc); syncErr != nil {
 		log.Printf("warning: dynamic content translation catalog sync failed: %v", syncErr)
 	} else {
@@ -150,6 +151,12 @@ func main() {
 		}
 	}
 	if localRoot != "" {
+		r.Use(func(c *gin.Context) {
+			if strings.HasPrefix(c.Request.URL.Path, "/uploads-local/") {
+				c.Header("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800")
+			}
+			c.Next()
+		})
 		r.Static("/uploads-local", localRoot)
 	}
 	h.RegisterRoutes(r)
@@ -160,7 +167,14 @@ func main() {
 		port = "8080"
 	}
 	log.Printf("StarAI API listening on :%s", port)
-	if err := r.Run(":" + port); err != nil {
+	server := &http.Server{
+		Addr:              ":" + port,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -219,13 +233,18 @@ func startExpiredWorksCleaner(ctx context.Context, worksSvc *service.WorksServic
 	}()
 }
 
-func startBillingReconciler(ctx context.Context, opsSvc *service.OpsService, billingSvc *billing.Service) {
+func startBillingReconciler(ctx context.Context, opsSvc *service.OpsService, billingSvc *billing.Service, agentSvc *service.AgentService) {
 	run := func() {
 		result, err := opsSvc.ReconcileFrozenBalances(ctx)
 		if err != nil {
 			log.Printf("billing reconciliation failed: %v", err)
 		} else if result.ReleasedChatFreezes+result.FailedTasks+result.FailedWorkflows+result.FailedStuckWorkflows+result.FailedOrphanedTasks+result.FailedOrphanedWorkflows+result.SettledTerminalFreezes > 0 {
 			log.Printf("billing reconciliation released chats=%d failed tasks=%d failed workflows=%d failed stuck workflows=%d failed orphaned tasks=%d failed orphaned workflows=%d settled terminal freezes=%d", result.ReleasedChatFreezes, result.FailedTasks, result.FailedWorkflows, result.FailedStuckWorkflows, result.FailedOrphanedTasks, result.FailedOrphanedWorkflows, result.SettledTerminalFreezes)
+		}
+		if completed, completeErr := agentSvc.AutoCompleteExpiredProductReviews(ctx, 100); completeErr != nil {
+			log.Printf("product review auto-completion failed: %v", completeErr)
+		} else if completed > 0 {
+			log.Printf("product review auto-completion queued=%d", completed)
 		}
 		if rewarded, rewardErr := billingSvc.ReconcileReferralRewards(ctx, 100); rewardErr != nil {
 			log.Printf("referral reward reconciliation failed: %v", rewardErr)

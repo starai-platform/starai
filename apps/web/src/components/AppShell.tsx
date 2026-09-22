@@ -1,25 +1,33 @@
 ﻿"use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bot, ChevronLeft, Compass, FileText, Home, LayoutGrid, Menu, Search, Settings, WalletCards, X } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
 import { RechargeModal } from "./RechargeModal";
-import { api, apiForLocale } from "@/lib/api";
-import type { Model, Wallet } from "@starai/shared-types";
+import { api, apiCached, apiForLocaleCached } from "@/lib/api";
+import type { Model, User, Wallet } from "@starai/shared-types";
 import { clsx } from "clsx";
-import { AGENT_CATEGORIES, AGENT_CATEGORY_TAG, CATEGORIES, CATEGORY_TAG, MODEL_ICONS } from "./workbench/categoryMeta";
-import { ModelWorkspace } from "./workbench/ModelWorkspace";
-import { AgentWorkspace } from "./workbench/AgentWorkspace";
-import { GalleryPanel } from "./workbench/GalleryPanel";
+import { agentDisplayCategory, AGENT_CATEGORIES, AGENT_CATEGORY_TAG, CATEGORIES, CATEGORY_TAG, MODEL_ICONS } from "./workbench/categoryMeta";
 import { SiteBrand, useSiteBranding } from "./SiteBrand";
 import { ReferralShareButton } from "./ReferralShareButton";
 import { useI18n } from "@/i18n/I18nProvider";
 import { WorkbenchTopActions } from "./WorkbenchTopActions";
-import { InfiniteCanvasWorkspace } from "./workbench/InfiniteCanvasWorkspace";
-import { CreativeAgentWorkspace } from "./workbench/CreativeAgentWorkspace";
 import { AgentIcon } from "./workbench/AgentIcon";
+import { galleryLanguageLabel, referenceTaxonomyLabel, type GalleryLanguage } from "./workbench/galleryReference";
+
+function WorkspaceLoading() {
+  const { t } = useI18n();
+  return <div role="status" className="flex flex-1 items-center justify-center p-8 text-sm text-gray-400">{t("common.loading")}</div>;
+}
+
+const ModelWorkspace = dynamic(() => import("./workbench/ModelWorkspace").then(module => module.ModelWorkspace), { loading: WorkspaceLoading });
+const AgentWorkspace = dynamic(() => import("./workbench/AgentWorkspace").then(module => module.AgentWorkspace), { loading: WorkspaceLoading });
+const GalleryPanel = dynamic(() => import("./workbench/GalleryPanel").then(module => module.GalleryPanel), { loading: WorkspaceLoading });
+const InfiniteCanvasWorkspace = dynamic(() => import("./workbench/InfiniteCanvasWorkspace").then(module => module.InfiniteCanvasWorkspace), { loading: WorkspaceLoading });
+const CreativeAgentWorkspace = dynamic(() => import("./workbench/CreativeAgentWorkspace").then(module => module.CreativeAgentWorkspace), { loading: WorkspaceLoading });
 
 const PRIMARY_NAV = [
   { id: "models", label: "大模型", icon: LayoutGrid },
@@ -44,6 +52,7 @@ const ONE_CLICK_VIRAL_REMAKE_CODE = "one_click_viral_remake";
 const VIDEO_REMAKE_CODE = "video_remake";
 const CONTENT_IMAGE_POST_CODE = "content_image_post";
 const VIDEO_CREATION_CODE = "video_creation";
+const VIDEO_CREATION_V2_CODE = "video_creation_v2";
 const GENERAL_CREATIVE_AGENT_CODE = "general_creative_agent";
 
 const MOBILE_SUBPAGE_LINKS = [
@@ -70,6 +79,34 @@ interface GalleryTag {
   slug: string;
 }
 
+function GallerySidebarFilterGroup({ label, items, value, onChange }: { label: string; items: { value: string; label: string }[]; value: string; onChange: (value: string) => void }) {
+  return (
+    <section className="border-b border-gray-100 pb-4 last:border-b-0 dark:border-white/10">
+      <div className="mb-2 flex items-center justify-between px-0.5">
+        <h3 className="text-xs font-semibold text-gray-700 dark:text-gray-200">{label}</h3>
+        <span className="text-[10px] tabular-nums text-gray-400">{Math.max(0, items.length - 1)}</span>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {items.map((item) => (
+          <button
+            key={item.value}
+            type="button"
+            onClick={() => onChange(item.value)}
+            className={clsx(
+              "max-w-full rounded-lg border px-2.5 py-1.5 text-left text-[11px] leading-4 transition",
+              value === item.value
+                ? "border-primary/50 bg-primary/10 font-medium text-emerald-800 dark:text-emerald-200"
+                : "border-gray-200 bg-gray-50 text-gray-600 hover:border-gray-300 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
+            )}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 interface ModelCategory {
   code: string;
   label?: string;
@@ -79,6 +116,8 @@ interface AppShellProps {
   children: React.ReactNode;
   selectedModelCode?: string;
   selectedAgentCode?: string;
+  initialUser?: User | null;
+  initialWallet?: Wallet | null;
 }
 
 function useIsMobile() {
@@ -93,13 +132,15 @@ function useIsMobile() {
   return isMobile;
 }
 
-export function AppShell({ children, selectedModelCode, selectedAgentCode }: AppShellProps) {
+export function AppShell({ children, selectedModelCode, selectedAgentCode, initialUser, initialWallet }: AppShellProps) {
   const pathname = usePathname();
   const router = useRouter();
   const { t, td, locale } = useI18n();
   const { site_name, site_description, api_docs_enabled, api_docs_operations } = useSiteBranding();
-  const { user, hydrate } = useAuthStore();
-  const [wallet, setWallet] = useState<Wallet | null>(null);
+  const storedUser = useAuthStore((state) => state.user);
+  const [bootstrapUser, setBootstrapUser] = useState<User | null>(initialUser || null);
+  const user = storedUser || bootstrapUser;
+  const [wallet, setWallet] = useState<Wallet | null>(initialWallet || null);
   const [showRecharge, setShowRecharge] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -124,12 +165,24 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
   const [activeAgentCode, setActiveAgentCode] = useState<string | undefined>(selectedAgentCode);
 
   const [galleryTags, setGalleryTags] = useState<GalleryTag[]>([]);
+  const [galleryMode, setGalleryMode] = useState<"reference" | "community">("reference");
   const [activeTag, setActiveTag] = useState("all");
+  const [communityLanguages, setCommunityLanguages] = useState<GalleryLanguage[]>([]);
+  const [activeCommunityLanguage, setActiveCommunityLanguage] = useState<GalleryLanguage | "all">("all");
+  const [referenceTaxonomy, setReferenceTaxonomy] = useState<{ categories: string[]; styles: string[]; scenes: string[]; languages: GalleryLanguage[] }>({ categories: [], styles: [], scenes: [], languages: [] });
+  const [activeReferenceCategory, setActiveReferenceCategory] = useState("all");
+  const [activeReferenceStyle, setActiveReferenceStyle] = useState("all");
+  const [activeReferenceScene, setActiveReferenceScene] = useState("all");
+  const [activeReferenceLanguage, setActiveReferenceLanguage] = useState<GalleryLanguage | "all">("all");
 
   const isWorkbench = pathname === "/app" || pathname.startsWith("/app/models/") || pathname.startsWith("/app/agents/");
   const apiDocsVisible = api_docs_enabled !== false && (!api_docs_operations || Object.keys(api_docs_operations).length === 0 || Object.values(api_docs_operations).some((value) => value !== false));
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+
+  useEffect(() => {
+    if (storedUser && bootstrapUser) setBootstrapUser(null);
+  }, [bootstrapUser, storedUser]);
 
   const primaryNavLabel = useCallback(
     (id: string) =>
@@ -163,11 +216,15 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
   );
 
   useEffect(() => {
-    hydrate();
-  }, [hydrate]);
+    if (user && !wallet) api<Wallet>("/api/wallet").then(setWallet).catch(() => {});
+  }, [user, wallet]);
 
   useEffect(() => {
-    if (user) api<Wallet>("/api/wallet").then(setWallet).catch(() => {});
+    const refreshWallet = () => {
+      if (user) api<Wallet>("/api/wallet").then(setWallet).catch(() => {});
+    };
+    window.addEventListener("starai:wallet-changed", refreshWallet);
+    return () => window.removeEventListener("starai:wallet-changed", refreshWallet);
   }, [user]);
 
   useEffect(() => {
@@ -197,7 +254,7 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
   useEffect(() => {
     if (!isWorkbench || section !== "models") return;
     setCreativeAgentLoaded(false);
-    apiForLocale<AgentItem>(`/api/agents/${GENERAL_CREATIVE_AGENT_CODE}`, locale)
+    apiForLocaleCached<AgentItem>(`/api/agents/${GENERAL_CREATIVE_AGENT_CODE}`, locale)
       .then((item) => setCreativeAgent(item || null))
       .catch(() => setCreativeAgent(null))
       .finally(() => setCreativeAgentLoaded(true));
@@ -212,7 +269,7 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
 
   useEffect(() => {
     if (!isWorkbench || section !== "models") return;
-    api<ModelCategory[]>("/api/model-categories")
+    apiCached<ModelCategory[]>("/api/model-categories", 30_000, false)
       .then((items) => setModelCategoryCodes((items || []).map((item) => item.code).filter(Boolean)))
       .catch(() => setModelCategoryCodes([]));
   }, [isWorkbench, section]);
@@ -247,13 +304,13 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
         : category === "chat"
           ? `?category=chat`
           : `?category=${category}`;
-    const controller = new AbortController();
-    apiForLocale<Model[]>(`/api/models${q}`, locale, { signal: controller.signal })
-      .then((items) => setModels(Array.isArray(items) ? items : []))
+    let active = true;
+    apiForLocaleCached<Model[]>(`/api/models${q}`, locale)
+      .then((items) => { if (active) setModels(Array.isArray(items) ? items : []); })
       .catch((error) => {
-        if (error?.name !== "AbortError") setModels([]);
+        if (active && error?.name !== "AbortError") setModels([]);
       });
-    return () => controller.abort();
+    return () => { active = false; };
   }, [category, isWorkbench, section, locale]);
 
   useEffect(() => {
@@ -271,21 +328,22 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
       setActiveModel(null);
       return;
     }
-    const controller = new AbortController();
-    apiForLocale<Model>(`/api/models/${activeModelCode}`, locale, { signal: controller.signal })
-      .then((item) => setActiveModel(item || null))
+    let active = true;
+    apiForLocaleCached<Model>(`/api/models/${activeModelCode}`, locale)
+      .then((item) => { if (active) setActiveModel(item || null); })
       .catch((error) => {
-        if (error?.name !== "AbortError") setActiveModel(null);
+        if (active && error?.name !== "AbortError") setActiveModel(null);
       });
-    return () => controller.abort();
+    return () => { active = false; };
   }, [activeModelCode, locale]);
 
   useEffect(() => {
     if (!isWorkbench || section !== "agents") return;
     setAgentsLoaded(false);
-    const controller = new AbortController();
-    apiForLocale<{ items: AgentItem[] }>("/api/agents", locale, { signal: controller.signal })
+    let active = true;
+    apiForLocaleCached<{ items: AgentItem[] }>("/api/agents", locale)
       .then((r) => {
+        if (!active) return;
         const items = Array.isArray(r?.items) ? r.items : [];
         setAgents(items);
         setAgentsLoaded(true);
@@ -298,19 +356,19 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
         }
       })
       .catch((error) => {
-        if (error?.name !== "AbortError") {
+        if (active && error?.name !== "AbortError") {
           setAgents([]);
           setAgentsLoaded(false);
           if (!isMobile) setActiveAgentCode(INFINITE_CANVAS_CODE);
         }
       });
-    return () => controller.abort();
+    return () => { active = false; };
   }, [isWorkbench, section, isMobile, locale]);
 
   useEffect(() => {
-    if (!isWorkbench || section !== "gallery") return;
-    api<{ items: GalleryTag[] }>("/api/gallery/tags").then((r) => setGalleryTags(Array.isArray(r?.items) ? r.items : []));
-  }, [isWorkbench, section]);
+    if (!isWorkbench || section !== "gallery" || galleryMode !== "community") return;
+    apiCached<{ items: GalleryTag[] }>("/api/gallery/tags", 30_000).then((r) => setGalleryTags(Array.isArray(r?.items) ? r.items : []));
+  }, [galleryMode, isWorkbench, section]);
 
   const filteredModels = useMemo(() => {
     if (!search.trim()) return models;
@@ -336,7 +394,7 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
     const source = agentsLoaded ? agents : [canvasAgent, ...agents.filter((item) => item.code !== INFINITE_CANVAS_CODE)];
     return source.filter((a) => {
       if (a.code === GENERAL_CREATIVE_AGENT_CODE) return false;
-      if (agentCategory !== "all" && (a.category || "workflow") !== agentCategory) return false;
+      if (agentCategory !== "all" && agentDisplayCategory(a.code, a.category) !== agentCategory) return false;
       if (q && !a.name.toLowerCase().includes(q) && !a.description?.toLowerCase().includes(q)) return false;
       return true;
     });
@@ -379,7 +437,7 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
 
   const sectionTitle =
     section === "models"
-      ? (activeModelCode === GENERAL_CREATIVE_AGENT_CODE ? creativeAgent?.name || "Agent 通用智能体" : activeModel ? td(`model.${activeModel.code}.name`, activeModel.display_name) : t("nav.models"))
+      ? (activeModelCode === GENERAL_CREATIVE_AGENT_CODE ? td(`agent.${GENERAL_CREATIVE_AGENT_CODE}.name`, creativeAgent?.name || "Agent 通用智能体") : activeModel ? td(`model.${activeModel.code}.name`, activeModel.display_name) : t("nav.models"))
       : section === "agents"
         ? (() => {
             if (activeAgentCode === INFINITE_CANVAS_CODE) return t("canvas.title");
@@ -498,13 +556,13 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
                 )}
               >
                 <div className="flex gap-3">
-                  <div className="tech-icon flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-amber-200 bg-gray-950 text-lg text-amber-300 shadow-sm dark:border-amber-400/20"><AgentIcon value={creativeAgent.icon} fallback="✦" alt={creativeAgent.name} /></div>
+                <div className="tech-icon flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-amber-200 bg-gray-950 text-lg text-amber-300 shadow-sm dark:border-amber-400/20"><AgentIcon value={creativeAgent.icon} fallback="✦" alt={td(`agent.${creativeAgent.code}.name`, creativeAgent.name)} /></div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-1">
-                      <span className="tech-title truncate text-sm font-semibold text-gray-900 dark:text-gray-100">{creativeAgent.name}</span>
+                      <span className="tech-title truncate text-sm font-semibold text-gray-900 dark:text-gray-100">{td(`agent.${creativeAgent.code}.name`, creativeAgent.name)}</span>
                       <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-400/10 dark:text-amber-200">Agent</span>
                     </div>
-                    <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-gray-400">{creativeAgent.description}</p>
+                    <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-gray-400">{td(`agent.${creativeAgent.code}.description`, creativeAgent.description || "")}</p>
                   </div>
                 </div>
               </button>
@@ -637,6 +695,7 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
             )}
             {filteredAgents.map((a) => {
               const selected = a.code === activeAgentCode;
+              const displayCategory = agentDisplayCategory(a.code, a.category);
               const agentName = a.code === INFINITE_CANVAS_CODE ? t("canvas.title") : td(`agent.${a.code}.name`, a.name);
               const agentDesc = a.code === INFINITE_CANVAS_CODE ? t("canvas.description") : td(`agent.${a.code}.description`, a.description || "");
               return (
@@ -664,10 +723,10 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
                       <div className="flex items-center justify-between gap-1">
                         <span className="tech-title font-semibold text-sm text-gray-900 truncate dark:text-gray-100">{agentName}</span>
                         {(() => {
-                          const tag = AGENT_CATEGORY_TAG[a.category || "workflow"];
+                          const tag = AGENT_CATEGORY_TAG[displayCategory];
                           return tag ? (
                             <span className={clsx("text-[10px] px-1.5 py-0.5 rounded-full shrink-0", tag.className)}>
-                              {td(`agentCategory.${a.category || "workflow"}`, t(tag.labelKey))}
+                              {td(`agentCategory.${displayCategory}`, t(tag.labelKey))}
                             </span>
                           ) : null;
                         })()}
@@ -686,24 +745,71 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
       )}
 
       {section === "gallery" && (
-        <div className="flex-1 overflow-y-auto px-2.5 py-3 space-y-1.5 min-h-0">
-          {galleryNavTags.map((t) => (
-            <button
-              key={t.slug}
-              onClick={() => {
-                setActiveTag(t.slug);
-                closeDrawer();
-              }}
-              className={clsx(
-                "w-full text-left px-3 py-2 rounded-xl text-sm transition",
-                activeTag === t.slug
-                  ? "bg-white border border-primary text-gray-900 dark:bg-gray-900 dark:text-gray-100"
-                  : "bg-gray-50/80 border border-transparent text-gray-600 hover:bg-gray-100 dark:bg-white/5 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/10"
-              )}
-            >
-              {t.slug === "all" ? t.name : td(`gallery.tag.${t.slug}`, t.name)}
-            </button>
-          ))}
+        <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
+          <div className="sticky top-0 z-10 -mx-1 bg-white/95 px-1 pb-3 backdrop-blur dark:bg-gray-900/95">
+            <div className="grid grid-cols-2 gap-1 rounded-xl bg-gray-100 p-1 dark:bg-white/5">
+              {(["reference", "community"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setGalleryMode(mode)}
+                  className={clsx(
+                    "rounded-lg px-2 py-2 text-xs font-semibold transition",
+                    galleryMode === mode
+                      ? "bg-white text-gray-900 shadow-sm dark:bg-emerald-300 dark:text-gray-950"
+                      : "text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
+                  )}
+                >
+                  {mode === "reference" ? t("gallery.referenceCases") : t("gallery.communityWorks")}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-4">
+            {galleryMode === "reference" ? (
+              <>
+                <GallerySidebarFilterGroup
+                  label={t("gallery.category")}
+                  value={activeReferenceCategory}
+                  onChange={setActiveReferenceCategory}
+                  items={[{ value: "all", label: t("gallery.all") }, ...referenceTaxonomy.categories.map((value) => ({ value, label: referenceTaxonomyLabel(value, locale) }))]}
+                />
+                <GallerySidebarFilterGroup
+                  label={t("gallery.style")}
+                  value={activeReferenceStyle}
+                  onChange={setActiveReferenceStyle}
+                  items={[{ value: "all", label: t("gallery.all") }, ...referenceTaxonomy.styles.map((value) => ({ value, label: referenceTaxonomyLabel(value, locale) }))]}
+                />
+                <GallerySidebarFilterGroup
+                  label={t("gallery.scene")}
+                  value={activeReferenceScene}
+                  onChange={setActiveReferenceScene}
+                  items={[{ value: "all", label: t("gallery.all") }, ...referenceTaxonomy.scenes.map((value) => ({ value, label: referenceTaxonomyLabel(value, locale) }))]}
+                />
+                <GallerySidebarFilterGroup
+                  label={t("gallery.language")}
+                  value={activeReferenceLanguage}
+                  onChange={(value) => setActiveReferenceLanguage(value as GalleryLanguage | "all")}
+                  items={[{ value: "all", label: t("gallery.all") }, ...referenceTaxonomy.languages.map((value) => ({ value, label: galleryLanguageLabel(value, locale) }))]}
+                />
+              </>
+            ) : (
+              <>
+                <GallerySidebarFilterGroup
+                  label={t("gallery.category")}
+                  value={activeTag}
+                  onChange={(value) => { setActiveTag(value); setActiveCommunityLanguage("all"); }}
+                  items={galleryNavTags.map((tag) => ({ value: tag.slug, label: tag.slug === "all" ? tag.name : td(`gallery.tag.${tag.slug}`, tag.name) }))}
+                />
+                <GallerySidebarFilterGroup
+                  label={t("gallery.language")}
+                  value={activeCommunityLanguage}
+                  onChange={(value) => setActiveCommunityLanguage(value as GalleryLanguage | "all")}
+                  items={[{ value: "all", label: t("gallery.all") }, ...communityLanguages.map((value) => ({ value, label: galleryLanguageLabel(value, locale) }))]}
+                />
+              </>
+            )}
+          </div>
         </div>
       )}
 
@@ -735,8 +841,8 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
     );
   };
 
-  const MobileTopBar = ({ title }: { title: string }) => (
-    <div className="lg:hidden shrink-0 flex items-center gap-2 px-3 py-2.5 bg-white border-b border-gray-100 dark:bg-gray-900 dark:border-white/10">
+  const renderMobileTopBar = (title: string) => (
+    <div className="relative z-40 lg:hidden shrink-0 flex items-center gap-2 px-3 py-2.5 bg-white border-b border-gray-100 dark:bg-gray-900 dark:border-white/10">
       <button
         type="button"
         onClick={() => setDrawerOpen(true)}
@@ -753,8 +859,8 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
     </div>
   );
 
-  const DesktopQuickActions = () => (
-    <div className="pointer-events-none absolute right-5 top-4 z-20 hidden items-center gap-2 lg:flex">
+  const renderDesktopQuickActions = () => (
+    <div className="pointer-events-none absolute right-5 top-4 z-40 hidden items-center gap-2 lg:flex">
       <div className="pointer-events-auto">
         <WorkbenchTopActions onRecharge={() => setShowRecharge(true)} />
       </div>
@@ -832,13 +938,11 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
     const hideSubpageRail = pathname === "/app/api-docs";
     return (
       <div className="flex flex-col h-screen bg-[#EEF1F6] dark:bg-gray-950">
-        <MobileTopBar
-          title={
+        {renderMobileTopBar(
             subpageLabel(SUBPAGE_LINKS.find((l) => pathname.startsWith(l.href) && l.href !== "/app")?.href || "/app") ||
             site_name ||
             "StarAI"
-          }
-        />
+        )}
         <div className="flex flex-1 min-h-0 overflow-hidden">
           {!hideSubpageRail && (
             <aside className="hidden lg:flex w-[92px] bg-white border-r border-gray-100 flex-col items-center py-4 px-2 shrink-0 dark:bg-gray-900 dark:border-white/10">
@@ -869,7 +973,7 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
           )}
           <main className={clsx("relative flex-1 min-w-0 dark:bg-gray-950", hideSubpageRail ? "overflow-hidden" : "overflow-auto")}>
             {!hideSubpageRail && (
-              <div className="pointer-events-none fixed right-5 top-4 z-20 hidden items-center gap-2 lg:flex">
+              <div className="pointer-events-none fixed right-5 top-4 z-40 hidden items-center gap-2 lg:flex">
                 <div className="pointer-events-auto">
                   <WorkbenchTopActions onRecharge={() => setShowRecharge(true)} />
                 </div>
@@ -922,13 +1026,13 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
       <Drawer />
 
       <main className="workspace-surface relative flex-1 min-w-0 flex flex-col overflow-hidden">
-        {!hideMobileTopBar && <MobileTopBar title={sectionTitle} />}
+        {!hideMobileTopBar && renderMobileTopBar(sectionTitle)}
         {showDesktopHeader && (
-          <div className="hidden lg:flex shrink-0 items-center justify-end gap-2 px-5 py-3 bg-white border-b border-gray-100 dark:bg-gray-900 dark:border-white/10">
+          <div className="relative z-40 hidden lg:flex shrink-0 items-center justify-end gap-2 px-5 py-3 bg-white border-b border-gray-100 dark:bg-gray-900 dark:border-white/10">
             <WorkbenchTopActions onRecharge={() => setShowRecharge(true)} />
           </div>
         )}
-        {(section === "agents" || section === "gallery") && <DesktopQuickActions />}
+        {(section === "agents" || section === "gallery") && renderDesktopQuickActions()}
 
         {showMobileModelPicker ? (
           <div className="lg:hidden flex-1 flex flex-col min-h-0 bg-[#EEF1F6] dark:bg-gray-950">
@@ -997,6 +1101,13 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
                     workflowCode={VIDEO_CREATION_CODE}
                     initialTemplateID="story-short-video"
                   />
+                ) : activeAgentCode === VIDEO_CREATION_V2_CODE ? (
+                  <InfiniteCanvasWorkspace
+                    key={activeAgentCode}
+                    authenticated={Boolean(user)}
+                    workflowCode={VIDEO_CREATION_V2_CODE}
+                    initialTemplateID="story-short-video-v2"
+                  />
                 ) : activeAgentCode === GENERAL_CREATIVE_AGENT_CODE ? (
                   <CreativeAgentWorkspace key={activeAgentCode} />
                 ) : (
@@ -1008,7 +1119,27 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode }: App
                 </div>
               ))}
 
-            {section === "gallery" && <GalleryPanel activeTag={activeTag} onUseTemplate={useGalleryTemplate} />}
+            {section === "gallery" && (
+              <GalleryPanel
+                activeTag={activeTag}
+                activeReferenceCategory={activeReferenceCategory}
+                activeReferenceStyle={activeReferenceStyle}
+                activeReferenceScene={activeReferenceScene}
+                activeReferenceLanguage={activeReferenceLanguage}
+                activeCommunityLanguage={activeCommunityLanguage}
+                galleryMode={galleryMode}
+                onGalleryModeChange={setGalleryMode}
+                onCommunityTagChange={setActiveTag}
+                onCommunityLanguageChange={setActiveCommunityLanguage}
+                onCommunityLanguagesChange={setCommunityLanguages}
+                onReferenceCategoryChange={setActiveReferenceCategory}
+                onReferenceStyleChange={setActiveReferenceStyle}
+                onReferenceSceneChange={setActiveReferenceScene}
+                onReferenceLanguageChange={setActiveReferenceLanguage}
+                onReferenceTaxonomyChange={setReferenceTaxonomy}
+                onUseTemplate={useGalleryTemplate}
+              />
+            )}
           </>
         )}
       </main>

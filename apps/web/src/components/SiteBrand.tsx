@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { apiCached } from "@/lib/api";
 import type { SystemConfig } from "@starai/shared-types";
 import { clsx } from "clsx";
 import { useI18n } from "@/i18n/I18nProvider";
@@ -57,17 +57,20 @@ const DEFAULT_BRANDING: BrandData = {
 };
 
 let brandingCache: BrandData | null = null;
+let brandingExpiresAt = 0;
 let brandingPromise: Promise<BrandData> | null = null;
 
 async function fetchBranding() {
-  if (brandingCache) return brandingCache;
+  if (brandingCache && brandingExpiresAt > Date.now()) return brandingCache;
   if (!brandingPromise) {
-    brandingPromise = api<BrandData>("/api/system-configs/public")
+    brandingPromise = apiCached<BrandData>("/api/system-configs/public", 60_000, false)
       .then((data) => {
         brandingCache = data || DEFAULT_BRANDING;
+        brandingExpiresAt = Date.now() + 60_000;
         return brandingCache;
       })
-      .catch(() => DEFAULT_BRANDING);
+      .catch(() => brandingCache || DEFAULT_BRANDING)
+      .finally(() => { brandingPromise = null; });
   }
   return brandingPromise;
 }

@@ -92,6 +92,25 @@ func BuildUpstreamVideoPayload(
 	if strings.EqualFold(upCfg.Adapter, "aliyun_video_generation") {
 		out = buildAliyunVideoPayload(modelName, params)
 	}
+	if strings.EqualFold(upCfg.Adapter, "sync_lipsync") {
+		// Sync accepts visual/audio inputs, not a video-generation prompt or duration.
+		out = map[string]interface{}{"model": modelName, "input": params["input"]}
+		if options, ok := params["options"].(map[string]interface{}); ok {
+			out["options"] = options
+		}
+	}
+	if strings.EqualFold(upCfg.Adapter, "wavespeed_lipsync") {
+		out = map[string]interface{}{}
+		if inputs, ok := params["input"].([]interface{}); ok {
+			for _, input := range inputs {
+				if item, ok := input.(map[string]interface{}); ok {
+					if kind, _ := item["type"].(string); kind == "video" || kind == "audio" {
+						out[kind] = item["url"]
+					}
+				}
+			}
+		}
+	}
 	modelLower := strings.ToLower(modelName)
 	if instruction, ok := params["instruction"]; ok && (strings.Contains(modelLower, "qwen-audio") || strings.Contains(modelLower, "cosyvoice")) && !omitAutoValue(instruction) {
 		setPayloadValue(out, "input.instruction", instruction)

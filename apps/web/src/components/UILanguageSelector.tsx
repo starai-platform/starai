@@ -40,14 +40,15 @@ export function UILanguageSelector({
     const handler = (event: MouseEvent) => {
       if (!ref.current?.contains(event.target as Node)) setOpen(false);
     };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    document.addEventListener("pointerdown", handler, true);
+    return () => document.removeEventListener("pointerdown", handler, true);
   }, []);
 
   return (
     <div ref={ref} className={clsx("relative z-[80]", className)} onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
       <button
         type="button"
+        aria-expanded={open}
         aria-label={t("common.language")}
         onClick={(e) => {
           e.preventDefault();

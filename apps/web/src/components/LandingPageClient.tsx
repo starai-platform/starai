@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { type CSSProperties, type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Bot, Boxes, Check, Clock3, Code2, Compass, Copy, Download, Headphones, ImageIcon, KeyRound, MessageCircle, Phone, Play, Sparkles, UserRound, Wand2, X } from "lucide-react";
 import { siAlibabacloud, siAnthropic, siDeepseek, siFlux, siGooglegemini, siHuggingface, siKuaishou, type SimpleIcon } from "simple-icons";
@@ -8,21 +9,9 @@ import { LoginModal } from "@/components/LoginModal";
 import { SiteBrand, useSiteBranding } from "@/components/SiteBrand";
 import { UILanguageSelector } from "@/components/UILanguageSelector";
 import { useI18n } from "@/i18n/I18nProvider";
-import { api, hasUserSession } from "@/lib/api";
+import { api, clearUserSession, hasUserSession } from "@/lib/api";
 import { useAuthStore } from "@/store/auth";
-
-interface GalleryItem {
-  public_id: string;
-  title?: string;
-  prompt?: string;
-  cover_url?: string;
-  media_url?: string;
-  thumbnail_url?: string;
-  type?: string;
-  tags?: string[];
-  is_featured?: boolean;
-  like_count?: number;
-}
+import { loadReferenceGalleryManifest, randomReferenceCases, referenceImageURL, referenceTagEntries, referenceTaxonomyLabel, type ReferenceGalleryItem } from "@/components/workbench/galleryReference";
 
 const MODEL_LOGOS = ["GPT", "Claude", "Gemini", "Sora", "Flux", "Kling", "MJ", "Qwen", "DeepSeek", "Runway"];
 type TickerLogo = { name: string; color: string; icon?: SimpleIcon; mark?: string; variant?: "ring" | "spark" | "rune" | "waves" };
@@ -57,52 +46,7 @@ const MODEL_TICKER: TickerLogo[] = [
   { name: "Perplexity", mark: "P", color: "#14B8A6", variant: "waves" },
 ];
 
-const FALLBACK_GALLERY: GalleryItem[] = [
-  {
-    public_id: "landing-1",
-    title: "未来城市视觉提案",
-    prompt: "霓虹高楼、雨夜街道、电影感构图、超清细节",
-    tags: ["视觉设计", "建筑"],
-    is_featured: true,
-    like_count: 128,
-  },
-  {
-    public_id: "landing-2",
-    title: "产品海报自动生成",
-    prompt: "高端科技产品、玻璃材质、商业广告光效",
-    tags: ["电商", "海报"],
-    like_count: 96,
-  },
-  {
-    public_id: "landing-3",
-    title: "短视频脚本分镜",
-    prompt: "30 秒品牌短片，分镜、旁白、镜头运动完整输出",
-    tags: ["视频", "脚本"],
-    like_count: 74,
-  },
-  {
-    public_id: "landing-4",
-    title: "角色设定草案",
-    prompt: "东方幻想角色，服饰设定，三视图参考，情绪板",
-    tags: ["角色", "插画"],
-    is_featured: true,
-    like_count: 151,
-  },
-  {
-    public_id: "landing-5",
-    title: "API 文档示例生成",
-    prompt: "把模型能力、参数、错误码整理成可复制文档",
-    tags: ["开发者", "API"],
-    like_count: 63,
-  },
-  {
-    public_id: "landing-6",
-    title: "音乐封面概念",
-    prompt: "电子音乐封面，强节奏，抽象几何，暗色商业风",
-    tags: ["音乐", "封面"],
-    like_count: 88,
-  },
-];
+const LANDING_GALLERY_LIMIT = 12;
 
 function InteractiveHeroCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -673,7 +617,7 @@ function CustomerService({ config }: { config: CustomerServiceConfig }) {
                 <div className="text-center">
                   <div className="mx-auto w-fit rounded-2xl bg-white p-2.5 shadow-lg">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={config.customer_service_qr_url} alt="客服微信二维码" className="h-44 w-44 object-contain sm:h-48 sm:w-48" />
+                    <img src={config.customer_service_qr_url} alt={t("客服微信二维码")} className="h-44 w-44 object-contain sm:h-48 sm:w-48" />
                   </div>
                   <div className="mt-2 text-xs text-white/35">{qrTip}</div>
                 </div>
@@ -714,56 +658,32 @@ function CustomerService({ config }: { config: CustomerServiceConfig }) {
   );
 }
 
-function GalleryPreview({ item, index }: { item: GalleryItem; index: number }) {
-  const { ts } = useI18n();
-  const heightClass = ["h-64", "h-80", "h-56", "h-72", "h-96", "h-60"][index % 6];
-  const mediaURL = item.media_url || item.cover_url || "";
-  const poster = item.thumbnail_url || (item.cover_url && item.cover_url !== mediaURL ? item.cover_url : "");
-  const isVideo = item.type === "video" || /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(mediaURL);
-  const previewURL = isVideo ? withVideoPreviewTime(mediaURL) : mediaURL;
+function GalleryPreview({ item }: { item: ReferenceGalleryItem }) {
+  const { locale } = useI18n();
+  const tags = referenceTagEntries(item).slice(0, 3);
   return (
     <Link
-      href={item.public_id.startsWith("landing-") ? "/app/gallery" : `/app/gallery/${item.public_id}`}
+      href="/app/gallery"
       onClick={(event) => {
         event.preventDefault();
         window.location.assign(event.currentTarget.href);
       }}
-      className="tech-card group mb-4 block break-inside-avoid overflow-hidden rounded-[24px] border border-white/10 bg-white/[0.06] text-left shadow-2xl shadow-black/20 transition hover:-translate-y-1 hover:border-primary/50"
+      className="tech-card group block min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.06] text-left shadow-xl shadow-black/15 transition duration-300 hover:-translate-y-1 hover:border-primary/50"
     >
-      {isVideo && mediaURL ? (
-        <div className={`${heightClass} relative overflow-hidden bg-black`}>
-          <video src={previewURL} poster={poster || undefined} muted playsInline preload="metadata" className="h-full w-full object-cover transition duration-500 group-hover:scale-[1.04]" />
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_42%,rgba(18,214,163,.22),transparent_34%),linear-gradient(180deg,rgba(0,0,0,.08),rgba(0,0,0,.34))]" />
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <div className="flex h-14 w-14 items-center justify-center rounded-full border border-white/25 bg-black/35 text-white shadow-2xl backdrop-blur">
-              <span className="ml-1 text-2xl">▶</span>
-            </div>
-          </div>
-          <span className="absolute left-3 top-3 rounded-full bg-black/60 px-2 py-1 text-[11px] font-semibold text-white">VIDEO</span>
+      <div className="relative aspect-[4/5] overflow-hidden bg-[#0b1221]">
+        <Image src={referenceImageURL(item.image)} alt={item.imageAlt || item.title} fill sizes="(min-width: 1024px) 25vw, 50vw" className="object-contain transition duration-500 group-hover:scale-[1.03]" />
+      </div>
+      <div className="p-3.5">
+        <div className="flex items-center gap-2 text-[10px] font-semibold text-primary">
+          <span className="truncate">{referenceTaxonomyLabel(item.category, locale)}</span>
+          <span className="ml-auto shrink-0 text-white/32">Case {item.id}</span>
         </div>
-      ) : mediaURL ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={mediaURL} alt={item.title || ""} className="w-full object-cover transition duration-500 group-hover:scale-[1.04]" />
-      ) : (
-        <div className={`${heightClass} relative overflow-hidden bg-[#0b1221]`}>
-          <div className="absolute inset-0 opacity-70 [background:linear-gradient(135deg,rgba(18,214,163,.18),transparent_34%),linear-gradient(315deg,rgba(79,124,255,.2),transparent_42%)]" />
-          <div className="absolute inset-0 [background-image:linear-gradient(rgba(255,255,255,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.08)_1px,transparent_1px)] [background-size:28px_28px]" />
-          <div className="absolute bottom-5 left-5 right-5 rounded-2xl border border-white/10 bg-black/30 p-4 backdrop-blur">
-            <div className="text-xs text-primary">AI GENERATED CONCEPT</div>
-            <div className="mt-2 text-lg font-semibold text-white">{item.title}</div>
-          </div>
-        </div>
-      )}
-      <div className="p-4">
-        <div className="flex items-center gap-2">
-          {item.is_featured && <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-semibold text-primary">{ts("精选")}</span>}
-          <h3 className="truncate text-sm font-semibold text-white">{item.title || ts("未命名作品")}</h3>
-        </div>
-        <p className="mt-2 line-clamp-2 text-xs leading-5 text-white/52">{item.prompt || ts("从社区作品中提取提示词和模型配置，一键生成同款。")}</p>
+        <h3 className="mt-2 truncate text-sm font-semibold text-white">{item.title}</h3>
+        <p className="mt-2 line-clamp-2 text-xs leading-5 text-white/52">{item.promptPreview || item.prompt}</p>
         <div className="mt-3 flex flex-wrap gap-1.5">
-          {(item.tags || []).slice(0, 3).map((tag) => (
-            <span key={tag} className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] text-white/45">
-              {tag}
+          {tags.map((tag) => (
+            <span key={tag.key} className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] text-white/45">
+              {referenceTaxonomyLabel(tag.label, locale)}
             </span>
           ))}
         </div>
@@ -772,16 +692,12 @@ function GalleryPreview({ item, index }: { item: GalleryItem; index: number }) {
   );
 }
 
-function withVideoPreviewTime(url: string) {
-  if (!url || url.includes("#t=")) return url;
-  return `${url.split("#")[0]}#t=0.1`;
-}
-
 export default function LandingPageClient() {
   const { t } = useI18n();
   const { token, hydrate } = useAuthStore();
   const [showLogin, setShowLogin] = useState(false);
-  const [gallery, setGallery] = useState<GalleryItem[]>(FALLBACK_GALLERY);
+  const [gallery, setGallery] = useState<ReferenceGalleryItem[]>([]);
+  const [galleryLoading, setGalleryLoading] = useState(true);
   const branding = useSiteBranding();
   const { site_name, site_copyright, api_docs_enabled, api_docs_operations } = branding;
   const apiDocsVisible = api_docs_enabled !== false && (!api_docs_operations || Object.keys(api_docs_operations).length === 0 || Object.values(api_docs_operations).some((value) => value !== false));
@@ -791,26 +707,35 @@ export default function LandingPageClient() {
     hydrate();
   }, [hydrate]);
 
-  const enterAppOrLogin = () => {
+  const enterAppOrLogin = async () => {
     const hasToken = token || hasUserSession();
     if (hasToken) {
-      window.location.assign("/app");
+      try {
+        await api("/api/me");
+        window.location.assign("/app");
+      } catch {
+        clearUserSession();
+        setShowLogin(true);
+      }
       return;
     }
     setShowLogin(true);
   };
 
   useEffect(() => {
-    const code = new URLSearchParams(window.location.search).get("referral_code");
-    if (code) setShowLogin(true);
+    const query = new URLSearchParams(window.location.search);
+    if (query.get("referral_code") || query.get("login") === "1") setShowLogin(true);
   }, []);
 
   useEffect(() => {
-    api<{ items: GalleryItem[] }>("/api/gallery?page_size=10")
-      .then((r) => {
-        if (r.items?.length) setGallery(r.items.slice(0, 10));
+    let active = true;
+    loadReferenceGalleryManifest()
+      .then((manifest) => {
+        if (active) setGallery(randomReferenceCases(manifest.cases, LANDING_GALLERY_LIMIT));
       })
-      .catch(() => setGallery(FALLBACK_GALLERY));
+      .catch(() => { if (active) setGallery([]); })
+      .finally(() => { if (active) setGalleryLoading(false); });
+    return () => { active = false; };
   }, []);
 
   const capabilityCards = useMemo(
@@ -1062,10 +987,21 @@ export default function LandingPageClient() {
               <ArrowRight size={16} />
             </Link>
           </div>
-          <div className="columns-1 gap-4 sm:columns-2 lg:columns-3 xl:columns-4">
-            {gallery.map((item, index) => (
-              <GalleryPreview key={item.public_id} item={item} index={index} />
-            ))}
+          <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+            {galleryLoading
+              ? Array.from({ length: LANDING_GALLERY_LIMIT }, (_, index) => (
+                <div key={index} aria-hidden="true" className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.05]">
+                  <div className="aspect-[4/5] animate-pulse bg-white/[0.06]" />
+                  <div className="space-y-3 p-3.5">
+                    <div className="h-3 w-1/3 animate-pulse rounded-full bg-white/10" />
+                    <div className="h-4 w-3/4 animate-pulse rounded-full bg-white/10" />
+                    <div className="h-3 w-full animate-pulse rounded-full bg-white/[0.07]" />
+                  </div>
+                </div>
+              ))
+              : gallery.length > 0
+                ? gallery.map((item) => <GalleryPreview key={item.id} item={item} />)
+                : <div className="col-span-full rounded-2xl border border-white/10 bg-white/[0.04] px-5 py-12 text-center text-sm text-white/45">{t("gallery.referenceLoadFailed")}</div>}
           </div>
         </div>
       </section>

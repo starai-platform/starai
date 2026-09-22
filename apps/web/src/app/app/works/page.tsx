@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Download, ExternalLink, Film, Image as ImageIcon, Music, Sparkles, Trash2, Upload, X } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, apiCached } from "@/lib/api";
 import type { Work } from "@starai/shared-types";
 import { useI18n } from "@/i18n/I18nProvider";
 
@@ -142,7 +142,7 @@ function VideoThumb({ src, poster, alt = "" }: { src: string; poster?: string; a
 
   if (thumb) {
     // eslint-disable-next-line @next/next/no-img-element
-    return <img src={thumb} alt={alt} className="h-full w-full object-cover" onError={() => setThumb("")} />;
+  return <img src={thumb} alt={alt} loading="lazy" decoding="async" className="h-full w-full object-cover" onError={() => setThumb("")} />;
   }
   return (
     <div className="relative h-full w-full bg-gray-950">
@@ -174,7 +174,7 @@ function MediaThumb({ item, prompt = "" }: { item?: MediaItem; prompt?: string }
   if (item.kind === "video") return <VideoThumb src={item.url} poster={item.thumbnail} alt={prompt} />;
   if (item.kind === "image") {
     // eslint-disable-next-line @next/next/no-img-element
-    return <img src={item.url} alt={prompt} className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]" />;
+  return <img src={item.url} alt={prompt} loading="lazy" decoding="async" className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]" />;
   }
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-gray-100 text-gray-500 dark:bg-white/5 dark:text-gray-400">
@@ -246,7 +246,7 @@ export default function WorksPage() {
     setLoading(true);
     Promise.all([
       api<{ items: Work[] }>("/api/works?page_size=80"),
-      api<{ work_retention_days?: number }>("/api/system-configs/public"),
+      apiCached<{ work_retention_days?: number }>("/api/system-configs/public", 60_000, false),
     ])
       .then(([worksResponse, config]) => {
         setWorks(worksResponse.items || []);
@@ -483,7 +483,7 @@ export default function WorksPage() {
                 value={publishDraft.title}
                 onChange={(e) => setPublishDraft({ ...publishDraft, title: e.target.value })}
                 className="h-10 w-full rounded-xl border border-gray-200 bg-white px-3 text-sm outline-none focus:border-primary dark:border-white/10 dark:bg-gray-950 dark:text-gray-100"
-                placeholder="作品标题"
+                placeholder={ts("作品标题")}
               />
             </label>
             <div className="mb-3 grid grid-cols-2 gap-2 rounded-2xl bg-gray-100 p-1 dark:bg-white/10">
@@ -500,12 +500,12 @@ export default function WorksPage() {
                   value={publishDraft.price}
                   onChange={(e) => setPublishDraft({ ...publishDraft, price: e.target.value })}
                   className="h-10 w-full rounded-xl border border-gray-200 bg-white px-3 text-sm outline-none focus:border-primary dark:border-white/10 dark:bg-gray-950 dark:text-gray-100"
-                  placeholder="例如 1.5"
+                  placeholder={ts("例如 1.5")}
                 />
               </label>
             )}
             <button type="button" disabled={publishing} onClick={submitPublish} className="h-11 w-full rounded-xl bg-primary font-semibold text-dark disabled:opacity-60">
-              {publishing ? "提交中..." : "提交发布"}
+              {publishing ? ts("提交中...") : ts("提交发布")}
             </button>
           </div>
         </div>

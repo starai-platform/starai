@@ -3,7 +3,7 @@ const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
 const sourcePath = path.join(root, "packages/shared-types/src/index.ts");
-const dictionaryPath = path.join(root, "apps/web/src/i18n/dictionaries.ts");
+const dictionaryPath = path.join(root, "apps/web/src/i18n/locales/zh-CN.ts");
 const outputPath = path.join(root, "services/api/internal/service/ui_translation_catalog.json");
 const source = fs.readFileSync(sourcePath, "utf8");
 const start = source.indexOf("export const UI_TRANSLATION_ZH_LABELS");
@@ -16,9 +16,9 @@ for (const match of block.matchAll(/^\s*("(?:[^"\\]|\\.)*"):\s*("(?:[^"\\]|\\.)*
 
 // The shared label map only contains keys used by configuration-driven UI.
 // Include every canonical Web i18n key as well, otherwise valid t("...")
-// calls that only exist in dictionaries.ts never enter the AI backfill queue.
+// calls that only exist in locales/zh-CN.ts never enter the AI backfill queue.
 const dictionarySource = fs.readFileSync(dictionaryPath, "utf8");
-const zhStart = dictionarySource.indexOf("const zh:");
+const zhStart = dictionarySource.indexOf("const dictionary:");
 const zhEnd = dictionarySource.indexOf("\n};", zhStart);
 if (zhStart < 0 || zhEnd < 0) throw new Error("zh UI dictionary not found");
 const zhBlock = dictionarySource.slice(zhStart, zhEnd + 3);
@@ -53,7 +53,7 @@ function walk(dir) {
     if (entry.isDirectory()) walk(full);
     else if (/\.tsx?$/.test(entry.name)) {
       const relative = path.relative(webSrc, full).replace(/\\/g, "/");
-      if (excluded.has(relative)) continue;
+      if (excluded.has(relative) || relative.startsWith("i18n/") || relative.endsWith(".test.ts")) continue;
       const text = fs.readFileSync(full, "utf8");
       // Preserve the entire literal, including ASCII prefixes/suffixes such as
       // "AI 大模型聚合平台". The broad fallback scan below intentionally finds
@@ -72,5 +72,15 @@ function walk(dir) {
 }
 walk(webSrc);
 if (!Object.keys(catalog).length) throw new Error("UI translation catalog is empty");
-fs.writeFileSync(outputPath, `${JSON.stringify(catalog, null, 2)}\n`, "utf8");
-console.log(`Wrote ${path.relative(root, outputPath)} (${Object.keys(catalog).length} keys)`);
+const output = `${JSON.stringify(catalog, null, 2)}\n`;
+if (process.argv.includes("--check")) {
+  const current = JSON.parse(fs.readFileSync(outputPath, "utf8"));
+  if (Object.keys(current).length !== Object.keys(catalog).length || Object.entries(catalog).some(([key, value]) => current[key] !== value)) {
+    console.error("UI translation catalog is stale; run node scripts/sync-ui-translation-catalog.js");
+    process.exit(1);
+  }
+  console.log(`Verified UI translation catalog (${Object.keys(catalog).length} keys)`);
+} else {
+  fs.writeFileSync(outputPath, output, "utf8");
+  console.log(`Wrote ${path.relative(root, outputPath)} (${Object.keys(catalog).length} keys)`);
+}

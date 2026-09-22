@@ -1,19 +1,21 @@
 import { useEffect } from "react";
 import { useNotificationStore } from "@/store/notifications";
+import { pollAsync } from "@/lib/pollAsync";
 
 let pollSubscribers = 0;
-let pollTimer: number | null = null;
+let stopPoll: (() => void) | null = null;
 
 function startPolling(refreshUnread: () => Promise<void>) {
-  if (pollTimer) return;
-  refreshUnread();
-  pollTimer = window.setInterval(refreshUnread, 30_000);
+  if (stopPoll) return;
+  stopPoll = pollAsync(async () => {
+    if (document.visibilityState === "visible") await refreshUnread();
+  }, 30_000, true);
 }
 
 function stopPolling() {
-  if (pollSubscribers > 0 || !pollTimer) return;
-  window.clearInterval(pollTimer);
-  pollTimer = null;
+  if (pollSubscribers > 0 || !stopPoll) return;
+  stopPoll();
+  stopPoll = null;
 }
 
 export function useNotificationPolling() {

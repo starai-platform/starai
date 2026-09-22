@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { adminApi } from "@/lib/api";
 import { AdminPagination } from "@/components/AdminPagination";
 
@@ -11,6 +11,7 @@ interface TranslationRow {
   field_path: string;
   source_locale: string;
   source_text: string;
+  source_hash: string;
   locale: string;
   value: string;
   status: string;
@@ -45,21 +46,32 @@ export default function ContentTranslationsPage() {
   const [error, setError] = useState("");
   const [stats, setStats] = useState<TranslationStats[]>([]);
   const [autoEnabled, setAutoEnabled] = useState(false);
+  const loadVersionRef = useRef(0);
+  const reloadRef = useRef<() => Promise<void>>(async () => {});
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal?: AbortSignal) => {
+    const version = ++loadVersionRef.current;
     const params = new URLSearchParams({ locale, page: String(page), page_size: String(PAGE_SIZE) });
     if (entityType) params.set("entity_type", entityType);
     if (status) params.set("status", status);
     if (search.trim()) params.set("search", search.trim());
-    const result = await adminApi<{ items: TranslationRow[]; total: number }>(`/content-translations?${params}`);
+    const [result, summary] = await Promise.all([
+      adminApi<{ items: TranslationRow[]; total: number }>(`/content-translations?${params}`, { signal }),
+      adminApi<{ items: TranslationStats[] }>(`/content-translations/stats${entityType ? `?entity_type=${entityType}` : ""}`, { signal }),
+    ]);
+    if (signal?.aborted || version !== loadVersionRef.current) return;
     setRows(result.items || []);
     setTotal(result.total || 0);
-    const summary = await adminApi<{ items: TranslationStats[] }>(`/content-translations/stats${entityType ? `?entity_type=${entityType}` : ""}`);
     setStats(summary.items || []);
   }, [entityType, locale, page, search, status]);
 
   useEffect(() => {
-    load().catch((err) => setError(err instanceof Error ? err.message : "翻译列表加载失败"));
+    reloadRef.current = load;
+    const controller = new AbortController();
+    load(controller.signal).catch((err) => {
+      if (!controller.signal.aborted) setError(err instanceof Error ? err.message : "翻译列表加载失败");
+    });
+    return () => { controller.abort(); loadVersionRef.current += 1; };
   }, [load]);
 
   useEffect(() => {
@@ -78,10 +90,10 @@ export default function ContentTranslationsPage() {
     try {
       await adminApi(`/content-translations/${row.source_id}`, {
         method: "PUT",
-        body: JSON.stringify({ locale, value: row.value, reviewed }),
+        body: JSON.stringify({ locale: row.locale, value: row.value, reviewed, source_hash: row.source_hash }),
       });
       setMessage(reviewed ? "翻译已保存并审核" : "翻译已保存");
-      await load();
+      await reloadRef.current();
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存失败");
     } finally {
@@ -95,7 +107,7 @@ export default function ContentTranslationsPage() {
     try {
       const result = await adminApi<{ entities: number }>("/content-translations/sync", { method: "POST" });
       setMessage(`已同步 ${result.entities} 个模型和工作流，只新增或重置发生变化的字段。`);
-      await load();
+      await reloadRef.current();
     } catch (err) {
       setError(err instanceof Error ? err.message : "同步失败");
     } finally {
@@ -116,7 +128,7 @@ export default function ContentTranslationsPage() {
         body: JSON.stringify({ locale, model_code: modelCode, entity_type: entityType, limit: 50 }),
       });
       setMessage(`AI 已翻译 ${result.translated} 个字段。可继续执行，直到待翻译数量为 0。`);
-      await load();
+      await reloadRef.current();
     } catch (err) {
       setError(err instanceof Error ? err.message : "AI 翻译失败");
     } finally {
@@ -137,7 +149,7 @@ export default function ContentTranslationsPage() {
           if (result.translated === 0) break;
         }
       }
-      setMessage(`历史内容补翻完成，共生成 ${translated} 个译文。`); await load();
+      setMessage(`历史内容补翻完成，共生成 ${translated} 个译文。`); await reloadRef.current();
     } catch (err) { setError(err instanceof Error ? err.message : "历史内容补翻失败"); }
     finally { setBusy(""); }
   };

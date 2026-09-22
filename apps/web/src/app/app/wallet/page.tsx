@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { RechargeModal } from "@/components/RechargeModal";
 import { useI18n } from "@/i18n/I18nProvider";
-import type { CashTransaction, ReferralSummary, Wallet, WalletTransaction, WithdrawalRequest } from "@starai/shared-types";
+import type { CashTransaction, ReferralChild, ReferralSummary, Wallet, WalletTransaction, WithdrawalRequest } from "@starai/shared-types";
 
 type Tab = "compute" | "cash" | "withdrawals";
 
@@ -38,6 +38,10 @@ export default function WalletPage() {
   const [tab, setTab] = useState<Tab>("compute");
   const [withdrawOpen, setWithdrawOpen] = useState(false);
   const [childrenOpen, setChildrenOpen] = useState(false);
+  const [editingChild, setEditingChild] = useState<ReferralChild | null>(null);
+  const [noteDraft, setNoteDraft] = useState("");
+  const [noteSaving, setNoteSaving] = useState(false);
+  const [noteError, setNoteError] = useState("");
   const [method, setMethod] = useState<"bank" | "wechat" | "alipay" | "paypal">("alipay");
   const [amount, setAmount] = useState("");
   const [accountName, setAccountName] = useState("");
@@ -91,7 +95,7 @@ export default function WalletPage() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, []);
+  }, [td, ts]);
 
   const submitWithdrawal = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -114,6 +118,35 @@ export default function WalletPage() {
       load();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : ts("提现申请提交失败"));
+    }
+  };
+
+  const startEditingNote = (child: ReferralChild) => {
+    setEditingChild(child);
+    setNoteDraft(child.note || "");
+    setNoteError("");
+  };
+
+  const saveReferralNote = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingChild || noteSaving) return;
+    setNoteSaving(true);
+    setNoteError("");
+    try {
+      const result = await api<{ note: string }>(`/api/referrals/${encodeURIComponent(editingChild.public_id)}/note`, {
+        method: "PATCH",
+        body: JSON.stringify({ note: noteDraft }),
+      });
+      setSummary((current) => current ? {
+        ...current,
+        children: current.children?.map((child) => child.public_id === editingChild.public_id ? { ...child, note: result.note } : child),
+      } : current);
+      setEditingChild(null);
+      setNoteDraft("");
+    } catch (err) {
+      setNoteError(err instanceof Error ? err.message : ts("备注保存失败"));
+    } finally {
+      setNoteSaving(false);
     }
   };
 
@@ -182,38 +215,69 @@ export default function WalletPage() {
       {tab === "withdrawals" && <WithdrawalList items={withdrawals} />}
 
       {childrenOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" onClick={() => setChildrenOpen(false)}>
-          <div className="max-h-[82vh] w-full max-w-3xl overflow-hidden rounded-2xl bg-white text-gray-900 shadow-xl dark:border dark:border-white/10 dark:bg-gray-950 dark:text-gray-100" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-3 sm:p-4" onClick={() => setChildrenOpen(false)}>
+          <div role="dialog" aria-modal="true" aria-labelledby="referral-children-title" className="flex max-h-[86vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white text-gray-900 shadow-xl dark:border dark:border-white/10 dark:bg-gray-950 dark:text-gray-100" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4 dark:border-white/10">
-              <div>
-                <h3 className="font-semibold">{ts("直属下级")}</h3>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <h3 id="referral-children-title" className="font-semibold">{ts("直属下级")}</h3>
+                  <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500 dark:bg-white/10 dark:text-gray-300">{summary?.direct_count ?? 0}</span>
+                </div>
                 <p className="mt-1 text-xs text-gray-400">{ts("累计充值金额会随被推荐人后续充值自动累加。")}</p>
               </div>
-              <button type="button" onClick={() => setChildrenOpen(false)} className="text-sm text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">{ts("关闭")}</button>
+              <button type="button" onClick={() => setChildrenOpen(false)} className="shrink-0 rounded-lg px-2 py-1 text-sm text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-white/10 dark:hover:text-gray-200">{ts("关闭")}</button>
             </div>
-            <div className="max-h-[64vh] overflow-y-auto">
+            <div className="min-h-0 flex-1 overflow-auto">
               {!summary?.children?.length ? (
                 <div className="px-5 py-10 text-center text-sm text-gray-400">{ts("暂无直属下级")}</div>
               ) : (
-                <table className="w-full text-sm">
+                <table className="w-full min-w-[920px] text-sm">
                   <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500 dark:bg-gray-900 dark:text-gray-400">
                     <tr>
                       <th className="px-4 py-3 text-left">{ts("用户")}</th>
                       <th className="px-4 py-3 text-left">{ts("邮箱")}</th>
                       <th className="px-4 py-3 text-right">{ts("累计充值")}</th>
                       <th className="px-4 py-3 text-left">{ts("注册时间")}</th>
+                      <th className="w-64 px-4 py-3 text-left">{ts("备注")}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100 dark:divide-white/10">
                     {summary.children.map((child) => (
-                      <tr key={child.id}>
+                      <tr key={child.id} className="transition-colors hover:bg-gray-50/70 dark:hover:bg-white/[0.03]">
                         <td className="px-4 py-3">
                           <div className="font-medium">{child.nickname || ts("未设置昵称")}</div>
                           <div className="mt-0.5 font-mono text-xs text-gray-400">{child.public_id}</div>
                         </td>
                         <td className="px-4 py-3 text-gray-500 dark:text-gray-300">{child.email || "-"}</td>
                         <td className="px-4 py-3 text-right font-mono">¥{(child.recharge_amount || 0).toFixed(2)}</td>
-                        <td className="px-4 py-3 text-xs text-gray-500">{new Date(child.created_at).toLocaleString("zh-CN", { hour12: false })}</td>
+                        <td className="whitespace-nowrap px-4 py-3 text-xs text-gray-500">{new Date(child.created_at).toLocaleString("zh-CN", { hour12: false })}</td>
+                        <td className="px-4 py-3">
+                          {editingChild?.public_id === child.public_id ? (
+                            <form onSubmit={saveReferralNote} className="min-w-56">
+                              <label htmlFor={`referral-note-${child.public_id}`} className="sr-only">{ts("请输入备注信息")}</label>
+                              <input
+                                id={`referral-note-${child.public_id}`}
+                                autoFocus
+                                maxLength={200}
+                                value={noteDraft}
+                                onChange={(e) => setNoteDraft(e.target.value)}
+                                placeholder={ts("请输入备注信息")}
+                                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none placeholder:text-gray-400 focus:border-primary dark:border-white/15 dark:bg-gray-900 dark:text-gray-100"
+                              />
+                              {noteError && <p className="mt-1 text-xs text-red-500">{noteError}</p>}
+                              <div className="mt-2 flex items-center gap-2">
+                                <button type="submit" disabled={noteSaving} className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-dark disabled:opacity-50">{noteSaving ? ts("保存中...") : ts("保存")}</button>
+                                <button type="button" onClick={() => { setEditingChild(null); setNoteError(""); }} className="rounded-lg px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-white/10">{ts("取消")}</button>
+                                <span className="ml-auto text-[11px] tabular-nums text-gray-400">{Array.from(noteDraft).length}/200</span>
+                              </div>
+                            </form>
+                          ) : (
+                            <button type="button" onClick={() => startEditingNote(child)} className="group block w-full min-w-48 rounded-lg px-2 py-1.5 text-left transition hover:bg-gray-100 dark:hover:bg-white/10">
+                              <span className={`block truncate ${child.note ? "text-gray-700 dark:text-gray-200" : "text-primary"}`}>{child.note || ts("添加备注")}</span>
+                              {child.note && <span className="mt-0.5 block text-[11px] text-gray-400 group-hover:text-gray-500">{ts("点击编辑备注")}</span>}
+                            </button>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

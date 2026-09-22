@@ -136,13 +136,14 @@ func (s *PresetService) DeleteChannelPreset(ctx context.Context, key string) err
 // ---------- Prompt roles ----------
 
 type PromptRoleDTO struct {
-	ID           int64   `json:"id"`
-	Name         string  `json:"name"`
-	Description  *string `json:"description,omitempty"`
-	SystemPrompt string  `json:"system_prompt"`
-	IconURL      *string `json:"icon_url,omitempty"`
-	IsDefault    bool    `json:"is_default"`
-	CreatedAt    string  `json:"created_at"`
+	ID            int64   `json:"id"`
+	Name          string  `json:"name"`
+	Description   *string `json:"description,omitempty"`
+	SystemPrompt  string  `json:"system_prompt"`
+	IconURL       *string `json:"icon_url,omitempty"`
+	IsDefault     bool    `json:"is_default"`
+	IsUserCreated bool    `json:"is_user_created"`
+	CreatedAt     string  `json:"created_at"`
 }
 
 type CreatePromptRoleInput struct {
@@ -155,10 +156,26 @@ type CreatePromptRoleInput struct {
 
 func (s *PresetService) ListPromptRoles(ctx context.Context, userID int64) ([]PromptRoleDTO, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, name, description, system_prompt, icon_url, is_default, created_at
-		FROM prompt_roles
-		WHERE user_id=$1 OR user_id IS NULL
-		ORDER BY is_default DESC, id DESC`, userID)
+		SELECT id, name, description, system_prompt, icon_url, is_default, is_user_created, created_at
+		FROM (
+			SELECT id, name, description, system_prompt, icon_url, is_default, true AS is_user_created,
+				created_at, 0 AS platform_rank, 0 AS sort_order
+			FROM prompt_roles
+			WHERE user_id=$1
+			UNION ALL
+			SELECT -id, name, description, system_prompt, icon_url, false, false,
+				created_at, 0, sort_order
+			FROM role_templates
+			WHERE is_enabled=true
+			UNION ALL
+			SELECT id, name, description, system_prompt, icon_url, is_default, false,
+				created_at, 1, 0
+			FROM prompt_roles
+			WHERE user_id IS NULL
+		) available_roles
+		ORDER BY is_user_created DESC, platform_rank ASC,
+			CASE WHEN is_user_created THEN 0 ELSE sort_order END ASC,
+			created_at DESC, id DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +184,7 @@ func (s *PresetService) ListPromptRoles(ctx context.Context, userID int64) ([]Pr
 	for rows.Next() {
 		var r PromptRoleDTO
 		var created time.Time
-		if err := rows.Scan(&r.ID, &r.Name, &r.Description, &r.SystemPrompt, &r.IconURL, &r.IsDefault, &created); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &r.Description, &r.SystemPrompt, &r.IconURL, &r.IsDefault, &r.IsUserCreated, &created); err != nil {
 			return nil, err
 		}
 		r.CreatedAt = created.Format(time.RFC3339)
@@ -200,5 +217,5 @@ func (s *PresetService) CreatePromptRole(ctx context.Context, userID int64, in C
 	if err != nil {
 		return nil, err
 	}
-	return &PromptRoleDTO{ID: id, Name: in.Name, Description: desc, SystemPrompt: in.SystemPrompt, IconURL: icon, IsDefault: in.IsDefault, CreatedAt: created.Format(time.RFC3339)}, nil
+	return &PromptRoleDTO{ID: id, Name: in.Name, Description: desc, SystemPrompt: in.SystemPrompt, IconURL: icon, IsDefault: in.IsDefault, IsUserCreated: true, CreatedAt: created.Format(time.RFC3339)}, nil
 }

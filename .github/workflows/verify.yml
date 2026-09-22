@@ -8,6 +8,18 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: starai-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -33,6 +45,11 @@ jobs:
       - name: Verify migration pairs
         run: node scripts/verify-migrations.js
 
+      - name: Verify UI translation catalog
+        run: |
+          node scripts/sync-ui-translation-catalog.js --check
+          node scripts/check-ui-hardcodes.js --check
+
       - name: Validate deployment files
         run: |
           bash -n scripts/deploy-prod.sh
@@ -41,6 +58,9 @@ jobs:
 
       - name: Test and vet API
         working-directory: services/api
+        env:
+          TASK_READ_TEST_DATABASE_URL: postgres://postgres:starai-ci-only@localhost:5432/postgres?sslmode=disable
+          I18N_TEST_DATABASE_URL: postgres://postgres:starai-ci-only@localhost:5432/postgres?sslmode=disable
         run: |
           go test ./...
           go vet ./...
@@ -53,6 +73,12 @@ jobs:
 
       - name: Lint frontend
         run: pnpm -r lint
+
+      - name: Test frontend request lifecycle
+        run: node --experimental-strip-types --test apps/web/src/lib/api-cache.test.mjs apps/web/src/lib/pollAsync.test.mjs
+
+      - name: Test translations and canvas workflow
+        run: node --experimental-strip-types --test apps/web/src/i18n/translation.test.mjs apps/web/src/i18n/I18nProvider.test.mjs apps/web/src/components/workbench/canvasIntegrity.test.mjs apps/web/src/components/workbench/videoCreationWorkflow.test.mjs apps/web/src/components/workbench/canvasMediaUI.test.mjs
 
       - name: Build frontend
         run: |

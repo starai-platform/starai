@@ -19,6 +19,7 @@ test("agent retry falls back to workflow retry for unsupported failed nodes", as
   const ctx = {
     project: { public_id: "project", node_runs: [{ node_id: "analysis", status: "failed" }] },
     comicSettings: { image_model_code: "image", video_model_code: "video" },
+    ts: value => value,
     setError: value => errors.push(value),
     startPolling: id => calls.push(`poll:${id}`),
     api: async (url, options) => calls.push({ url, options }),

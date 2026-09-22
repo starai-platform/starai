@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Languages } from "lucide-react";
-import { api } from "@/lib/api";
+import { apiCached } from "@/lib/api";
 import { useI18n } from "@/i18n/I18nProvider";
 import type { GenerationLanguage } from "@starai/shared-types";
 import { MediaMenuOption, MediaOptionMenu } from "./MediaOptionMenu";
@@ -84,7 +84,7 @@ export function useGenerationLanguages() {
 
   useEffect(() => {
     let alive = true;
-    api<PublicLanguageConfig>("/api/system-configs/public")
+    apiCached<PublicLanguageConfig>("/api/system-configs/public", 60_000, false)
       .then((cfg) => {
         if (!alive) return;
         const next = normalizeGenerationLanguages(cfg.generation_languages);

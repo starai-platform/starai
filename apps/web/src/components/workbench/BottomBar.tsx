@@ -1,9 +1,10 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Globe, Upload, ChevronDown, BookOpen, UserRound, Shield, X, Film, FileText, Image as ImageIcon, Lock, Zap, Trash2 } from "lucide-react";
 import { api, createRole, deleteAsset, listAssets, listChannelPresets, listRoleTemplates, listRoles, uploadAsset, uploadFile } from "@/lib/api";
 import { useI18n } from "@/i18n/I18nProvider";
+import { AssetPagination } from "./AssetPagination";
 
 export type ReferenceImagePick = { url: string; name: string; public_id?: string };
 
@@ -34,6 +35,7 @@ const TIMEOUTS = [10, 20, 30, 60, 120];
 type AssetKind = "image" | "video" | "audio" | "doc";
 type AssetType = "role" | "scene" | "prop";
 type AssetItem = { public_id: string; name?: string; mime_type?: string; url: string; kind?: string; asset_type?: string };
+type PromptRoleItem = { id: number; name: string; description?: string; system_prompt: string; icon_url?: string; is_user_created?: boolean };
 
 const DOC_ACCEPT = [
   "application/pdf",
@@ -128,7 +130,7 @@ function AssetGridCard({
       <div className="relative aspect-[4/5] bg-gray-100 overflow-hidden">
         {k === "image" && coverUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={coverUrl} alt={title} className="w-full h-full object-cover" />
+          <img loading="lazy" decoding="async" src={coverUrl} alt={title} className="w-full h-full object-cover" />
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-gray-400">
             {k === "video" ? <Film size={28} /> : k === "doc" ? <FileText size={28} /> : <ImageIcon size={28} />}
@@ -200,7 +202,7 @@ function ReferencePickCard({
   locked?: boolean;
   onClick: () => void;
 }) {
-  const { t, td } = useI18n();
+  const { t } = useI18n();
   return (
     <div
       role="button"
@@ -218,7 +220,7 @@ function ReferencePickCard({
       <div className="relative aspect-[4/5] bg-gray-100 overflow-hidden">
         {coverUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={coverUrl} alt={title} className="w-full h-full object-cover" />
+          <img loading="lazy" decoding="async" src={coverUrl} alt={title} className="w-full h-full object-cover" />
         ) : (
           <div className="w-full h-full flex items-center justify-center text-gray-300">
             <ImageIcon size={28} />
@@ -477,7 +479,7 @@ export function ChatTopTools({
 
   // Roles
   const [rolesOpen, setRolesOpen] = useState(false);
-  const [roles, setRoles] = useState<{ id: number; name: string; description?: string; system_prompt: string; icon_url?: string }[]>([]);
+  const [roles, setRoles] = useState<PromptRoleItem[]>([]);
   const [tpls, setTpls] = useState<{ code: string; name: string; description?: string; system_prompt: string; icon_url?: string }[]>([]);
   const [roleTab, setRoleTab] = useState<"existing" | "create">("existing");
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -490,6 +492,10 @@ export function ChatTopTools({
     system_prompt: "",
   });
   const roleIconRef = useRef<HTMLInputElement | null>(null);
+  const filteredRoles = useMemo(() => {
+    const kw = roleQuery.trim().toLowerCase();
+    return roles.filter((role) => !kw || `${role.name} ${role.description || ""}`.toLowerCase().includes(kw));
+  }, [roleQuery, roles]);
 
   // Assets
   const [assetOpen, setAssetOpen] = useState(false);
@@ -497,6 +503,12 @@ export function ChatTopTools({
   const [assetKind, setAssetKind] = useState<AssetKind | "all">("all");
   const [assetType, setAssetType] = useState<AssetType | "all">("all");
   const [assetItems, setAssetItems] = useState<AssetItem[]>([]);
+  const [assetPage, setAssetPage] = useState(1);
+  const [assetTotal, setAssetTotal] = useState(0);
+  const [assetLoading, setAssetLoading] = useState(false);
+  const assetRequest = useRef(0);
+  const assetFilterKey = useRef("");
+  const assetCache = useRef(new Map<string, AssetItem>());
   const [assetPreview, setAssetPreview] = useState<{
     public_id: string;
     name?: string;
@@ -552,28 +564,48 @@ export function ChatTopTools({
   }, [assetOpen, referencePickMode]);
 
   const loadAssets = useCallback(
-    async (override?: { kind?: AssetKind | "all"; type?: AssetType | "all"; q?: string }) => {
+    async (override?: { kind?: AssetKind | "all"; type?: AssetType | "all"; q?: string; page?: number }) => {
       const nextKind = override?.kind ?? assetKind;
       const nextType = override?.type ?? assetType;
       const nextQuery = override?.q ?? assetQuery;
+      const filterKey = JSON.stringify([nextKind, nextType, nextQuery, referencePickMode]);
+      const page = filterKey !== assetFilterKey.current ? 1 : override?.page ?? assetPage;
+      assetFilterKey.current = filterKey;
+      setAssetPage(page);
+      const request = ++assetRequest.current;
+      setAssetLoading(true);
       try {
         const r = await listAssets({
           q: nextQuery,
-          page_size: 50,
+          page,
+          page_size: 20,
           kind: referencePickMode ? "image" : nextKind === "all" ? undefined : nextKind,
           type: nextType === "all" ? undefined : nextType,
         } as any);
+        if (request !== assetRequest.current) return;
+        const total = Number(r.total || 0);
+        setAssetTotal(total);
+        const lastPage = Math.max(1, Math.ceil(total / 20));
+        if (page > lastPage) { setAssetPage(lastPage); return; }
+        for (const item of r.items || []) assetCache.current.set(item.public_id, item);
         setAssetItems(r.items || []);
-      } catch {
+      } catch (error) {
+        if (request !== assetRequest.current) return;
         setAssetItems([]);
+        setAssetTotal(0);
+        setAssetNotice({ type: "error", message: error instanceof Error ? error.message : "资产加载失败" });
+      } finally {
+        if (request === assetRequest.current) setAssetLoading(false);
       }
     },
-    [assetKind, assetQuery, assetType, referencePickMode]
+    [assetKind, assetQuery, assetType, assetPage, referencePickMode]
   );
 
   useEffect(() => {
     if (!assetOpen || assetTab !== "mine") return;
     loadAssets();
+    const request = assetRequest.current;
+    return () => { if (assetRequest.current === request) assetRequest.current = request + 1; };
   }, [assetOpen, assetTab, loadAssets]);
 
   useEffect(() => {
@@ -589,7 +621,7 @@ export function ChatTopTools({
     return () => window.clearTimeout(t);
   }, [assetNotice]);
 
-  const pickRole = (r: { id: number; name: string; system_prompt: string; icon_url?: string }) => {
+  const pickRole = (r: PromptRoleItem) => {
     set({ role_id: r.id, role_name: r.name, role_prompt: r.system_prompt, role_icon_url: r.icon_url });
     setRolesOpen(false);
   };
@@ -607,6 +639,7 @@ export function ChatTopTools({
       const r = await listRoles();
       setRoles(r.items || []);
       setRoleDraft({ icon_url: "", name: "", description: "", system_prompt: "" });
+      setRoleTab("existing");
     } finally {
       setCreatingRole(false);
     }
@@ -645,6 +678,7 @@ export function ChatTopTools({
     setAssetNotice(null);
     try {
       await deleteAsset(asset.public_id);
+      assetCache.current.delete(asset.public_id);
       setAssetItems((items) => items.filter((item) => item.public_id !== asset.public_id));
       set({
         asset_ids: value.asset_ids.filter((id) => id !== asset.public_id),
@@ -684,7 +718,7 @@ export function ChatTopTools({
   );
 
   const selectedAssets = useMemo(() => {
-    const map = new Map(assetItems.map((a) => [a.public_id, a]));
+    const map = new Map([...assetCache.current, ...assetItems.map((a) => [a.public_id, a] as const)]);
     return value.asset_ids.map((id) => map.get(id) || { public_id: id, url: "", name: id } as any);
   }, [assetItems, value.asset_ids]);
 
@@ -751,7 +785,7 @@ export function ChatTopTools({
       setSelectedUploadFile(null);
       setUploadName("");
       setUploadDesc("");
-      await loadAssets({ kind: uploadKind, type: uploadType });
+      await loadAssets({ kind: uploadKind, type: uploadType, page: 1 });
     } catch (err) {
       setAssetNotice({ type: "error", message: err instanceof Error ? err.message : t("asset.uploadFailed") });
     } finally {
@@ -848,7 +882,7 @@ export function ChatTopTools({
         >
           {value.role_icon_url ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={value.role_icon_url} alt="" className="w-5 h-5 rounded-lg object-cover border border-gray-200 dark:border-white/10 shrink-0" />
+            <img loading="lazy" decoding="async" src={value.role_icon_url} alt="" className="w-5 h-5 rounded-lg object-cover border border-gray-200 dark:border-white/10 shrink-0" />
           ) : (
             <UserRound size={16} className="text-gray-500 dark:text-gray-400 shrink-0" />
           )}
@@ -906,25 +940,24 @@ export function ChatTopTools({
                     />
                   </div>
                   <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-                    {roles
-                      .filter((r) => {
-                        const kw = roleQuery.trim().toLowerCase();
-                        if (!kw) return true;
-                        return (r.name + " " + (r.description || "")).toLowerCase().includes(kw);
-                      })
-                      .map((r) => (
+                    {filteredRoles.map((r) => (
                         <div key={r.id} className={clsx("w-full bg-white border border-gray-100 rounded-2xl px-4 py-3 flex items-center justify-between gap-3 hover:border-gray-200 transition dark:bg-white/5 dark:border-white/10 dark:hover:border-white/20", value.role_id === r.id && "border-primary/35 bg-primary/5 dark:border-primary/35 dark:bg-primary/5")}>
                           <div className="flex items-center gap-3 min-w-0">
                             <div className="w-10 h-10 rounded-xl bg-gray-50 border border-gray-200 overflow-hidden flex items-center justify-center shrink-0 dark:bg-white/10 dark:border-white/10">
                               {r.icon_url ? (
                                 // eslint-disable-next-line @next/next/no-img-element
-                                <img src={r.icon_url} alt="" className="w-full h-full object-cover" />
+                                <img loading="lazy" decoding="async" src={r.icon_url} alt="" className="w-full h-full object-cover" />
                               ) : (
                                 <span className="text-xs text-gray-400">AI</span>
                               )}
                             </div>
                             <div className="min-w-0">
-                              <div className="font-semibold text-gray-900 truncate dark:text-gray-100">{r.name}</div>
+                              <div className="flex min-w-0 items-center gap-2">
+                                <div className="truncate font-semibold text-gray-900 dark:text-gray-100">{r.name}</div>
+                                <span className={clsx("shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium", r.is_user_created ? "bg-primary/10 text-primary" : "bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-300")}>
+                                  {r.is_user_created ? t("role.mine") : t("role.platform")}
+                                </span>
+                              </div>
                               <div className="text-xs text-gray-500 mt-0.5 line-clamp-1">{r.description}</div>
                             </div>
                           </div>
@@ -937,7 +970,7 @@ export function ChatTopTools({
                           </button>
                         </div>
                       ))}
-                    {roles.length === 0 && <div className="text-center text-gray-400 py-10">{t("role.empty")}</div>}
+                    {filteredRoles.length === 0 && <div className="text-center text-gray-400 py-10">{t("role.empty")}</div>}
                   </div>
                 </div>
               ) : (
@@ -1011,7 +1044,7 @@ export function ChatTopTools({
                             <div className="w-11 h-11 rounded-2xl bg-gray-50 border border-gray-200 overflow-hidden flex items-center justify-center shrink-0 dark:bg-white/10 dark:border-white/10">
                               {t.icon_url ? (
                                 // eslint-disable-next-line @next/next/no-img-element
-                                <img src={t.icon_url} alt="" className="w-full h-full object-cover" />
+                                <img loading="lazy" decoding="async" src={t.icon_url} alt="" className="w-full h-full object-cover" />
                               ) : (
                                 <span className="text-xs text-gray-400">AI</span>
                               )}
@@ -1035,7 +1068,7 @@ export function ChatTopTools({
                         <div className="w-20 h-20 rounded-full bg-white border border-gray-200 overflow-hidden flex items-center justify-center dark:bg-gray-900 dark:border-white/10">
                           {roleDraft.icon_url ? (
                             // eslint-disable-next-line @next/next/no-img-element
-                            <img src={roleDraft.icon_url} alt="" className="w-full h-full object-cover" />
+                            <img loading="lazy" decoding="async" src={roleDraft.icon_url} alt="" className="w-full h-full object-cover" />
                           ) : (
                             <span className="text-xs text-gray-400">{t("role.uploadAvatarPlaceholder")}</span>
                           )}
@@ -1212,7 +1245,7 @@ export function ChatTopTools({
 
                   <div className="mt-2 min-h-[220px] flex-1 overflow-hidden rounded-xl border border-gray-100 bg-gray-50 dark:border-white/10 dark:bg-white/5">
                     {assetTab === "mine" ? (
-                      imageAssetItems.length === 0 ? (
+                      assetLoading ? <div className="p-6 text-center text-sm text-gray-400" role="status">{td("asset.pageLoading", "加载中…")}</div> : imageAssetItems.length === 0 ? (
                         <div className="h-full flex flex-col items-center justify-center text-gray-400">
                           <div className="w-16 h-16 rounded-2xl bg-white border border-gray-200 flex items-center justify-center mb-3 dark:bg-gray-900 dark:border-white/10">
                             <ImageIcon size={28} className="text-gray-300" />
@@ -1272,6 +1305,7 @@ export function ChatTopTools({
                     )}
                   </div>
 
+                  {assetTab === "mine" && <AssetPagination page={assetPage} total={assetTotal} loading={assetLoading} onChange={setAssetPage} />}
                   {pickedRefs.length > 0 && (
                     <div className="mt-2 flex shrink-0 items-center gap-2 overflow-x-auto">
                       <div className="shrink-0 text-xs text-gray-500">{t("asset.selectedReferences")}</div>
@@ -1279,7 +1313,7 @@ export function ChatTopTools({
                           <div key={img.url} className="flex h-10 min-w-[130px] max-w-[180px] items-center gap-1.5 rounded-xl border border-gray-100 bg-white p-1 dark:border-white/10 dark:bg-white/5">
                             <div className="h-8 w-8 shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-50 dark:border-white/10 dark:bg-white/10">
                               {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img src={img.url} alt={img.name} className="w-full h-full object-cover" />
+                              <img loading="lazy" decoding="async" src={img.url} alt={img.name} className="w-full h-full object-cover" />
                             </div>
                             <div className="min-w-0 flex-1 truncate text-xs font-medium text-gray-900 dark:text-gray-100">{img.name}</div>
                             <button
@@ -1347,7 +1381,7 @@ export function ChatTopTools({
               </div>
 
               <div className="mt-4 h-[44vh] bg-gray-50 rounded-2xl border border-gray-100 overflow-hidden dark:bg-white/5 dark:border-white/10">
-                {assetItems.length === 0 ? (
+                {assetLoading ? <div className="p-6 text-center text-sm text-gray-400" role="status">{td("asset.pageLoading", "加载中…")}</div> : assetItems.length === 0 ? (
                   <div className="h-full flex flex-col items-center justify-center text-gray-400">
                     <div className="w-16 h-16 rounded-2xl bg-white border border-gray-200 flex items-center justify-center mb-3 dark:bg-gray-900 dark:border-white/10">
                       <span className="text-2xl">+</span>
@@ -1381,6 +1415,7 @@ export function ChatTopTools({
                 )}
               </div>
 
+              <AssetPagination page={assetPage} total={assetTotal} loading={assetLoading} onChange={setAssetPage} />
               {value.asset_ids.length > 0 && (
                 <div className="mt-4">
                   <div className="text-xs text-gray-500 mb-2">{t("asset.selectedAssets")}</div>
@@ -1393,7 +1428,7 @@ export function ChatTopTools({
                           <div className="w-12 h-12 rounded-2xl bg-gray-50 border border-gray-200 overflow-hidden flex items-center justify-center shrink-0 dark:bg-white/10 dark:border-white/10">
                             {kind === "image" && a.url ? (
                               // eslint-disable-next-line @next/next/no-img-element
-                              <img src={a.url} alt="" className="w-full h-full object-cover" />
+                              <img loading="lazy" decoding="async" src={a.url} alt="" className="w-full h-full object-cover" />
                             ) : kind === "video" ? (
                               <Film size={18} className="text-gray-400" />
                             ) : kind === "doc" ? (
@@ -1584,7 +1619,7 @@ export function ChatTopTools({
               </div>
               <div className="bg-gray-50 border border-gray-100 rounded-2xl overflow-hidden flex items-center justify-center dark:bg-white/5 dark:border-white/10">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={assetPreview.url} alt="" className="max-h-[65vh] w-full object-contain" />
+                <img loading="lazy" decoding="async" src={assetPreview.url} alt="" className="max-h-[65vh] w-full object-contain" />
               </div>
               <div className="mt-4 flex items-center justify-end gap-3">
                 <button

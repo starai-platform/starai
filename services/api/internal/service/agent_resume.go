@@ -7,6 +7,7 @@ import (
 )
 
 type comicRemainingWork struct {
+	Assets     int  `json:"assets"`
 	Plan       bool `json:"plan"`
 	Images     int  `json:"images"`
 	Videos     int  `json:"videos"`
@@ -38,7 +39,7 @@ func remainingComicWork(inputs, outputs, runtimeCfg map[string]interface{}) comi
 	audio := normalizeComicAudioStrategy(firstAgentString(stringValue(inputs["audio_strategy"]), stringValue(runtimeCfg["audio_strategy"])), firstAgentString(stringValue(inputs["narration_model_code"]), stringValue(runtimeCfg["narration_model_code"]))) != "video_native"
 	if !ok || len(shots) == 0 {
 		grid := positiveAgentInt(intFromAgentAny(firstAgentNonNil(inputs["storyboard_grid"], runtimeCfg["storyboard_grid"])), 6)
-		work := comicRemainingWork{Plan: true, Images: grid, Videos: grid}
+		work := comicRemainingWork{Plan: true, Assets: grid * 3, Images: grid, Videos: grid}
 		if audio {
 			work.Narrations = grid
 		}
@@ -71,12 +72,32 @@ func remainingComicWork(inputs, outputs, runtimeCfg map[string]interface{}) comi
 			work.Narrations++
 		}
 	}
+	used := map[string]bool{}
+	for _, raw := range shots {
+		shot, _ := raw.(map[string]interface{})
+		for _, key := range []string{"character_codes", "prop_codes"} {
+			for _, code := range agentStringSlice(shot[key], nil) {
+				used[code] = true
+			}
+		}
+		if code := stringValue(shot["location_code"]); code != "" {
+			used[code] = true
+		}
+	}
+	for _, raw := range append(comicResumeItems(inputs["comic_assets"]), comicResumeItems(outputs["consistency_assets"])...) {
+		asset, _ := raw.(map[string]interface{})
+		metadata, _ := asset["metadata"].(map[string]interface{})
+		if len(agentStringSlice(metadata["reference_urls"], nil)) > 0 || len(agentStringSlice(metadata["reference_images"], nil)) > 0 {
+			delete(used, firstAgentString(stringValue(asset["asset_code"]), stringValue(asset["code"])))
+		}
+	}
+	work.Assets = len(used)
 	return work
 }
 
 func (s *AgentService) validateComicRemainingModels(ctx context.Context, inputs map[string]interface{}, work comicRemainingWork) error {
 	checks := [][2]string{}
-	if work.Images > 0 {
+	if work.Images+work.Assets > 0 {
 		checks = append(checks, [2]string{stringValue(inputs["image_model_code"]), "image"})
 	}
 	if work.Videos > 0 {
@@ -144,8 +165,8 @@ func (s *AgentService) estimateComicRemainingCost(ctx context.Context, runtimeCf
 		}
 		total += s.estimateModelCostByCode(ctx, code, inputs, 1200, 2500)
 	}
-	if work.Images > 0 {
-		total += attempts * s.estimateModelCostByCode(ctx, stringValue(inputs["image_model_code"]), map[string]interface{}{"n": work.Images}, 0, 0)
+	if work.Images+work.Assets > 0 {
+		total += attempts * s.estimateModelCostByCode(ctx, stringValue(inputs["image_model_code"]), map[string]interface{}{"n": work.Images + work.Assets}, 0, 0)
 	}
 	if work.Videos > 0 {
 		duration := comicSegmentDurationSeconds(inputs, runtimeCfg)
@@ -154,6 +175,9 @@ func (s *AgentService) estimateComicRemainingCost(ctx context.Context, runtimeCf
 	}
 	if work.Narrations > 0 {
 		total += float64(work.Narrations) * s.estimateModelCostByCode(ctx, stringValue(inputs["narration_model_code"]), map[string]interface{}{"count": 1}, 0, 200)
+	}
+	if code := stringValue(runtimeCfg["quality_model_code"]); code != "" {
+		total += attempts * float64(work.Images+work.Videos+work.Assets) * s.estimateModelCostByCode(ctx, code, inputs, 6000, 500)
 	}
 	return total
 }

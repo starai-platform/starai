@@ -3,6 +3,7 @@
 import { X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { useI18n } from "@/i18n/I18nProvider";
 
 type NovelPlayGuideProps = {
   open: boolean;
@@ -10,6 +11,7 @@ type NovelPlayGuideProps = {
 };
 
 export function NovelPlayGuide({ open, onClose }: NovelPlayGuideProps) {
+  const { ts } = useI18n();
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -41,11 +43,11 @@ export function NovelPlayGuide({ open, onClose }: NovelPlayGuideProps) {
           <div>
             <div className="flex items-center gap-2 mb-1">
               <span className="text-sm font-medium text-indigo-400 px-2 py-0.5 bg-indigo-500/10 rounded">
-                你的专属 AI 编辑部
+                {ts("你的专属 AI 编辑部")}
               </span>
             </div>
             <h2 className="text-2xl font-bold text-white">
-              一句话创意，让 AI 帮你写完一整本书
+              {ts("一句话创意，让 AI 帮你写完一整本书")}
             </h2>
           </div>
           <button
@@ -61,26 +63,26 @@ export function NovelPlayGuide({ open, onClose }: NovelPlayGuideProps) {
           {/* 核心卖点 */}
           <div className="mb-8 p-6 bg-gradient-to-br from-indigo-500/10 to-purple-500/10 rounded-xl border border-indigo-500/20">
             <p className="text-lg text-gray-200 leading-relaxed">
-              总编领队，故事策划、节奏编排师、章节写手、文学润色师、审校员、档案员多位 AI 专家协同作战——大纲逐章确认、设定全程追踪、写完自动润色审校，几十万字也不崩设定、不漂文风。
+              {ts("总编领队，故事策划、节奏编排师、章节写手、文学润色师、审校员、档案员多位 AI 专家协同作战——大纲逐章确认、设定全程追踪、写完自动润色审校，几十万字也不崩设定、不漂文风。")}
             </p>
             <div className="grid grid-cols-3 gap-4 mt-6">
               <div className="text-center">
-                <div className="text-indigo-400 font-bold text-lg">设定台账全程追踪</div>
+                <div className="text-indigo-400 font-bold text-lg">{ts("设定台账全程追踪")}</div>
               </div>
               <div className="text-center">
-                <div className="text-indigo-400 font-bold text-lg">文风指纹全书统一</div>
+                <div className="text-indigo-400 font-bold text-lg">{ts("文风指纹全书统一")}</div>
               </div>
               <div className="text-center">
-                <div className="text-indigo-400 font-bold text-lg">全程对话可控</div>
+                <div className="text-indigo-400 font-bold text-lg">{ts("全程对话可控")}</div>
               </div>
             </div>
           </div>
 
           {/* 认识你的AI编辑部 */}
           <section className="mb-8">
-            <h3 className="text-xl font-bold text-white mb-4">认识你的 AI 编辑部</h3>
+            <h3 className="text-xl font-bold text-white mb-4">{ts("认识你的 AI 编辑部")}</h3>
             <p className="text-gray-300 mb-6">
-              像一家真实的出版编辑部：总编统筹全局，多位专家各司其职，每一章都经过策划、节奏编排、写作、润色、审校与归档才交到你手上。
+              {ts("像一家真实的出版编辑部：总编统筹全局，多位专家各司其职，每一章都经过策划、节奏编排、写作、润色、审校与归档才交到你手上。")}
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -95,9 +97,9 @@ export function NovelPlayGuide({ open, onClose }: NovelPlayGuideProps) {
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-1">
                         <span className="text-xs text-gray-500 font-mono">0{index + 1}</span>
-                        <h4 className="font-bold text-white">{role.name}</h4>
+                        <h4 className="font-bold text-white">{ts(role.name)}</h4>
                       </div>
-                      <p className="text-sm text-gray-400 leading-relaxed">{role.description}</p>
+                      <p className="text-sm text-gray-400 leading-relaxed">{ts(role.description)}</p>
                     </div>
                   </div>
                 </div>
@@ -109,10 +111,10 @@ export function NovelPlayGuide({ open, onClose }: NovelPlayGuideProps) {
           <section className="mb-8 p-6 bg-gradient-to-r from-amber-500/10 to-orange-500/10 rounded-xl border border-amber-500/20">
             <div className="flex items-center gap-2 mb-3">
               <span className="px-2 py-1 bg-amber-500/20 text-amber-400 text-xs font-bold rounded">HOT</span>
-              <h3 className="text-xl font-bold text-white">最重要的一点：动嘴就行</h3>
+              <h3 className="text-xl font-bold text-white">{ts("最重要的一点：动嘴就行")}</h3>
             </div>
             <p className="text-gray-200 mb-4">
-              对任何一章、任何一个情节不满意，都不用手动操作。直接在聊天框说：哪章不满意、想改成什么样，AI 编辑部自动帮你重写。全程只用聊、只用说，零手动。
+              {ts("对任何一章、任何一个情节不满意，都不用手动操作。直接在聊天框说：哪章不满意、想改成什么样，AI 编辑部自动帮你重写。全程只用聊、只用说，零手动。")}
             </p>
             <div className="space-y-3">
               <div className="flex gap-3">
@@ -120,7 +122,7 @@ export function NovelPlayGuide({ open, onClose }: NovelPlayGuideProps) {
                   <span className="text-xs text-indigo-400 font-medium">YOU</span>
                 </div>
                 <div className="flex-1 p-3 bg-gray-800/50 rounded-lg border border-gray-700">
-                  <p className="text-gray-300">“第3章节奏太慢，冲突再激烈一点”</p>
+                  <p className="text-gray-300">{ts("“第3章节奏太慢，冲突再激烈一点”")}</p>
                 </div>
               </div>
               <div className="flex gap-3">
@@ -128,7 +130,7 @@ export function NovelPlayGuide({ open, onClose }: NovelPlayGuideProps) {
                   <span className="text-xs text-green-400 font-medium">AI</span>
                 </div>
                 <div className="flex-1 p-3 bg-green-500/10 rounded-lg border border-green-500/20">
-                  <p className="text-gray-300">AI 自动重写，新版立即呈现</p>
+                  <p className="text-gray-300">{ts("AI 自动重写，新版立即呈现")}</p>
                 </div>
               </div>
             </div>
@@ -136,8 +138,8 @@ export function NovelPlayGuide({ open, onClose }: NovelPlayGuideProps) {
 
           {/* 使用流程 */}
           <section className="mb-8">
-            <h3 className="text-xl font-bold text-white mb-4">使用流程</h3>
-            <p className="text-gray-400 mb-6">六步走完，全程说人话</p>
+            <h3 className="text-xl font-bold text-white mb-4">{ts("使用流程")}</h3>
+            <p className="text-gray-400 mb-6">{ts("六步走完，全程说人话")}</p>
             <div className="space-y-4">
               {WORKFLOW_STEPS.map((step) => (
                 <div key={step.number} className="flex gap-4">
@@ -148,10 +150,10 @@ export function NovelPlayGuide({ open, onClose }: NovelPlayGuideProps) {
                   </div>
                   <div className="flex-1">
                     <div className="flex items-center gap-2 mb-1">
-                      <h4 className="font-bold text-white">{step.title}</h4>
-                      <span className="text-xs text-gray-500">{step.stage}</span>
+                      <h4 className="font-bold text-white">{ts(step.title)}</h4>
+                      <span className="text-xs text-gray-500">{ts(step.stage)}</span>
                     </div>
-                    <p className="text-sm text-gray-400">{step.description}</p>
+                    <p className="text-sm text-gray-400">{ts(step.description)}</p>
                   </div>
                 </div>
               ))}
@@ -160,12 +162,12 @@ export function NovelPlayGuide({ open, onClose }: NovelPlayGuideProps) {
 
           {/* 更多亮点 */}
           <section>
-            <h3 className="text-xl font-bold text-white mb-4">更多亮点</h3>
+            <h3 className="text-xl font-bold text-white mb-4">{ts("更多亮点")}</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {HIGHLIGHTS.map((item) => (
                 <div key={item.title} className="p-4 bg-gray-800/30 rounded-xl border border-gray-700/30">
-                  <h4 className="font-bold text-white mb-2">{item.title}</h4>
-                  <p className="text-sm text-gray-400">{item.description}</p>
+                  <h4 className="font-bold text-white mb-2">{ts(item.title)}</h4>
+                  <p className="text-sm text-gray-400">{ts(item.description)}</p>
                 </div>
               ))}
             </div>
@@ -174,7 +176,7 @@ export function NovelPlayGuide({ open, onClose }: NovelPlayGuideProps) {
           {/* 底部CTA */}
           <div className="mt-8 p-6 bg-gradient-to-r from-indigo-500/20 to-purple-500/20 rounded-xl border border-indigo-500/30 text-center">
             <p className="text-lg text-white font-medium">
-              说出你的故事创意，剩下的交给你的 AI 编辑部。
+              {ts("说出你的故事创意，剩下的交给你的 AI 编辑部。")}
             </p>
           </div>
         </div>

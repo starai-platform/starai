@@ -108,7 +108,7 @@ function FilledImageCard({
   return (
     <div className={`group/img relative shrink-0 overflow-hidden border-2 border-white bg-gray-100 shadow-lg ${compact ? "h-14 w-14 rounded-xl" : "h-16 w-16 rounded-2xl"}`}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={image.url} alt={image.name} className="w-full h-full object-cover" />
+      <img src={image.url} alt={image.name} loading="lazy" decoding="async" className="w-full h-full object-cover" />
       {badge ? (
         <span className="pointer-events-none absolute left-1 top-1 px-1.5 py-0.5 rounded-md bg-black/55 text-white text-[10px]">
           {badge}

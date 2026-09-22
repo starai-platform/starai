@@ -291,7 +291,10 @@ func processImageTask(ctx context.Context, pool *pgxpool.Pool, baseURL, token st
 	if rawUserPrompt, ok := p.Input["user_prompt"].(string); ok && strings.TrimSpace(rawUserPrompt) != "" {
 		workPrompt = rawUserPrompt
 	}
-	if isVideo || isImage {
+	if isImage {
+		prompt = applyImageGenerationPolicies(prompt, p.Input)
+		p.Input["prompt"] = prompt
+	} else if isVideo {
 		prompt = applyGenerationLanguage(prompt, p.Input)
 		p.Input["prompt"] = prompt
 	}
@@ -388,6 +391,7 @@ routeLoop:
 			resultData, pollUsage, err = pollUpstreamTask(ctx, pool, conn, pollCfg, upstreamID, p.TaskNo)
 			if err != nil {
 				log.Printf("Task %s poll failed: %v", p.TaskNo, err)
+				markWorkerRouteFailure(ctx, pool, selected.Route.ID, poolEnabled)
 				return failTask(ctx, pool, p, "MODEL_PROVIDER_ERROR", err.Error())
 			}
 			if pollUsage.hasAny() {
@@ -495,7 +499,21 @@ routeLoop:
 			audioURL = stored
 		}
 		thumbnail = audioURL
-		output, _ = json.Marshal(map[string]interface{}{"audio_url": audioURL, "upstream_task_id": upstreamID})
+		audioOutput := map[string]interface{}{"audio_url": audioURL, "upstream_task_id": upstreamID}
+		if timing, ok := p.Input["_speech_timing"].(map[string]interface{}); ok {
+			timed, err := finalizeTimedSpeech(ctx, p.TaskNo, audioURL, timing, stringAny(p.Input["format"]))
+			if err != nil {
+				preserved, _ := json.Marshal(timed)
+				_, _ = pool.Exec(ctx, `UPDATE tasks SET output=$1 WHERE task_no=$2 AND status='running'`, preserved, p.TaskNo)
+				return failTask(ctx, pool, p, "SPEECH_TIMING_FAILED", err.Error())
+			}
+			for key, value := range timed {
+				audioOutput[key] = value
+			}
+			audioURL = stringAny(timed["audio_url"])
+			thumbnail = audioURL
+		}
+		output, _ = json.Marshal(audioOutput)
 		meta, _ = json.Marshal(map[string]interface{}{"audio_url": audioURL})
 	} else {
 		images := make([]map[string]string, 0, len(resultData))
@@ -561,6 +579,11 @@ routeLoop:
 		return fmt.Errorf("task %s billing/finalize: %w", p.TaskNo, err)
 	}
 
+	if boolInput(p.Input, "_product_refine") && boolInput(p.Input, "_skip_billing") {
+		// Raw edits are candidates. Only the workflow's checked composite is a work.
+		log.Printf("Product candidate %s generated; awaiting pixel protection and review", p.TaskNo)
+		return nil
+	}
 	publicID := fmt.Sprintf("work_%d", time.Now().UnixNano())
 	expires := configuredWorkExpiration(ctx, pool, retentionDays)
 	pool.Exec(ctx, `
@@ -857,8 +880,8 @@ func markWorkerRouteFailure(ctx context.Context, pool *pgxpool.Pool, routeID int
 		return
 	}
 	if !poolEnabled {
-		// 单线路只累计失败统计，不进入熔断/冷却，保持旧的直连重试行为。
-		_, _ = pool.Exec(ctx, `UPDATE model_routes SET consecutive_failures=consecutive_failures+1,failure_count=failure_count+1,last_failure_at=now(),updated_at=now() WHERE id=$1`, routeID)
+		// 单线路保留直连能力，但仍标记降级，避免轮询失败后后台误报健康。
+		_, _ = pool.Exec(ctx, `UPDATE model_routes SET consecutive_failures=consecutive_failures+1,failure_count=failure_count+1,last_failure_at=now(),health_status='degraded',updated_at=now() WHERE id=$1`, routeID)
 		return
 	}
 	_, _ = pool.Exec(ctx, `UPDATE model_routes SET consecutive_failures=consecutive_failures+1,failure_count=failure_count+1,last_failure_at=now(),health_status=CASE WHEN consecutive_failures+1>=5 THEN 'open' ELSE 'degraded' END,cooldown_until=CASE WHEN consecutive_failures+1>=5 THEN now()+interval '60 seconds' ELSE cooldown_until END,updated_at=now() WHERE id=$1`, routeID)
@@ -994,10 +1017,26 @@ func executeWorkerGenerationAttempt(ctx context.Context, pool *pgxpool.Pool, p I
 		if endpoint == "" {
 			endpoint = "/v1/audio/speech"
 		}
-		body, _ = json.Marshal(videoparams.BuildUpstreamVideoPayload(p.ModelCode, upstreamModel, route.RuntimeRule, extraParams, p.Input))
+		input := copyMap(p.Input)
+		if _, timed := input["_speech_timing"]; timed {
+			delete(input, "_speech_timing")
+			delete(input, "target_duration_sec")
+			// Apply speed exactly once, after measuring the complete native audio.
+			for _, key := range []string{"speed", "speech_rate"} {
+				if _, exists := input[key]; exists {
+					input[key] = 1.0
+				}
+			}
+		}
+		body, _ = json.Marshal(videoparams.BuildUpstreamVideoPayload(p.ModelCode, upstreamModel, route.RuntimeRule, extraParams, input))
 	} else {
 		if endpoint == "" {
 			endpoint = "/v1/images/generations"
+		}
+		var endpointErr error
+		endpoint, endpointErr = resolveImageRequestEndpoint(route.RuntimeRule, endpoint, upstreamModel, p.Input)
+		if endpointErr != nil {
+			return result, endpointErr
 		}
 		result.GenerationCount = intAny(p.Input["n"])
 		if result.GenerationCount <= 0 {
@@ -1046,10 +1085,11 @@ func executeWorkerGenerationAttempt(ctx context.Context, pool *pgxpool.Pool, p I
 			body, _ = json.Marshal(imageBody)
 		}
 	}
+	videoImageRequest := isImage && isVideoImageAPI(endpoint, upstreamModel)
 	openAIReferenceImages := []string(nil)
 	if isImage && isOpenAIImagesAdapter(route.RuntimeRule) {
 		openAIReferenceImages = referenceImageSources(p.Input["reference_images"])
-		if len(openAIReferenceImages) > 0 {
+		if len(openAIReferenceImages) > 0 && !videoImageRequest {
 			endpoint = openAIImageEditEndpoint(route.RuntimeRule, endpoint)
 		}
 	}
@@ -1060,6 +1100,17 @@ func executeWorkerGenerationAttempt(ctx context.Context, pool *pgxpool.Pool, p I
 	// builder. The video/audio builder intentionally strips connection (secrets),
 	// so doing this inside only one builder silently skipped custom media routes.
 	applyRequestTransform(payload, extraParams)
+	if isImage && isOpenAIImagesAdapter(route.RuntimeRule) {
+		if strings.HasPrefix(strings.ToLower(stringAny(payload["model"])), "gpt-image-2") {
+			delete(payload, "input_fidelity")
+		}
+		if omitOpenAIImageQuality(route.RuntimeRule) {
+			delete(payload, "quality")
+		}
+		if mask := stringAny(p.Input["mask"]); mask != "" {
+			payload["mask"] = mask
+		}
+	}
 	if isVideo {
 		payload = videoparams.SanitizeUpstreamPayload(payload, endpoint)
 	}
@@ -1080,7 +1131,7 @@ func executeWorkerGenerationAttempt(ctx context.Context, pool *pgxpool.Pool, p I
 			timeout = time.Duration(route.TimeoutSeconds) * time.Second
 		}
 		timeout = openAIImagesRequestTimeout(timeout)
-		result.ResponseBody, result.StatusCode, err = postOpenAIImagesUpstream(ctx, route.Connection, endpoint, payload, openAIReferenceImages, timeout)
+		result.ResponseBody, result.StatusCode, err = postOpenAIImagesUpstream(ctx, route.Connection, endpoint, payload, openAIReferenceImages, route.RuntimeRule, timeout)
 	} else if isVideo {
 		result.ResponseBody, result.StatusCode, err = postVideoUpstream(ctx, route.Connection, endpoint, payload, p.TaskNo)
 	} else {
@@ -1107,6 +1158,11 @@ func isOpenAIImagesAdapter(runtimeRule map[string]interface{}) bool {
 	return strings.EqualFold(strings.TrimSpace(fmt.Sprint(upstream["adapter"])), "openai_images")
 }
 
+func omitOpenAIImageQuality(runtimeRule map[string]interface{}) bool {
+	upstream, _ := runtimeRule["upstream"].(map[string]interface{})
+	return boolInput(upstream, "omit_quality")
+}
+
 func openAIImagesRequestTimeout(configured time.Duration) time.Duration {
 	// Large synchronous image bodies can arrive after the route's legacy 120s
 	// default; aborting mid-body causes the paid request to be retried.
@@ -1126,6 +1182,21 @@ func openAIImageEditEndpoint(runtimeRule map[string]interface{}, generationEndpo
 		return trimmed[:len(trimmed)-len("generations")] + "edits"
 	}
 	return "/v1/images/edits"
+}
+
+func resolveImageRequestEndpoint(runtimeRule map[string]interface{}, endpoint, model string, input map[string]interface{}) (string, error) {
+	if stringAny(input["mask"]) == "" {
+		return endpoint, nil
+	}
+	// Whole-image reference generation may use the provider's async /v1/videos
+	// contract. A real mask must be routed to multipart image edits instead.
+	if isOpenAIImagesAdapter(runtimeRule) {
+		endpoint = openAIImageEditEndpoint(runtimeRule, endpoint)
+	}
+	if !isOpenAIImagesAdapter(runtimeRule) || isVideoImageAPI(endpoint, model) || isGeminiNativeImageAPI(endpoint, model) || hasMappedMediaPayload(runtimeRule) {
+		return endpoint, errors.New("当前线路未接通蒙版编辑，已停止，不能降级为整图重绘")
+	}
+	return endpoint, nil
 }
 
 func buildOpenAIImagesPayload(upstreamModel, modelCode, prompt string, count int, input map[string]interface{}) map[string]interface{} {
@@ -1189,17 +1260,35 @@ func referenceImageSources(value interface{}) []string {
 	return stringSlice(value)
 }
 
-func postOpenAIImagesUpstream(ctx context.Context, conn connectionConfig, endpoint string, payload map[string]interface{}, references []string, timeout time.Duration) ([]byte, int, error) {
+func openAIImageMultipartField(runtimeRule map[string]interface{}, baseURL, model string, referenceCount int) string {
+	upstream, _ := runtimeRule["upstream"].(map[string]interface{})
+	if field := strings.TrimSpace(fmt.Sprint(upstream["multipart_image_field"])); field == "image" || field == "image[]" {
+		return field
+	}
+	parsed, _ := url.Parse(strings.TrimSpace(baseURL))
+	if strings.EqualFold(parsed.Hostname(), "zexapi.com") && strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-image-2.5") {
+		return "image"
+	}
+	if referenceCount > 1 {
+		return "image[]"
+	}
+	return "image"
+}
+
+func postOpenAIImagesUpstream(ctx context.Context, conn connectionConfig, endpoint string, payload map[string]interface{}, references []string, runtimeRule map[string]interface{}, timeout time.Duration) ([]byte, int, error) {
 	target := joinBaseEndpoint(conn.BaseURL, endpoint)
+	mask := stringAny(payload["mask"])
+	payload = copyMap(payload)
+	delete(payload, "mask")
+	if mask != "" && len(references) == 0 {
+		return nil, 0, errors.New("蒙版编辑缺少底图")
+	}
 	if len(references) == 0 {
 		body, _ := json.Marshal(payload)
 		return doJSONRequestWithLimit(ctx, conn, "POST", target, body, timeout, 96<<20)
 	}
 	files := make([]multipartFile, 0, len(references))
-	fileField := "image"
-	if len(references) > 1 {
-		fileField = "image[]"
-	}
+	fileField := openAIImageMultipartField(runtimeRule, conn.BaseURL, stringAny(payload["model"]), len(references))
 	for index, source := range references {
 		data, contentType, err := loadMediaBytes(ctx, normalizeReferenceImage(ctx, source))
 		if err != nil || len(data) == 0 {
@@ -1215,6 +1304,16 @@ func postOpenAIImagesUpstream(ctx context.Context, conn connectionConfig, endpoi
 			return nil, 0, fmt.Errorf("第 %d 张参考图不是有效图片", index+1)
 		}
 		files = append(files, multipartFile{Field: fileField, Name: fmt.Sprintf("%d-%s", index+1, fileNameForMIME(contentType)), ContentType: contentType, Data: data})
+	}
+	if mask != "" {
+		data, _, err := loadMediaBytes(ctx, normalizeReferenceImage(ctx, mask))
+		if err != nil {
+			return nil, 0, fmt.Errorf("蒙版读取失败: %w", err)
+		}
+		if err := validateProductMask(files[0].Data, data); err != nil {
+			return nil, 0, err
+		}
+		files = append(files, multipartFile{Field: "mask", Name: "mask.png", ContentType: "image/png", Data: data})
 	}
 	return doMultipartFilesRequest(ctx, conn, target, payload, files, timeout, 96<<20)
 }
@@ -1253,7 +1352,8 @@ func buildMappedImagePayload(ctx context.Context, modelCode, upstreamModel strin
 	if refs, ok := params["reference_images"]; ok {
 		params["reference_images"] = normalizeReferenceImages(ctx, refs)
 	}
-	return videoparams.BuildUpstreamVideoPayload(modelCode, upstreamModel, runtimeRule, extraParams, params)
+	payload := videoparams.BuildUpstreamVideoPayload(modelCode, upstreamModel, runtimeRule, extraParams, params)
+	return payload
 }
 
 // applyRequestTransform overlays connection.request_transform onto an outgoing
@@ -1644,11 +1744,14 @@ func buildVideoImagePayload(ctx context.Context, runtimeRule map[string]interfac
 		"model":  model,
 		"prompt": prompt,
 	}
-	if v, ok := input["aspect_ratio"]; ok {
+	if v, ok := input["aspect_ratio"]; ok && !isGPTImageVideoAPI(endpoint, model) {
 		aspect := strings.TrimSpace(fmt.Sprint(v))
 		if aspect != "" && !strings.EqualFold(aspect, "auto") {
 			payload["aspect_ratio"] = aspect
 		}
+	}
+	if size := strings.TrimSpace(fmt.Sprint(input["size"])); size != "" && size != "<nil>" && !strings.EqualFold(size, "auto") {
+		payload["size"] = size
 	}
 	refs := collectBananaReferenceImages(ctx, input["reference_images"])
 	if len(refs) == 0 {
@@ -1900,16 +2003,6 @@ func imageModelForSize(runtimeRule map[string]interface{}, endpoint, newAPIModel
 			return "nano_banana_pro-1K"
 		}
 	}
-	if endpoint == "/v1/videos" && strings.HasPrefix(lowerModel, "gpt-image-2") {
-		switch tier {
-		case "2K":
-			return "gpt-image-2-2K"
-		case "4K":
-			return "gpt-image-2-4K"
-		default:
-			return "gpt-image-2"
-		}
-	}
 	return model
 }
 
@@ -1946,7 +2039,7 @@ func stringInSlice(v string, items []string) bool {
 }
 
 func collectBananaReferenceImages(ctx context.Context, refs interface{}) []string {
-	normalized := normalizeReferenceImages(ctx, refs)
+	normalized := normalizeVideoReferenceImages(ctx, refs)
 	switch v := normalized.(type) {
 	case string:
 		if s := strings.TrimSpace(v); s != "" {
@@ -2028,6 +2121,41 @@ func normalizeReferenceImages(ctx context.Context, refs interface{}) interface{}
 				if normalized := normalizeReferenceImage(ctx, s); normalized != "" {
 					out = append(out, normalized)
 				}
+			}
+		}
+		return out
+	default:
+		return refs
+	}
+}
+
+func normalizeVideoReferenceImages(ctx context.Context, refs interface{}) interface{} {
+	normalize := func(src string) string {
+		src = strings.TrimSpace(src)
+		if src == "" || strings.HasPrefix(src, "data:image/") {
+			return src
+		}
+		if (strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://")) && !isPrivateMediaURL(src) {
+			return src
+		}
+		return normalizeReferenceImage(ctx, src)
+	}
+	switch v := refs.(type) {
+	case string:
+		return normalize(v)
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if value := normalize(item); value != "" {
+				out = append(out, value)
+			}
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if value := normalize(fmt.Sprint(item)); value != "" {
+				out = append(out, value)
 			}
 		}
 		return out
@@ -2146,6 +2274,10 @@ func normalizePayloadMedia(ctx context.Context, payload map[string]interface{}, 
 			if s := collapseMediaToString(v); s != "" {
 				payload[key] = s
 			}
+			continue
+		}
+		if videoAPI && key == "images" {
+			payload[key] = normalizeVideoReferenceImages(ctx, v)
 			continue
 		}
 		normalized := normalizeReferenceImages(ctx, v)
@@ -2521,7 +2653,7 @@ func unwrapUpstreamBody(raw map[string]interface{}) map[string]interface{} {
 
 func extractMediaItems(raw map[string]interface{}) []mediaItem {
 	raw = unwrapUpstreamBody(raw)
-	for _, listKey := range []string{"data", "images", "videos", "audios", "results", "files", "choices"} {
+	for _, listKey := range []string{"data", "images", "videos", "audios", "results", "outputs", "files", "choices"} {
 		data, ok := raw[listKey].([]interface{})
 		if !ok {
 			continue
@@ -2620,7 +2752,7 @@ func mediaItemFromValue(v interface{}, parent map[string]interface{}) (mediaItem
 }
 
 func mediaURLKeys() []string {
-	return []string{"url", "uri", "src", "media_url", "output_url", "video_url", "result_url", "image_url", "image", "audio_url", "audio", "audio_file", "download_url", "file_url", "content_url"}
+	return []string{"url", "uri", "src", "media_url", "output_url", "outputUrl", "video_url", "result_url", "image_url", "image", "audio_url", "audio", "audio_file", "download_url", "file_url", "content_url"}
 }
 
 func encodedMediaKeys() []string {
@@ -2741,11 +2873,17 @@ func upstreamContentFailure(raw map[string]interface{}) string {
 func humanizeUpstreamFailure(msg string) string {
 	msg = strings.TrimSpace(msg)
 	lower := strings.ToLower(msg)
+	if lower == "not_found" || lower == "not found" || strings.Contains(lower, "task not found") {
+		return "上游已接收任务，但后续查询时任务不存在（NOT_FOUND）。可重试当前片段；若再次出现，请切换视频线路或检查该线路的任务查询接口"
+	}
 	if strings.Contains(lower, "tls handshake timeout") {
 		return "连接上游时 TLS 握手超时，请检查服务器到上游的网络或代理"
 	}
 	if strings.Contains(lower, "client.timeout") || strings.Contains(lower, "context deadline exceeded") {
 		return "等待上游响应超时；请求可能仍在生成，请检查上游网关超时设置"
+	}
+	if strings.Contains(lower, "http 502") || strings.Contains(lower, "error code: 502") {
+		return "上游网关转发失败（HTTP 502）：请求已到网关，但可能尚未到达模型供应商；请检查网关任务日志"
 	}
 	if strings.Contains(lower, "504 gateway timeout") || strings.Contains(lower, "error code: 524") {
 		return "上游网关超时（HTTP 504/524），不是模型参数错误"
@@ -3267,7 +3405,7 @@ func pollUpstreamTask(ctx context.Context, pool *pgxpool.Pool, conn connectionCo
 			lastStatus = status
 		}
 		switch status {
-		case "failed", "error", "cancelled", "canceled", "failure", "expired", "6":
+		case "failed", "error", "cancelled", "canceled", "failure", "expired", "timeout", "deleted", "6":
 			msg := firstString(raw, "error_message", "message", "error")
 			if errorDetail, ok := raw["error"].(map[string]interface{}); ok {
 				if detail := firstString(errorDetail, "message", "code"); detail != "" {

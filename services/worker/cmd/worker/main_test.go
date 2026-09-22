@@ -125,6 +125,42 @@ func TestOpenAIImagesQualityCompatibility(t *testing.T) {
 	if !isOpenAIImagesAdapter(map[string]interface{}{"upstream": map[string]interface{}{"adapter": "openai_images"}}) {
 		t.Fatal("OpenAI Images adapter was not detected")
 	}
+	if !omitOpenAIImageQuality(map[string]interface{}{"upstream": map[string]interface{}{"omit_quality": true}}) {
+		t.Fatal("route-level quality omission was not detected")
+	}
+}
+
+func TestResolveImageRequestEndpointKeepsAsyncWholeImageAndRoutesMaskToEdits(t *testing.T) {
+	runtimeRule := map[string]interface{}{"upstream": map[string]interface{}{
+		"adapter":       "openai_images",
+		"edit_endpoint": "/v1/images/edits",
+	}}
+
+	endpoint, err := resolveImageRequestEndpoint(runtimeRule, "/v1/videos", "gpt-image-2", map[string]interface{}{})
+	if err != nil || endpoint != "/v1/videos" {
+		t.Fatalf("whole-image endpoint = %q, err=%v", endpoint, err)
+	}
+
+	endpoint, err = resolveImageRequestEndpoint(runtimeRule, "/v1/videos", "gpt-image-2", map[string]interface{}{"mask": "data:image/png;base64,bWFzaw=="})
+	if err != nil || endpoint != "/v1/images/edits" {
+		t.Fatalf("masked endpoint = %q, err=%v", endpoint, err)
+	}
+}
+
+func TestOpenAIImageMultipartFieldKeepsDefaultAndSupportsProviderOverride(t *testing.T) {
+	if got := openAIImageMultipartField(nil, "https://api.openai.com", "gpt-image-2.5-flare", 2); got != "image[]" {
+		t.Fatalf("default multi-image field = %q, want image[]", got)
+	}
+	runtimeRule := map[string]interface{}{"upstream": map[string]interface{}{"multipart_image_field": "image"}}
+	if got := openAIImageMultipartField(runtimeRule, "https://api.openai.com", "gpt-image-2", 2); got != "image" {
+		t.Fatalf("overridden multi-image field = %q, want image", got)
+	}
+	if got := openAIImageMultipartField(nil, "https://zexapi.com", "gpt-image-2.5-sunburst", 2); got != "image" {
+		t.Fatalf("zexapi GPT Image 2.5 field = %q, want image", got)
+	}
+	if got := openAIImageMultipartField(nil, "https://zexapi.com", "gpt-image-2", 2); got != "image[]" {
+		t.Fatalf("existing GPT Image 2 field = %q, want image[]", got)
+	}
 }
 
 func TestOpenAIImagesRequestTimeoutAllowsLargeSynchronousResponse(t *testing.T) {
@@ -176,7 +212,7 @@ func TestOpenAIImagesReferenceUploadUsesEditsMultipart(t *testing.T) {
 	imageData := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("\x89PNG\r\n\x1a\nimage"))
 	runtimeRule := map[string]interface{}{"upstream": map[string]interface{}{"adapter": "openai_images", "edit_endpoint": "/v1/images/edits"}}
 	endpoint := openAIImageEditEndpoint(runtimeRule, "/v1/images/generations")
-	body, status, err := postOpenAIImagesUpstream(context.Background(), connectionConfig{BaseURL: server.URL}, endpoint, payload, []string{imageData, imageData}, time.Second)
+	body, status, err := postOpenAIImagesUpstream(context.Background(), connectionConfig{BaseURL: server.URL}, endpoint, payload, []string{imageData, imageData}, runtimeRule, time.Second)
 	if err != nil || status != http.StatusOK || requestErr != nil {
 		t.Fatalf("multipart edit failed: status=%d err=%v requestErr=%v body=%s", status, err, requestErr, body)
 	}
@@ -725,8 +761,18 @@ func TestHumanizeUpstreamFailureExplainsNetworkTimeouts(t *testing.T) {
 	for input, want := range map[string]string{
 		`Post "https://example.com": net/http: TLS handshake timeout`:                "连接上游时 TLS 握手超时，请检查服务器到上游的网络或代理",
 		`context deadline exceeded (Client.Timeout exceeded while awaiting headers)`: "等待上游响应超时；请求可能仍在生成，请检查上游网关超时设置",
+		`所有可用线路均调用失败：upstream HTTP 502: error code: 502`:                             "上游网关转发失败（HTTP 502）：请求已到网关，但可能尚未到达模型供应商；请检查网关任务日志",
 		`upstream HTTP 504: <!DOCTYPE html><title>504 Gateway Timeout</title>`:       "上游网关超时（HTTP 504/524），不是模型参数错误",
 	} {
+		if got := humanizeUpstreamFailure(input); got != want {
+			t.Fatalf("humanizeUpstreamFailure(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestHumanizeUpstreamFailureExplainsMissingAsyncTask(t *testing.T) {
+	want := "上游已接收任务，但后续查询时任务不存在（NOT_FOUND）。可重试当前片段；若再次出现，请切换视频线路或检查该线路的任务查询接口"
+	for _, input := range []string{"NOT_FOUND", "Task not found"} {
 		if got := humanizeUpstreamFailure(input); got != want {
 			t.Fatalf("humanizeUpstreamFailure(%q) = %q, want %q", input, got, want)
 		}

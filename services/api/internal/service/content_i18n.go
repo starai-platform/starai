@@ -54,12 +54,14 @@ type ContentTranslationRow struct {
 }
 
 type PendingContentTranslation struct {
-	SourceID   int64  `json:"source_id"`
-	EntityType string `json:"entity_type"`
-	EntityKey  string `json:"entity_key"`
-	FieldPath  string `json:"field_path"`
-	SourceText string `json:"source_text"`
-	Locale     string `json:"locale"`
+	SourceID   int64     `json:"source_id"`
+	EntityType string    `json:"entity_type"`
+	EntityKey  string    `json:"entity_key"`
+	FieldPath  string    `json:"field_path"`
+	SourceText string    `json:"source_text"`
+	Locale     string    `json:"locale"`
+	SourceHash string    `json:"-"`
+	UpdatedAt  time.Time `json:"-"`
 }
 
 type ContentTranslationStats struct {
@@ -228,7 +230,7 @@ func (s *ContentI18nService) Apply(ctx context.Context, entityType, entityKey, l
 
 func (s *ContentI18nService) ApplyBatch(ctx context.Context, entityType, locale string, targets map[string]interface{}) error {
 	locale = normalizeContentLocale(locale)
-	if len(targets) == 0 || locale == "" || locale == s.SourceLocale(ctx) || strings.HasPrefix(locale, "zh-") {
+	if len(targets) == 0 || locale == "" || strings.HasPrefix(locale, "zh-") || locale == s.SourceLocale(ctx) {
 		return nil
 	}
 	entityKeys := make([]string, 0, len(targets))
@@ -349,7 +351,7 @@ func (s *ContentI18nService) List(ctx context.Context, locale, entityType, statu
 	return items, total, rows.Err()
 }
 
-func (s *ContentI18nService) SaveManual(ctx context.Context, sourceID int64, locale, value string, reviewed bool) error {
+func (s *ContentI18nService) SaveManual(ctx context.Context, sourceID int64, locale, value string, reviewed bool, sourceHash ...string) error {
 	locale = normalizeContentLocale(locale)
 	value = strings.TrimSpace(value)
 	if sourceID <= 0 || locale == "" || value == "" {
@@ -361,16 +363,21 @@ func (s *ContentI18nService) SaveManual(ctx context.Context, sourceID int64, loc
 		status = "reviewed"
 		reviewedAt = time.Now()
 	}
+	expectedHash := ""
+	if len(sourceHash) > 0 {
+		expectedHash = sourceHash[0]
+	}
 	tag, err := s.db.Exec(ctx, `
 		INSERT INTO content_translations (source_id, locale, value, source_hash, status, translation_source, reviewed_at, updated_at)
-		SELECT id,$2,$3,source_hash,$4,'manual',$5,now() FROM content_translation_sources WHERE id=$1
+		SELECT id,$2,$3,source_hash,$4,'manual',$5,now() FROM content_translation_sources
+		WHERE id=$1 AND ($6='' OR source_hash=$6)
 		ON CONFLICT (source_id, locale) DO UPDATE SET value=$3, source_hash=EXCLUDED.source_hash,
-		status=$4, translation_source='manual', error_message=NULL, reviewed_at=$5, updated_at=now()`, sourceID, locale, value, status, reviewedAt)
+		status=$4, translation_source='manual', error_message=NULL, reviewed_at=$5, updated_at=now()`, sourceID, locale, value, status, reviewedAt, expectedHash)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return errors.New("翻译来源不存在")
+		return errors.New("翻译原文已变化或不存在，请刷新后重试")
 	}
 	return nil
 }
@@ -394,7 +401,7 @@ func (s *ContentI18nService) Pending(ctx context.Context, locale, entityType, en
 		extra += fmt.Sprintf(" AND s.entity_key=$%d", len(args))
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT s.id, s.entity_type, s.entity_key, s.field_path, s.source_text, t.locale
+		SELECT s.id, s.entity_type, s.entity_key, s.field_path, s.source_text, t.locale, s.source_hash, t.updated_at
 		FROM content_translation_sources s JOIN content_translations t ON t.source_id=s.id
 		WHERE t.locale=$1 AND (t.status IN ('pending','failed') OR t.source_hash<>s.source_hash)`+extra+`
 		ORDER BY s.updated_at ASC LIMIT $2`, args...)
@@ -405,7 +412,7 @@ func (s *ContentI18nService) Pending(ctx context.Context, locale, entityType, en
 	items := []PendingContentTranslation{}
 	for rows.Next() {
 		var item PendingContentTranslation
-		if err := rows.Scan(&item.SourceID, &item.EntityType, &item.EntityKey, &item.FieldPath, &item.SourceText, &item.Locale); err != nil {
+		if err := rows.Scan(&item.SourceID, &item.EntityType, &item.EntityKey, &item.FieldPath, &item.SourceText, &item.Locale, &item.SourceHash, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -413,11 +420,12 @@ func (s *ContentI18nService) Pending(ctx context.Context, locale, entityType, en
 	return items, rows.Err()
 }
 
-func (s *ContentI18nService) SaveAI(ctx context.Context, locale string, values map[int64]string) (int, error) {
+func (s *ContentI18nService) SaveAI(ctx context.Context, locale string, values map[int64]string, pending []PendingContentTranslation) (int, error) {
 	locale = normalizeContentLocale(locale)
 	count := 0
-	for sourceID, value := range values {
-		value = strings.TrimSpace(value)
+	for _, item := range pending {
+		sourceID := item.SourceID
+		value := strings.TrimSpace(values[sourceID])
 		if sourceID <= 0 || value == "" {
 			continue
 		}
@@ -425,7 +433,10 @@ func (s *ContentI18nService) SaveAI(ctx context.Context, locale string, values m
 			UPDATE content_translations t SET value=$1, source_hash=s.source_hash, status='translated',
 			translation_source='ai', error_message=NULL, reviewed_at=NULL, updated_at=now()
 			FROM content_translation_sources s
-			WHERE t.source_id=s.id AND s.id=$2 AND t.locale=$3`, value, sourceID, locale)
+			WHERE t.source_id=s.id AND s.id=$2 AND t.locale=$3
+			  AND s.source_hash=$4 AND t.updated_at=$5
+			  AND (t.status IN ('pending','failed') OR t.source_hash<>s.source_hash)`,
+			value, sourceID, locale, item.SourceHash, item.UpdatedAt)
 		if err != nil {
 			return count, err
 		}
@@ -434,19 +445,31 @@ func (s *ContentI18nService) SaveAI(ctx context.Context, locale string, values m
 	return count, nil
 }
 
-func (s *ContentI18nService) MarkFailed(ctx context.Context, locale string, sourceIDs []int64, cause error) error {
+func (s *ContentI18nService) MarkFailed(ctx context.Context, locale string, pending []PendingContentTranslation, cause error) error {
 	locale = normalizeContentLocale(locale)
-	if locale == "" || len(sourceIDs) == 0 || cause == nil {
+	if locale == "" || len(pending) == 0 || cause == nil {
 		return nil
 	}
 	message := strings.TrimSpace(cause.Error())
 	if len(message) > 1000 {
 		message = message[:1000]
 	}
+	ids := make([]int64, 0, len(pending))
+	hashes := make([]string, 0, len(pending))
+	versions := make([]time.Time, 0, len(pending))
+	for _, item := range pending {
+		ids = append(ids, item.SourceID)
+		hashes = append(hashes, item.SourceHash)
+		versions = append(versions, item.UpdatedAt)
+	}
 	_, err := s.db.Exec(ctx, `
-		UPDATE content_translations
+		UPDATE content_translations t
 		SET status='failed', error_message=$1, updated_at=now()
-		WHERE locale=$2 AND source_id = ANY($3) AND status<>'reviewed'`, message, locale, sourceIDs)
+		FROM content_translation_sources s,
+		     unnest($3::bigint[], $4::text[], $5::timestamptz[]) AS expected(id, hash, version)
+		WHERE t.locale=$2 AND t.source_id=s.id AND s.id=expected.id
+		  AND s.source_hash=expected.hash AND t.updated_at=expected.version
+		  AND (t.status IN ('pending','failed') OR t.source_hash<>s.source_hash)`, message, locale, ids, hashes, versions)
 	return err
 }
 

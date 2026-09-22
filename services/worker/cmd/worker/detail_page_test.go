@@ -31,6 +31,14 @@ func TestAgentDetailSectionsBuildsCompletePagePlan(t *testing.T) {
 	if sections[4]["type"] != "closing" {
 		t.Fatalf("last default section=%#v", sections[4])
 	}
+	for _, section := range sections {
+		if stringAny(section["layout"]) == "" || stringAny(section["copy_placement"]) == "" {
+			t.Fatalf("section has no coordinated layout: %#v", section)
+		}
+	}
+	if sections[0]["copy_placement"] != "top" || sections[4]["copy_placement"] != "bottom" {
+		t.Fatalf("page rhythm is not coordinated: %#v", sections)
+	}
 }
 
 func TestDetailSectionPromptEnforcesSingleDesignedModule(t *testing.T) {
@@ -41,10 +49,32 @@ func TestDetailSectionPromptEnforcesSingleDesignedModule(t *testing.T) {
 		6,
 		map[string]interface{}{"creative_scene": "detail_image", "creative_scene_label": "商品详情图"},
 	)
-	for _, expected := range []string{"DETAIL PAGE MODULE 3/6", "视觉真值", "不绘制任何新增文字", "模块镜头硬约束", "2–3个有层级的局部近景", "不得创造新颜色", "包装盒", "数量=1", "商品详情图"} {
+	for _, expected := range []string{"DETAIL PAGE MODULE 3/6", "视觉真值", "底图不绘制任何新增文字", "DESIGN SYSTEM", "2–3个有主次的局部特写卡片", "品牌渐变", "无字功能图标", "连续长页", "不得创造新颜色", "包装盒", "数量=1", "商品详情图"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("prompt missing %q: %s", expected, prompt)
 		}
+	}
+}
+
+func TestDetailSectionPromptDoesNotReserveBlankCopyCard(t *testing.T) {
+	prompt := detailSectionGenerationPrompt("", map[string]interface{}{"type": "benefit", "image_prompt": "商品局部展示"}, 1, 5, map[string]interface{}{})
+	if !strings.Contains(prompt, "不要生成或预留空白卡片") || strings.Contains(prompt, "面积约占画面的25%–35%") {
+		t.Fatalf("empty copy still reserved a blank card: %s", prompt)
+	}
+}
+
+func TestReusableDetailSectionRequiresExactSignature(t *testing.T) {
+	taskInput := map[string]interface{}{"prompt": "模块提示", "reference_images": []string{"https://example.com/product.jpg"}}
+	signature := detailSectionSignature("image-model", taskInput)
+	page := map[string]interface{}{"sections": []interface{}{map[string]interface{}{
+		"id": "detail_02", "status": "succeeded", "signature": signature,
+		"task_no": "task_old", "image_url": "https://example.com/module.jpg",
+	}}}
+	if section, ok := reusableDetailSection(page, "detail_02", signature); !ok || stringAny(section["task_no"]) != "task_old" {
+		t.Fatalf("matching completed section was not reused: %#v %v", section, ok)
+	}
+	if _, ok := reusableDetailSection(page, "detail_02", detailSectionSignature("other-model", taskInput)); ok {
+		t.Fatal("section was reused after model/input changed")
 	}
 }
 
@@ -151,9 +181,23 @@ func TestDetailFallbackHasUniqueEvidenceBasedModules(t *testing.T) {
 
 func TestCommerceAnalysisRequiresGroundedClaimsAndDetailCopy(t *testing.T) {
 	prompt := buildAgentAnalysisSystemPrompt("image", "ecommerce_image", 3, "detail_image")
-	for _, want := range []string{"missing_information", "不能改变商品事实", "detail_section_count", "文字分别交付", "2–3个局部近景", "不制作空参数表", "无依据时留空"} {
+	for _, want := range []string{"missing_information", "不能改变商品事实", "detail_section_count", "design_system", "page_flow", "copy_placement", "空白信息卡片", "无字功能图标", "连续长页", "2–3个局部近景", "不制作空参数表", "无依据时留空"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("missing %s", want)
+		}
+	}
+}
+
+func TestDetailDesignSystemIsSharedAndHasDeterministicFallback(t *testing.T) {
+	want := `{"palette":{"accent":"#169BDB","background":"#EAF6FF"},"theme":"冰蓝科技"}`
+	analysis := parseJSONish(`{"design_system":` + want + `}`)
+	if got := detailDesignSystem(analysis); got != want {
+		t.Fatalf("design system changed between modules: %s", got)
+	}
+	fallback := detailDesignSystem(map[string]interface{}{"style": "温暖自然"})
+	for _, required := range []string{"温暖自然", "#F4F7FB", "surface", "icon_style", "product_treatment"} {
+		if !strings.Contains(fallback, required) {
+			t.Fatalf("fallback design system missing %q: %s", required, fallback)
 		}
 	}
 }
@@ -167,5 +211,35 @@ func TestCommerceReferencesPreserveAllViews(t *testing.T) {
 	task := agentMediaTaskInput(inputs, "商品详情", "qa")
 	if len(referenceImageURLs(task)) != 3 {
 		t.Fatalf("task lost reference views: %#v", task)
+	}
+}
+
+func TestCommerceVideoPromptIsExecutableAndGrounded(t *testing.T) {
+	prompt := buildAgentAnalysisSystemPrompt("video", "product_showcase_video", 2, "product_video")
+	for _, want := range []string{"商品视频导演", "起始姿态", "结束状态", "独立配音", "不强制三秒钩子", "内部结构", "2条"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("missing %s", want)
+		}
+	}
+}
+
+func TestCommerceWorkflowPlanFeedsSeparateMediaPrompts(t *testing.T) {
+	node := workflowNode{Type: "llm", RequiredOutputFields: []string{"copy", "image_prompt", "video_prompt"}}
+	out := map[string]interface{}{"text": `{"copy":"商品文案","image_prompt":"静态画面","video_prompt":"连续运动"}`}
+	if err := validateWorkflowTextOutput(node, out); err != nil {
+		t.Fatal(err)
+	}
+	vars := map[string]string{}
+	absorbNodeOutputVars(vars, "copy", out)
+	if got := renderTemplate("{{copy_image_prompt}}", vars); got != "静态画面" {
+		t.Fatal(got)
+	}
+	if got := renderTemplate("{{copy_video_prompt}}", vars); got != "连续运动" {
+		t.Fatal(got)
+	}
+	for _, text := range []string{`plain copy`, `{"copy":"text","image_prompt":{},"video_prompt":"motion"}`, `{"copy":"text","image_prompt":"still"}`} {
+		if validateWorkflowTextOutput(node, map[string]interface{}{"text": text}) == nil {
+			t.Fatal("invalid plan accepted")
+		}
 	}
 }

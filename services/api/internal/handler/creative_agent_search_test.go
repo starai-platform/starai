@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -108,6 +109,15 @@ func TestCreativeSearchDecisionParsingAndFallback(t *testing.T) {
 
 func TestCreativeAgentFastSearchDecision(t *testing.T) {
 	clock := creativeAgentClockAt(nil, time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC))
+	for _, query := range []string{"现在呢？能读取PDF文档吗？", "现在能看到附件吗", "PDF现在能读吗？"} {
+		decision, decided := creativeAgentFastSearchDecision([]runtime.ChatMessage{{Role: "user", Content: query}}, clock)
+		if !decided || decision.NeedsSearch {
+			t.Fatalf("attachment status triggered web search: %s", query)
+		}
+	}
+	if decision, _ := creativeAgentFastSearchDecision([]runtime.ChatMessage{{Role: "user", Content: "搜索最新的PDF识别工具"}}, clock); !decision.NeedsSearch {
+		t.Fatal("explicit web search was suppressed")
+	}
 	decision, decided := creativeAgentFastSearchDecision([]runtime.ChatMessage{{Role: "user", Content: "帮我写一段产品介绍"}}, clock)
 	if !decided || decision.NeedsSearch {
 		t.Fatalf("creative request should bypass search routing: %#v", decision)
@@ -131,6 +141,26 @@ func TestCreativeAgentFastSearchDecision(t *testing.T) {
 	diagnostic := defaultCreativeSearchDecision("帮我验证一下智能搜索是否可用", clock)
 	if diagnostic.Query != "2026-08-31 中国科技新闻" || diagnostic.Topic != "news" || diagnostic.TimeRange != "day" {
 		t.Fatalf("search diagnostic must use a safe deterministic probe: %#v", diagnostic)
+	}
+}
+
+func TestCreativeAgentSearchPreservesSpecificIntent(t *testing.T) {
+	clock := creativeAgentClockAt(nil, time.Now())
+	for _, query := range []string{"它最新价格呢？", "那这家公司现在的情况呢？", "有什么适合团队协作的工具？"} {
+		_, decided := creativeAgentFastSearchDecision([]runtime.ChatMessage{{Role: "user", Content: "讨论一个具体产品"}, {Role: "user", Content: query}}, clock)
+		if decided {
+			t.Errorf("should use semantic routing for %q", query)
+		}
+	}
+	for _, decision := range []creativeSearchDecision{
+		{Query: "量子计算技术突破", Topic: "news"},
+		{Query: "某公司发布新产品", Topic: "news"},
+		{Query: "Go 官方文档", Topic: "general"},
+	} {
+		requests := creativeAgentResearchRequests(decision, clock)
+		if len(requests) != 1 || requests[0].Query != decision.Query {
+			t.Errorf("specific query diluted: %#v", requests)
+		}
 	}
 }
 
@@ -224,5 +254,88 @@ func TestEnsureCreativeAgentSearchReplyReplacesEmptySummary(t *testing.T) {
 	reply := stringAny(plan["reply"])
 	if !strings.Contains(reply, "未能形成可核验") || strings.Contains(reply, "芯片进展") {
 		t.Fatalf("empty reply must not be filled with unverified raw snippets: %s", reply)
+	}
+}
+
+func TestCreativeAgentLocalDocumentsSkipSearchRouter(t *testing.T) {
+	clock := creativeAgentClockAt(nil, time.Date(2026, 9, 18, 0, 0, 0, 0, time.UTC))
+	for _, query := range []string{"这份合同导出为PDF", "文档转换为Word", "把合同签订日期改成今天", "什么情况？", "什么提示：规划结果格式异常？", "为什么又报错了"} {
+		decision, decided := creativeAgentFastSearchDecision([]runtime.ChatMessage{{Role: "user", Content: query}}, clock)
+		if !decided || decision.NeedsSearch {
+			t.Fatalf("local document work caused unnecessary routing/search: %s", query)
+		}
+	}
+	decision, decided := creativeAgentFastSearchDecision([]runtime.ChatMessage{{Role: "user", Content: "联网核实最新法律后修改合同"}}, clock)
+	if !decided || !decision.NeedsSearch {
+		t.Fatal("explicit legal research was skipped")
+	}
+	for _, reply := range []string{"", " \n ", "CHAT\n\n"} {
+		plan, ok := creativeAgentPlanFromStreamResult(reply)
+		if ok || plan["intent"] != "clarify" {
+			t.Fatal("empty model output was delivered as a completed answer")
+		}
+	}
+}
+
+func TestCreativeAgentStreamingProtocolWhitespace(t *testing.T) {
+	prefix := "\ufeff\n\r\n CHAT\n# 正文标题\n正文"
+	for i := 0; i < strings.Index(prefix, "#"); i++ {
+		_, visible := creativeAgentStreamStart(prefix[:i])
+		if visible != "" {
+			t.Fatalf("protocol leaked before body: %q", visible)
+		}
+	}
+	mode, visible := creativeAgentStreamStart(prefix)
+	if mode != "chat" || visible != "# 正文标题\n正文" {
+		t.Fatal(mode, visible)
+	}
+	plan, ok := creativeAgentPlanFromStreamResult(prefix)
+	if !ok || plan["reply"] != visible {
+		t.Fatal("stream and completed reply differ", plan)
+	}
+	for _, prefix := range []string{"\nPLAN\n{\"intent\":\"video\"}", "\n{\n\"intent\":\"video\"}"} {
+		mode, visible := creativeAgentStreamStart(prefix)
+		if mode != "plan" || visible != "" {
+			t.Fatal("raw planning JSON leaked", mode, visible)
+		}
+	}
+}
+
+func TestCreativeAgentStreamErrorExplainsProviderFailure(t *testing.T) {
+	for _, code := range []string{"CONTENT_REJECTED", "MODEL_OUTPUT_LIMIT", "MODEL_EMPTY_RESPONSE", "MODEL_INVALID_RESPONSE", "MODEL_PROVIDER_ERROR"} {
+		message, gotCode := creativeAgentStreamError(&runtime.PlatformError{Code: code, Message: "private upstream details"})
+		if gotCode != code || strings.Contains(message, "规划结果格式异常") || strings.Contains(message, "private upstream") {
+			t.Fatal(code, message, gotCode)
+		}
+	}
+}
+
+func TestCreativeAgentFallbackOnlyBeforeOutput(t *testing.T) {
+	rejected := &runtime.PlatformError{Code: "CONTENT_REJECTED", Message: "upstream"}
+	if !creativeAgentCanFallback(rejected, "", "") {
+		t.Fatal("an empty provider rejection should use the configured fallback")
+	}
+	for _, item := range []struct{ content, reasoning string }{{"partial", ""}, {"", "private reasoning"}} {
+		if creativeAgentCanFallback(rejected, item.content, item.reasoning) {
+			t.Fatal("a partially emitted response must not be combined with another model")
+		}
+	}
+	for _, code := range []string{"MODEL_PROVIDER_ERROR", "MODEL_TIMEOUT", "MODEL_RATE_LIMITED", "MODEL_EMPTY_RESPONSE"} {
+		if !creativeAgentCanFallback(&runtime.PlatformError{Code: code}, "", "") {
+			t.Fatal("recoverable empty response did not allow fallback", code)
+		}
+	}
+	for _, err := range []*runtime.PlatformError{{Code: "MODEL_AUTH_FAILED"}, {Code: "MODEL_OUTPUT_LIMIT"}, {Code: "MODEL_PROVIDER_ERROR", StatusCode: 400}} {
+		if creativeAgentCanFallback(err, "", "") {
+			t.Fatal("invalid configuration or request should not blindly retry", err.Code)
+		}
+	}
+}
+
+func TestCreativeAgentSearchDropsUnverifiedNavigationResults(t *testing.T) {
+	results := []service.WebSearchResult{{Title: "BBC", URL: "http://127.0.0.1:1", Snippet: "新闻首页"}}
+	verified, browsed := creativeAgentReadSearchPages(context.Background(), results)
+	if len(verified) != 0 || browsed != 0 {
+		t.Fatalf("unreadable short snippets were treated as evidence: %#v %d", verified, browsed)
 	}
 }

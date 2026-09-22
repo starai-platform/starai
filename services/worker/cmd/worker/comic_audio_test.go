@@ -107,7 +107,7 @@ func TestComicNarrationKeepsTailAfterAutomaticAcceleration(t *testing.T) {
 	if err := runFFmpeg(ctx, "-y", "-f", "lavfi", "-i", "color=c=blue:s=160x90:r=30:d=8", "-c:v", "libx264", "-pix_fmt", "yuv420p", filepath.Join(dir, "video.mp4")); err != nil {
 		t.Fatal(err)
 	}
-	film, message := composeComicDramaVideo(ctx, nil, "audio-tail-test", []map[string]interface{}{{"id": "S01", "duration_sec": 8}}, []interface{}{map[string]interface{}{"id": "S01", "video_url": server.URL + "/video.mp4"}}, []interface{}{map[string]interface{}{"id": "S01", "audio_url": server.URL + "/source.wav"}}, map[string]interface{}{"target_duration_sec": 8}, nil)
+	film, message := composeComicDramaVideo(ctx, nil, "audio-tail-test", []map[string]interface{}{{"id": "S01", "duration_sec": 8}}, []interface{}{map[string]interface{}{"id": "S01", "video_url": server.URL + "/video.mp4"}}, []interface{}{map[string]interface{}{"id": "S01", "audio_url": server.URL + "/source.wav"}}, map[string]interface{}{"target_duration_sec": 8}, nil, "", "", WorkflowTaskPayload{})
 	if message != "" {
 		t.Fatal(message)
 	}

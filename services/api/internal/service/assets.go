@@ -68,12 +68,14 @@ func (s *AssetService) List(ctx context.Context, userID int64, q string, tag str
 	}
 
 	var total int
-	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM assets`+where, args...).Scan(&total)
+	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM assets`+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
 
 	args = append(args, pageSize, (page-1)*pageSize)
 	rows, err := s.db.Query(ctx, `
 		SELECT public_id, name, description, kind, asset_type, mime_type, size_bytes, bucket, object_key, tags, created_at
-		FROM assets`+where+fmt.Sprintf(` ORDER BY created_at DESC LIMIT $%d OFFSET $%d`, len(args)-1, len(args)), args...)
+		FROM assets`+where+fmt.Sprintf(` ORDER BY created_at DESC, public_id DESC LIMIT $%d OFFSET $%d`, len(args)-1, len(args)), args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -94,7 +96,7 @@ func (s *AssetService) List(ctx context.Context, userID int64, q string, tag str
 		a.CreatedAt = created.Format(time.RFC3339)
 		items = append(items, a)
 	}
-	return items, total, nil
+	return items, total, rows.Err()
 }
 
 func (s *AssetService) Get(ctx context.Context, userID int64, publicID string) (bucket, objectKey string, dto *AssetDTO, err error) {

@@ -35,6 +35,7 @@ type TaskDTO struct {
 	Type           string                 `json:"type"`
 	Status         string                 `json:"status"`
 	Progress       int                    `json:"progress"`
+	UpstreamStatus string                 `json:"upstream_status,omitempty"`
 	ModelCode      *string                `json:"model_code,omitempty"`
 	UserName       string                 `json:"user_name,omitempty"`
 	UserEmail      string                 `json:"user_email,omitempty"`
@@ -56,17 +57,33 @@ type CreateTaskInput struct {
 }
 
 type CreateComposeTaskInput struct {
-	Sources    []map[string]interface{} `json:"sources"`
-	Mode       string                   `json:"mode"`
-	OutputSize string                   `json:"output_size"`
+	TargetDuration int                      `json:"target_duration_sec"`
+	Sources        []map[string]interface{} `json:"sources"`
+	Mode           string                   `json:"mode"`
+	OutputSize     string                   `json:"output_size"`
+	Subtitles      []ComposeSubtitleCue     `json:"subtitles,omitempty"`
+	SubtitleStyle  string                   `json:"subtitle_style,omitempty"`
+	SubtitleTiming string                   `json:"subtitle_timing,omitempty"`
+}
+
+type ComposeSubtitleCue struct {
+	StartSec       float64 `json:"start_sec"`
+	EndSec         float64 `json:"end_sec"`
+	Text           string  `json:"text"`
+	SecondaryText  string  `json:"secondary_text,omitempty"`
+	SpeechStartSec float64 `json:"speech_start_sec,omitempty"`
+	SpeechEndSec   float64 `json:"speech_end_sec,omitempty"`
 }
 
 func validateComposeTaskInput(input *CreateComposeTaskInput) error {
+	if input.TargetDuration < 0 || input.TargetDuration > 600 {
+		return errors.New("合成目标时长必须为0–600秒")
+	}
 	input.Mode = strings.ToLower(strings.TrimSpace(input.Mode))
 	if input.Mode == "" {
 		input.Mode = "auto"
 	}
-	if input.Mode != "auto" && input.Mode != "concat" && input.Mode != "mux" {
+	if input.Mode != "auto" && input.Mode != "concat" && input.Mode != "mux" && input.Mode != "speech" && input.Mode != "synced" {
 		return errors.New("不支持的合成方式")
 	}
 	input.OutputSize = strings.ToLower(strings.TrimSpace(input.OutputSize))
@@ -80,6 +97,31 @@ func validateComposeTaskInput(input *CreateComposeTaskInput) error {
 	if !allowedSizes[input.OutputSize] {
 		return errors.New("不支持的合成输出尺寸")
 	}
+	if len(input.Subtitles) > 500 {
+		return errors.New("单次最多添加500条字幕")
+	}
+	if input.SubtitleStyle != "" && input.SubtitleStyle != "clean" && input.SubtitleStyle != "soft_box" && input.SubtitleStyle != "bold" {
+		return errors.New("不支持的字幕样式")
+	}
+	if input.SubtitleTiming != "" && input.SubtitleTiming != "script" && input.SubtitleTiming != "speech" {
+		return errors.New("不支持的字幕时间方式")
+	}
+	totalSubtitleRunes := 0
+	for index := range input.Subtitles {
+		cue := &input.Subtitles[index]
+		cue.Text = strings.TrimSpace(cue.Text)
+		cue.SecondaryText = strings.TrimSpace(cue.SecondaryText)
+		totalSubtitleRunes += len([]rune(cue.Text)) + len([]rune(cue.SecondaryText))
+		if cue.Text == "" || cue.StartSec < 0 || cue.EndSec <= cue.StartSec || cue.EndSec > 600 {
+			return errors.New("字幕时间或文本无效")
+		}
+		if cue.SpeechStartSec < 0 || cue.SpeechEndSec > 600 || (cue.SpeechStartSec != 0 || cue.SpeechEndSec != 0) && (cue.SpeechStartSec > cue.StartSec || cue.SpeechEndSec < cue.EndSec) {
+			return errors.New("字幕发声区间无效")
+		}
+	}
+	if totalSubtitleRunes > 30000 {
+		return errors.New("字幕文本过长")
+	}
 	counts := map[string]int{}
 	for _, source := range input.Sources {
 		kind := strings.ToLower(strings.TrimSpace(fmt.Sprint(source["kind"])))
@@ -88,7 +130,18 @@ func validateComposeTaskInput(input *CreateComposeTaskInput) error {
 		}
 		counts[kind]++
 	}
+	if len(input.Subtitles) > 0 && counts["video"] == 0 {
+		return errors.New("字幕只能添加到视频合成任务")
+	}
 	switch input.Mode {
+	case "synced":
+		if counts["video"] != 1 || counts["audio"] != 1 || counts["image"] > 0 || input.TargetDuration <= 0 {
+			return errors.New("同步结果校验需要一个视频和原配音，以及正整数目标秒数")
+		}
+	case "speech":
+		if counts["video"] != 1 || counts["image"] > 0 || input.TargetDuration <= 0 {
+			return errors.New("逐镜配音需要一个视频、可选配音和正整数目标秒数")
+		}
 	case "concat":
 		kindCount := 0
 		for _, kind := range []string{"image", "video", "audio"} {
@@ -115,17 +168,23 @@ func (s *TaskService) CreateCompose(ctx context.Context, userID int64, input Cre
 	if len(input.Sources) == 0 {
 		return nil, errors.New("请至少连接一个可合成的媒体节点")
 	}
-	if len(input.Sources) > 20 {
-		return nil, errors.New("单次最多合成 20 个媒体素材")
+	if len(input.Sources) > 100 {
+		return nil, errors.New("单次最多合成 100 个媒体素材")
 	}
 	if err := validateComposeTaskInput(&input); err != nil {
 		return nil, err
 	}
 	taskNo := util.NewTaskNo()
 	params := map[string]interface{}{
-		"sources":     input.Sources,
-		"mode":        input.Mode,
-		"output_size": input.OutputSize,
+		"sources":             input.Sources,
+		"mode":                input.Mode,
+		"output_size":         input.OutputSize,
+		"target_duration_sec": input.TargetDuration,
+	}
+	if len(input.Subtitles) > 0 {
+		params["subtitles"] = input.Subtitles
+		params["subtitle_style"] = input.SubtitleStyle
+		params["subtitle_timing"] = input.SubtitleTiming
 	}
 	inputJSON, _ := json.Marshal(params)
 	var taskID int64
@@ -328,46 +387,105 @@ func (s *TaskService) GetAdmin(ctx context.Context, taskNo string) (*TaskDTO, er
 	return s.getTask(ctx, "t.task_no=$1", taskNo)
 }
 
-func (s *TaskService) getTask(ctx context.Context, where string, args ...interface{}) (*TaskDTO, error) {
+const taskReadSelect = `SELECT t.task_no, t.upstream_task_id, t.type, t.status, m.code, t.input, t.output, t.estimated_cost, t.actual_cost, t.error_code, t.error_message, t.created_at, t.finished_at
+		, COALESCE(progress.payload->>'progress', ''), COALESCE(progress.payload->>'status', '')
+		FROM tasks t LEFT JOIN models m ON m.id = t.model_id
+		LEFT JOIN LATERAL (
+			SELECT e.payload FROM task_events e
+			WHERE e.task_id=t.id AND e.event_type='progress'
+			  AND t.status NOT IN ('succeeded', 'failed', 'cancelled')
+			ORDER BY e.created_at DESC, e.id DESC LIMIT 1
+		) progress ON true WHERE `
+
+type taskRowScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanTaskRead(row taskRowScanner) (*TaskDTO, error) {
 	var t TaskDTO
 	var input, output []byte
 	var created time.Time
 	var finished *time.Time
-	q := `SELECT t.task_no, t.upstream_task_id, t.type, t.status, m.code, t.input, t.output, t.estimated_cost, t.actual_cost, t.error_code, t.error_message, t.created_at, t.finished_at
-		FROM tasks t LEFT JOIN models m ON m.id = t.model_id WHERE ` + where
+	var progress, upstreamStatus string
 	var upstreamTaskID *string
-	err := s.db.QueryRow(ctx, q, args...).Scan(
+	if err := row.Scan(
 		&t.TaskNo, &upstreamTaskID, &t.Type, &t.Status, &t.ModelCode, &input, &output, &t.EstimatedCost, &t.ActualCost,
-		&t.ErrorCode, &t.ErrorMessage, &created, &finished)
+		&t.ErrorCode, &t.ErrorMessage, &created, &finished, &progress, &upstreamStatus); err != nil {
+		return nil, err
+	}
 	if upstreamTaskID != nil && *upstreamTaskID != "" {
 		t.UpstreamTaskID = upstreamTaskID
 	}
-	if err != nil {
-		return nil, err
-	}
-	json.Unmarshal(input, &t.Input)
-	json.Unmarshal(output, &t.Output)
+	_ = json.Unmarshal(input, &t.Input)
+	_ = json.Unmarshal(output, &t.Output)
 	t.CreatedAt = created.Format(time.RFC3339)
 	if finished != nil {
-		fs := finished.Format(time.RFC3339)
-		t.FinishedAt = &fs
+		formatted := finished.Format(time.RFC3339)
+		t.FinishedAt = &formatted
 	}
-	t.Progress = s.latestProgress(ctx, t.TaskNo, t.Status)
+	t.Progress = taskProgress(t.Status, progress, true)
+	if t.Status == "running" || t.Status == "pending" {
+		t.UpstreamStatus = upstreamStatus
+	}
 	return &t, nil
 }
 
-func (s *TaskService) latestProgress(ctx context.Context, taskNo, status string) int {
-	if status == "succeeded" || status == "failed" || status == "cancelled" {
+func (s *TaskService) getTask(ctx context.Context, where string, args ...interface{}) (*TaskDTO, error) {
+	return scanTaskRead(s.db.QueryRow(ctx, taskReadSelect+where, args...))
+}
+
+// GetMany reads all visible task snapshots in one query and returns them in
+// caller order. Canvas recovery uses this to avoid one HTTP and SQL query per
+// generated page or clip.
+func (s *TaskService) GetMany(ctx context.Context, userID int64, taskNos []string) ([]TaskDTO, error) {
+	if len(taskNos) == 0 {
+		return []TaskDTO{}, nil
+	}
+	if len(taskNos) > 100 {
+		return nil, errors.New("单次最多查询100个任务")
+	}
+	unique := make([]string, 0, len(taskNos))
+	seen := make(map[string]bool, len(taskNos))
+	for _, taskNo := range taskNos {
+		taskNo = strings.TrimSpace(taskNo)
+		if taskNo != "" && !seen[taskNo] {
+			seen[taskNo] = true
+			unique = append(unique, taskNo)
+		}
+	}
+	rows, err := s.db.Query(ctx, taskReadSelect+`t.user_id=$1 AND t.task_no=ANY($2)`, userID, unique)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byNumber := make(map[string]TaskDTO, len(unique))
+	for rows.Next() {
+		task, scanErr := scanTaskRead(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		byNumber[task.TaskNo] = *task
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	items := make([]TaskDTO, 0, len(byNumber))
+	for _, taskNo := range unique {
+		if task, ok := byNumber[taskNo]; ok {
+			items = append(items, task)
+		}
+	}
+	return items, nil
+}
+
+// Agent media snapshots historically treat cancellation differently from task details.
+// Keep that behavior while sharing progress parsing and avoiding extra queries.
+func taskProgress(status, raw string, cancelledIsTerminal bool) int {
+	if status == "succeeded" || status == "failed" || (cancelledIsTerminal && status == "cancelled") {
 		return 100
 	}
-	var progress int
-	err := s.db.QueryRow(ctx, `
-		SELECT COALESCE((payload->>'progress')::int, 0)
-		FROM task_events e
-		JOIN tasks t ON t.id=e.task_id
-		WHERE t.task_no=$1 AND e.event_type='progress'
-		ORDER BY e.created_at DESC, e.id DESC
-		LIMIT 1`, taskNo).Scan(&progress)
+	parsed, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 32)
+	progress := int(parsed)
 	if err == nil && progress > 0 {
 		if progress > 99 {
 			return 99

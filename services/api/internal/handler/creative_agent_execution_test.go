@@ -12,12 +12,17 @@ import (
 
 func TestCreativeAgentIntentBoundary(t *testing.T) {
 	for _, text := range []string{
-		"开学季，做为一个程序员，给我一段程序开发人员15秒的短视频文案",
-		"生成一段15秒的短视频文案", "帮我写一段歌词", "润色这段歌词", "这是什么？", "为什么又生成了", "解释一下", "先别生成视频，先写文案", "取消生成", "修改一下脚本",
+		"这是什么？", "为什么又生成了", "解释一下", "先别生成视频，先写文案", "取消生成", "如何写好文案？", "解释这段脚本", "文章怎么写？", "视频提示词是什么？",
 	} {
 		plan := guardCreativeAgentIntent(map[string]interface{}{"intent": "video", "prompt": "生成一段视频文案", "needs_confirm": false}, text)
 		if plan["intent"] != "chat" || plan["needs_confirm"] != false || plan["prompt"] != "" {
 			t.Fatalf("%q must not generate: %#v", text, plan)
+		}
+	}
+	for _, text := range []string{"写一篇文章", "开学季，做为一个程序员，给我一段程序开发人员15秒的短视频文案", "生成一段15秒的短视频文案", "帮我写一段歌词", "润色这段歌词", "修改一下脚本", "今天公司开会，讲的主要内容是如何提高工作效率，请帮我整理成 20秒左右的 1.2倍语速的文案出来"} {
+		plan := guardCreativeAgentIntent(map[string]interface{}{"intent": "chat", "reply": "旧的直接交付正文"}, text)
+		if plan["intent"] != "chat" || plan["needs_confirm"] != false || plan["reply"] != "旧的直接交付正文" {
+			t.Fatalf("%q must deliver writing directly in chat: %#v", text, plan)
 		}
 	}
 	for _, text := range []string{"根据这个文案生成15秒视频", "帮我写文案然后生成视频", "生成一张写着为什么的图片", "文案不用改，直接生成视频", "做一段15秒视频"} {
@@ -39,12 +44,12 @@ func TestCreativeAgentMediaNounBoundary(t *testing.T) {
 			t.Fatalf("%q should be a video request", text)
 		}
 	}
-	for _, text := range []string{"生成图文", "写一篇微信公众号推文", "做一篇小红书笔记", "创作今日头条文章"} {
+	for _, text := range []string{"生成图文", "写一篇微信公众号推文并生成配图", "做一篇小红书图文笔记", "创作今日头条文章和配图"} {
 		if !creativeAgentContentImageWorkflowCue(text) {
 			t.Fatalf("%q should be a mixed content-image request", text)
 		}
 	}
-	for _, text := range []string{"写一篇文章", "整理资料信息", "解释这段文字", "分析一篇小红书笔记"} {
+	for _, text := range []string{"写一篇文章", "整理资料信息", "解释这段文字", "分析一篇小红书笔记", "写一篇微信公众号推文", "做一篇小红书笔记", "创作今日头条文章", "生成一篇公众号文章，不要配图", "生成小红书图文的纯文字文案，不需要生成图片"} {
 		if creativeAgentMediaRequest(text) {
 			t.Fatalf("%q should remain text-only", text)
 		}

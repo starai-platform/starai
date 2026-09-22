@@ -35,8 +35,7 @@ func TestImageModelForSizeMapsAsyncImageFamilies(t *testing.T) {
 	}{
 		{name: "banana 1k", endpoint: "/v1/videos", model: "nano_banana_2", tier: "1K", want: "nano_banana_pro-1K"},
 		{name: "banana 4k", endpoint: "/v1/videos", model: "nano_banana_pro-1K", tier: "4K", want: "nano_banana_pro-4K"},
-		{name: "gpt image 2k", endpoint: "/v1/videos", model: "gpt-image-2", tier: "2K", want: "gpt-image-2-2K"},
-		{name: "gpt image 4k", endpoint: "/v1/videos", model: "gpt-image-2-2K", tier: "4K", want: "gpt-image-2-4K"},
+		{name: "gpt image keeps configured model", endpoint: "/v1/videos", model: "gpt-image-2", tier: "4K", want: "gpt-image-2"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -98,6 +97,29 @@ func TestBuildVideoImagePayloadIncludesBananaReferenceImages(t *testing.T) {
 	}
 }
 
+func TestBuildVideoImagePayloadIncludesGPTImageSizeWithoutChangingModel(t *testing.T) {
+	input := map[string]interface{}{
+		"size":             "1456x624",
+		"image_size":       "4K",
+		"reference_images": []string{"https://star-ai.example/product.jpg"},
+	}
+
+	payload := buildVideoImagePayload(context.Background(), nil, "/v1/videos", "gpt-image-2", "", "prompt", input)
+	if payload["model"] != "gpt-image-2" {
+		t.Fatalf("model = %v, want gpt-image-2", payload["model"])
+	}
+	if payload["size"] != "1456x624" {
+		t.Fatalf("size = %v, want 1456x624", payload["size"])
+	}
+	if _, exists := payload["aspect_ratio"]; exists {
+		t.Fatalf("GPT Image async payload should use size only: %#v", payload)
+	}
+	images, ok := payload["images"].([]string)
+	if !ok || len(images) != 1 || images[0] != "https://star-ai.example/product.jpg" {
+		t.Fatalf("public image URL was not preserved: %#v", payload["images"])
+	}
+}
+
 func TestBuildVideoImagePayloadFallsBackToImageURL(t *testing.T) {
 	input := map[string]interface{}{
 		"image_url": "data:image/png;base64,cGhvbmU=",
@@ -110,21 +132,67 @@ func TestBuildVideoImagePayloadFallsBackToImageURL(t *testing.T) {
 	}
 }
 
+func TestNormalizePayloadMediaPreservesPublicAsyncImageURLs(t *testing.T) {
+	payload := map[string]interface{}{
+		"images": []string{"https://star-ai.example/product.jpg"},
+	}
+	if err := normalizePayloadMedia(context.Background(), payload, "/v1/videos"); err != nil {
+		t.Fatal(err)
+	}
+	images, ok := payload["images"].([]string)
+	if !ok || len(images) != 1 || images[0] != "https://star-ai.example/product.jpg" {
+		t.Fatalf("public image URL was rewritten: %#v", payload["images"])
+	}
+}
+
 func TestAgentPromptLocksUploadedReferenceSubject(t *testing.T) {
 	prompt := agentPromptWithScene("create a premium product shot", map[string]interface{}{
 		"image_url": "https://cdn.example/phone.png",
 	})
 
-	for _, required := range []string{"REFERENCE IMAGE HARD REQUIREMENT", "authoritative subject", "never turn a phone into a drone"} {
+	for _, required := range []string{"REFERENCE IMAGE GUIDANCE", "authoritative subject", "features the user has not explicitly requested to edit", "user-confirmed design, pose and viewpoint edits override these defaults"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("prompt does not contain %q: %s", required, prompt)
 		}
 	}
 }
 
+func TestImagePoliciesBindPrimaryAndAuxiliaryReferences(t *testing.T) {
+	prompt := applyImageGenerationPolicies("保持鞋子后视角，鞋两边合理显示能观察到的文字部分", map[string]interface{}{
+		"language":         "中文",
+		"reference_images": []string{"https://cdn.example/product.jpg", "https://cdn.example/pose.jpg"},
+	})
+	for _, required := range []string{"Reference image 1 is the authoritative source", "References 2 and later are auxiliary", "Do not copy their product shape", "TEXT RENDERING POLICY:"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("image policy does not contain %q: %s", required, prompt)
+		}
+	}
+	for _, forbidden := range []string{"Generate all visible text", "LANGUAGE HARD REQUIREMENT:"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("product-marking request incorrectly enabled generated copy %q: %s", forbidden, prompt)
+		}
+	}
+	if got := applyImageGenerationPolicies(prompt, map[string]interface{}{"language": "中文", "reference_images": []string{"https://cdn.example/product.jpg", "https://cdn.example/pose.jpg"}}); got != prompt {
+		t.Fatal("image policies were duplicated on the worker's second pass")
+	}
+}
+
+func TestImagePoliciesAllowOnlyExplicitPosterCopy(t *testing.T) {
+	prompt := applyImageGenerationPolicies("添加文案：夏日上新", map[string]interface{}{
+		"language":       "中文",
+		"creative_scene": "marketing_poster",
+	})
+	if !strings.Contains(prompt, "LANGUAGE HARD REQUIREMENT:") || !strings.Contains(prompt, "only the text explicitly requested") {
+		t.Fatalf("explicit poster copy lost its language policy: %s", prompt)
+	}
+	if strings.Contains(prompt, "Generate all visible text") {
+		t.Fatalf("old generate-everything instruction survived: %s", prompt)
+	}
+}
+
 func TestAgentPromptDoesNotAddReferenceLockWithoutReference(t *testing.T) {
 	prompt := agentPromptWithScene("create a premium product shot", map[string]interface{}{})
-	if strings.Contains(prompt, "REFERENCE IMAGE HARD REQUIREMENT") {
+	if strings.Contains(prompt, "REFERENCE IMAGE GUIDANCE") {
 		t.Fatalf("reference lock added without a reference: %s", prompt)
 	}
 }
@@ -133,7 +201,7 @@ func TestAgentPromptDoesNotTreatComicStyleCoverAsSubjectReference(t *testing.T) 
 	prompt := agentPromptWithScene("create a premium product shot", map[string]interface{}{
 		"comic_style": map[string]interface{}{"cover_url": "https://cdn.example/style-cover.png"},
 	})
-	if strings.Contains(prompt, "REFERENCE IMAGE HARD REQUIREMENT") {
+	if strings.Contains(prompt, "REFERENCE IMAGE GUIDANCE") {
 		t.Fatalf("style cover incorrectly locked as the generated subject: %s", prompt)
 	}
 }

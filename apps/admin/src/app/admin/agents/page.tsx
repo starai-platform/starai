@@ -10,9 +10,14 @@ import { AgentPolicyEditor } from "./AgentPolicyEditor";
 type GenerationType = "image" | "video" | "video_upscale" | "video_redraw" | "subtitle_remove" | "comic_drama" | "novel_workshop" | "photo_studio" | "virtual_try_on" | "creative_agent";
 type WorkflowNode = { id: string; name: string; type: string; model_code: string; prompt_template?: string; cost: number };
 type RuntimeConfig = {
-  agent_mode?: "simple_pipeline" | "custom_nodes" | "comic_drama" | "novel_workshop" | "photo_studio" | "virtual_try_on" | "infinite_canvas" | "video_upscale" | "video_redraw" | "subtitle_remove" | "creative_chat";
+  agent_mode?: "simple_pipeline" | "custom_nodes" | "comic_drama" | "novel_workshop" | "photo_studio" | "virtual_try_on" | "infinite_canvas" | "video_upscale" | "video_redraw" | "subtitle_remove" | "creative_chat" | "product_refine";
   system_workspace?: boolean;
+  quality_model_code?: string;
+  image_concurrency?: number;
+  video_concurrency?: number;
+  prompt_enhance_model_code?: string;
   analysis_model_code?: string;
+  fallback_model_code?: string;
   generation_model_code?: string;
   generation_type?: GenerationType | "chat" | "mixed";
   preset_code?: string;
@@ -63,6 +68,9 @@ type RuntimeConfig = {
   protect_watermark?: boolean;
   subtitle_remove_operation?: string;
   subtitle_remove_prompt?: string;
+  default_review_mode?: "standard" | "strict";
+  product_category_rules?: Record<string, string>;
+  product_operation_rules?: Record<string, string>;
 };
 type Workflow = {
   code: string;
@@ -98,7 +106,12 @@ type FormState = {
   sort_order: number;
   is_enabled: boolean;
   generation_type: GenerationType;
+  quality_model_code: string;
+  image_concurrency: number;
+  video_concurrency: number;
+  prompt_enhance_model_code: string;
   analysis_model_code: string;
+  fallback_model_code: string;
   generation_model_code: string;
   image_model_code: string;
   video_model_code: string;
@@ -151,10 +164,58 @@ type FormState = {
   placeholder: string;
   help: string;
   canvas_templates: CanvasTemplateAdmin[];
+  default_product_review_mode: "standard" | "strict";
+  product_category_rules_json: string;
+  product_operation_rules_json: string;
   preset_override?: Partial<PresetBundle>;
 };
 
 const PAGE_SIZE = 10;
+const DEFAULT_PRODUCT_CATEGORY_RULES: Record<string, string> = {
+  footwear: "核对鞋型、鞋头、鞋舌、鞋口、后跟、鞋底、贴条、鞋带和标识；穿着时逐侧检查脚踝接合、遮挡和受力。",
+  apparel: "核对版型、领口、袖口、门襟、裁片、缝线、纽扣和拉链；穿着褶皱不得改变结构。",
+  bag: "核对包型、提手与包身连接、肩带、拉链、扣件、口袋、边油和五金数量；手持或背负时受力真实。",
+  watch: "核对表盘、指针、刻度、表冠、表耳、表带节数和扣具；佩戴时表带弯曲和皮肤接触真实。",
+  eyewear: "核对镜框、镜片、鼻托、铰链和镜腿连接；佩戴时左右落点、透视、反射和遮挡合理。",
+  jewelry: "核对链节、镶嵌、爪位、耳针、搭扣和宝石数量；佩戴时不得穿入皮肤、断链或复制部件。",
+  cosmetics: "核对瓶型、泵头、瓶盖、标签、文字、液位和透明材质；手持时不得改写标签或穿入包装。",
+  bottle: "核对瓶口、瓶盖、泵头、标签、刻度、液位、透明度和反射；不得新增开口或扭曲文字。",
+  electronics: "核对屏幕、按键、镜头、接口、开孔、边框和标识的位置与数量；使用时不得变形。",
+  appliance: "核对机身比例、面板、旋钮、出风口、门盖、电源结构和标签；摆放时落地、开合与尺度真实。",
+  furniture: "核对外形比例、拼接、支撑、腿脚、五金、面料和纹理；透视、落地受力和空间尺度真实。",
+  home: "核对轮廓、拼接、支撑、五金、纹理方向和落地受力；不得悬浮、断裂或错误连接。",
+  kitchenware: "核对器型、口沿、把手、盖体、刃口、刻度和材质反射；握持、开合和受力真实。",
+  food: "核对包装形状、封口、标签、文字、数量和内容物；不得虚构认证、功效或净含量。",
+  beverage: "核对容器、瓶盖或拉环、标签、液位、气泡和冷凝；不得虚构口味、配方、酒精度或容量。",
+  toy: "核对角色造型、零件数量、关节、涂装、贴纸和配件；不得缺件、复制、错接或改变比例。",
+  sports: "核对器材轮廓、握把、绑带、连接点、纹理和品牌位置；使用姿势、接触和受力真实。",
+  automotive: "核对外壳、安装孔位、接口、纹路、反光件和配件；安装展示的部位、尺度和连接真实。",
+  pet: "核对包装或用品结构、扣具、织带、开口和尺寸；佩戴时松紧、毛发遮挡和受力合理。",
+  stationery: "核对外形、笔尖或装订、按键、刻度、印刷和配件；书写或手持时比例与握持真实。",
+  baby: "核对结构、锁扣、绑带、护栏、轮组、刻度和配件；保持安全结构，不虚构认证和功能。",
+  health: "核对结构、显示、按键、接口、绑带和包装文字；不得虚构医疗功效、认证或不可见参数。",
+  other: "核对商品轮廓、结构连接、部件数量、材质、颜色、文字与标识；交互时接触、遮挡和受力真实。",
+};
+
+const DEFAULT_PRODUCT_OPERATION_RULES: Record<string, string> = {
+  auto_showcase: "自动选择最符合商品实际类型和参考素材的主流电商展示方式；保持商品身份与关键卖点，补全自然构图、光影、接触和留白。",
+  local_repair: "仅重绘用户圈选的问题区域，修复接缝、穿透、粘连、断裂、重复边缘和错误遮挡；除用户明确要求保留的内容外，移除圈内红圈、箭头或文字标注，圈外像素、构图和尺寸保持不变。",
+  wear: "适用于可穿戴商品；人体部位、尺码比例、穿戴位置、遮挡、接触和受力符合真实使用方式。",
+  hold_use: "适用于手持或操作展示；握持点、操作方向、尺度和受力真实，不遮住核心卖点。",
+  background: "保持商品本身和拍摄角度，主要修改背景、承托面、光影及必要反射。",
+  detail: "优先从已有清晰像素裁切或轻度精修材质与工艺特写，不补造不可见细节。",
+  custom: "执行用户明确要求，对未说明的商品真实性、构图、光影和交互细节使用通用品控规则补全。",
+};
+
+function parseProductRuleMap(value: string) {
+  try {
+    const parsed = JSON.parse(value || "{}");
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") return {};
+    return Object.fromEntries(Object.entries(parsed).filter(([key, rule]) => key.trim() && typeof rule === "string" && rule.trim()).map(([key, rule]) => [key.trim(), String(rule).trim()]));
+  } catch {
+    return {};
+  }
+}
 type SceneDef = { code: string; label: string; desc: string; locked?: boolean };
 type PresetBundle = {
   display_config: Record<string, unknown>;
@@ -529,6 +590,9 @@ function displayConfig(form: FormState) {
 }
 
 function runtimeConfig(form: FormState): RuntimeConfig {
+  if (form.code === "product_refine") {
+    return { agent_mode: "product_refine", preset_code: "product_refine", generation_type: "image", analysis_model_code: form.analysis_model_code, generation_model_code: form.generation_model_code, quality_model_code: form.quality_model_code, default_count: 1, default_review_mode: form.default_product_review_mode, product_category_rules: parseProductRuleMap(form.product_category_rules_json), product_operation_rules: parseProductRuleMap(form.product_operation_rules_json), input_capabilities: { allow_text_only: false, support_reference_image: true, support_multiple_references: true }, flow_options: { enable_autopilot: true, enable_step_confirm: false, allow_prompt_edit: false } };
+  }
   if (form.generation_type === "video_upscale") {
     return {
       agent_mode: "video_upscale",
@@ -590,6 +654,9 @@ function runtimeConfig(form: FormState): RuntimeConfig {
     const dialogue = form.dialogue_model_codes.split(",").map((item) => item.trim()).filter(Boolean);
     return {
       agent_mode: "comic_drama",
+      quality_model_code: form.quality_model_code,
+      image_concurrency: form.image_concurrency,
+      video_concurrency: form.video_concurrency,
       analysis_model_code: form.analysis_model_code,
       generation_model_code: form.video_model_code || form.generation_model_code,
       generation_type: "video",
@@ -628,6 +695,9 @@ function runtimeConfig(form: FormState): RuntimeConfig {
   if (form.generation_type === "novel_workshop") {
     return {
       agent_mode: "novel_workshop",
+      quality_model_code: form.quality_model_code,
+      image_concurrency: form.image_concurrency,
+      video_concurrency: form.video_concurrency,
       analysis_model_code: form.analysis_model_code,
       generation_model_code: form.generation_model_code,
       generation_type: "chat",
@@ -652,6 +722,9 @@ function runtimeConfig(form: FormState): RuntimeConfig {
   if (form.generation_type === "photo_studio") {
     return {
       agent_mode: "photo_studio",
+      quality_model_code: form.quality_model_code,
+      image_concurrency: form.image_concurrency,
+      video_concurrency: form.video_concurrency,
       analysis_model_code: form.analysis_model_code,
       generation_model_code: form.generation_model_code,
       generation_type: "image",
@@ -702,7 +775,11 @@ function runtimeConfig(form: FormState): RuntimeConfig {
   if (form.generation_type === "creative_agent") {
     return {
       agent_mode: "creative_chat",
+      quality_model_code: form.quality_model_code,
+      image_concurrency: form.image_concurrency,
+      video_concurrency: form.video_concurrency,
       analysis_model_code: form.analysis_model_code,
+      fallback_model_code: form.fallback_model_code,
       image_model_code: form.image_model_code,
       video_model_code: form.video_model_code,
       speech_model_code: form.speech_model_code,
@@ -773,7 +850,12 @@ function makeEmptyForm(): FormState {
     sort_order: 0,
     is_enabled: true,
     generation_type: "image",
+    quality_model_code: "",
+    image_concurrency: 3,
+    video_concurrency: 2,
+    prompt_enhance_model_code: "",
     analysis_model_code: "",
+    fallback_model_code: "",
     generation_model_code: "",
     image_model_code: "image_fast_v1",
     video_model_code: "video_demo_v1",
@@ -822,6 +904,9 @@ function makeEmptyForm(): FormState {
     placeholder: preset.placeholder,
     help: preset.help,
     canvas_templates: DEFAULT_CANVAS_TEMPLATES.map((item) => ({ ...item })),
+    default_product_review_mode: "standard",
+    product_category_rules_json: JSON.stringify(DEFAULT_PRODUCT_CATEGORY_RULES, null, 2),
+    product_operation_rules_json: JSON.stringify(DEFAULT_PRODUCT_OPERATION_RULES, null, 2),
   };
 }
 
@@ -969,7 +1054,12 @@ export default function AgentsAdminPage() {
       sort_order: Number(w.sort_order || 0),
       is_enabled: w.is_enabled,
       generation_type: type,
+      quality_model_code: runtime.quality_model_code || "",
+      image_concurrency: Number(runtime.image_concurrency || 3),
+      video_concurrency: Number(runtime.video_concurrency || 2),
+      prompt_enhance_model_code: runtime.prompt_enhance_model_code || "",
       analysis_model_code: runtime.analysis_model_code || "",
+      fallback_model_code: runtime.fallback_model_code || "",
       generation_model_code: runtime.generation_model_code || "",
       image_model_code: runtime.image_model_code || (systemWorkspace ? "" : "image_fast_v1"),
       video_model_code: runtime.video_model_code || runtime.generation_model_code || (systemWorkspace ? "" : "video_demo_v1"),
@@ -1032,6 +1122,9 @@ export default function AgentsAdminPage() {
             ...(item?.document && typeof item.document === "object" ? { document: item.document } : {}),
           }))
         : DEFAULT_CANVAS_TEMPLATES.map((item) => ({ ...item })),
+      default_product_review_mode: runtime.default_review_mode === "strict" ? "strict" : "standard",
+      product_category_rules_json: JSON.stringify(runtime.product_category_rules || DEFAULT_PRODUCT_CATEGORY_RULES, null, 2),
+      product_operation_rules_json: JSON.stringify(runtime.product_operation_rules || DEFAULT_PRODUCT_OPERATION_RULES, null, 2),
       preset_override: runtime.system_workspace === true || runtime.agent_mode === "infinite_canvas" || runtime.agent_mode === "novel_workshop"
         ? {
             display_config: w.display_config || {},
@@ -1149,6 +1242,16 @@ export default function AgentsAdminPage() {
           },
         }
       : originalBundle;
+    const imageCountSchema = bundle.input_schema.image_count;
+    const inputSchema = form.code === "content_image_post"
+      ? {
+          ...bundle.input_schema,
+          image_count: {
+            ...(typeof imageCountSchema === "object" && imageCountSchema !== null ? imageCountSchema : {}),
+            default: Number(form.default_count) || 4,
+          },
+        }
+      : bundle.input_schema;
     const payload = {
       code: form.code.trim(),
       name: form.name.trim(),
@@ -1160,6 +1263,9 @@ export default function AgentsAdminPage() {
       agent_mode: form.system_workspace
         ? form.code === "content_image_post" ? "simple_pipeline" : "infinite_canvas"
         : form.generation_type === "creative_agent" ? "creative_chat" : form.generation_type === "comic_drama" ? "comic_drama" : form.generation_type === "novel_workshop" ? "novel_workshop" : form.generation_type === "photo_studio" ? "photo_studio" : form.generation_type === "virtual_try_on" ? "virtual_try_on" : isVideoUtilityType(form.generation_type) ? form.generation_type : "simple_pipeline",
+      quality_model_code: form.quality_model_code,
+      image_concurrency: form.image_concurrency,
+      video_concurrency: form.video_concurrency,
       analysis_model_code: form.analysis_model_code,
       generation_model_code: form.generation_type === "comic_drama" ? form.video_model_code : form.generation_type === "creative_agent" ? form.image_model_code : form.generation_model_code,
       generation_type: form.generation_type === "comic_drama" || isVideoUtilityType(form.generation_type) ? "video" : form.generation_type === "photo_studio" || form.generation_type === "virtual_try_on" ? "image" : form.generation_type,
@@ -1176,33 +1282,37 @@ export default function AgentsAdminPage() {
       enable_autopilot: form.enable_autopilot,
       allow_prompt_edit: form.allow_prompt_edit,
       nodes: bundle.nodes,
-      input_schema: bundle.input_schema,
+      input_schema: inputSchema,
       price_rule: form.generation_type === "creative_agent" || form.generation_type === "novel_workshop" || form.generation_type === "photo_studio" || form.generation_type === "virtual_try_on"
         ? { billing_type: "model_actual", unit_price: form.generation_type === "creative_agent" ? 0 : Number(form.unit_price) || 0 }
         : bundle.price_rule,
       display_config: bundle.display_config,
       runtime_config: form.system_workspace
         ? {
-            ...bundle.runtime_config,
-            agent_mode: form.code === "content_image_post" ? "simple_pipeline" : "infinite_canvas",
-            system_workspace: true,
-            ...(["one_click_viral_remake", "viral_remake", "video_remake", "video_creation"].includes(form.code) ? {
-              analysis_model_code: form.analysis_model_code,
-              image_model_code: form.image_model_code,
-              video_model_code: form.video_model_code,
-            } : {}),
-            ...(form.code === "content_image_post" ? {
-              analysis_model_code: form.analysis_model_code,
-              generation_model_code: form.generation_model_code,
-              default_count: Number(form.default_count) || 4,
-            } : {}),
-            ...(form.code === "video_creation" ? {
-              audio_model_code: form.narration_model_code,
-              default_segment_count: form.default_segment_count,
-              default_segment_duration: form.default_segment_duration,
-              default_story_review_required: form.default_story_review_required,
-            } : {}),
-          }
+          ...bundle.runtime_config,
+          prompt_enhance_model_code: form.prompt_enhance_model_code,
+          quality_model_code: form.quality_model_code,
+          image_concurrency: form.image_concurrency,
+          video_concurrency: form.video_concurrency,
+          agent_mode: form.code === "content_image_post" ? "simple_pipeline" : "infinite_canvas",
+          system_workspace: true,
+          ...(["one_click_viral_remake", "viral_remake", "video_remake", "video_creation", "video_creation_v2"].includes(form.code) ? {
+            analysis_model_code: form.analysis_model_code,
+            image_model_code: form.image_model_code,
+            video_model_code: form.video_model_code,
+          } : {}),
+          ...(form.code === "content_image_post" ? {
+            analysis_model_code: form.analysis_model_code,
+            generation_model_code: form.generation_model_code,
+            default_count: Number(form.default_count) || 4,
+          } : {}),
+          ...(["video_creation", "video_creation_v2"].includes(form.code) ? {
+            audio_model_code: form.narration_model_code,
+            default_segment_count: form.default_segment_count,
+            default_segment_duration: form.default_segment_duration,
+            default_story_review_required: form.default_story_review_required,
+          } : {}),
+        }
         : form.generation_type === "comic_drama"
         ? bundle.runtime_config
         : form.generation_type === "novel_workshop"
@@ -1212,10 +1322,14 @@ export default function AgentsAdminPage() {
         : form.generation_type === "virtual_try_on"
         ? { ...bundle.runtime_config, generation_model_code: form.generation_model_code, default_count: Number(form.default_count) || 1 }
          : form.generation_type === "creative_agent"
-         ? { ...bundle.runtime_config, agent_mode: "creative_chat", generation_type: "mixed", preset_code: "general_creative_agent", analysis_model_code: form.analysis_model_code, image_model_code: form.image_model_code, video_model_code: form.video_model_code, speech_model_code: form.speech_model_code, music_model_code: form.music_model_code, generation_model_code: form.image_model_code }
+         ? { ...bundle.runtime_config, agent_mode: "creative_chat", generation_type: "mixed", preset_code: "general_creative_agent", analysis_model_code: form.analysis_model_code, fallback_model_code: form.fallback_model_code, image_model_code: form.image_model_code, video_model_code: form.video_model_code, speech_model_code: form.speech_model_code, music_model_code: form.music_model_code, generation_model_code: form.image_model_code }
          : { ...bundle.runtime_config, creative_scenes: normalizeScenes((bundle.runtime_config as any)?.creative_scenes || form.creative_scenes, form.generation_type), output_scenes: undefined },
     };
     try {
+      if (form.code === "product_refine") {
+        payload.runtime_config = runtimeConfig(form);
+        payload.price_rule = { billing_type: "model_actual", unit_price: Math.max(0, Number(form.unit_price) || 0) };
+      }
       await adminApi(form.isEdit ? `/agents/${form.code}` : "/agents", {
         method: form.isEdit ? "PUT" : "POST",
         body: JSON.stringify(payload),
@@ -1318,13 +1432,20 @@ export default function AgentsAdminPage() {
                 <Field label="排序"><input type="number" className="admin-input" value={form.sort_order} onChange={(e) => setForm({ ...form, sort_order: Number(e.target.value) || 0 })} /></Field>
               </section>
 
+              {(form.system_workspace || form.generation_type === "comic_drama") && <section className="grid gap-3 rounded-2xl border border-cyan-100 p-4 md:grid-cols-3">
+                <Field label="视觉一致性验收模型"><select className="admin-input" value={form.quality_model_code} onChange={e => setForm({ ...form, quality_model_code: e.target.value })}><option value="">未配置（明确标记未检查）</option>{chatModels.map(m => <option key={m.code} value={m.code}>{m.display_name} / {m.code}</option>)}</select><p className="mt-1 text-xs text-gray-500">请选择支持图片理解的模型。验收使用真实图片并按模型计费。</p></Field>
+                <Field label="图片并发上限"><input className="admin-input" type="number" min={1} max={6} value={form.image_concurrency} onChange={e => setForm({ ...form, image_concurrency: Math.max(1, Math.min(6, Number(e.target.value) || 3)) })} /></Field>
+                <Field label="视频并发上限"><input className="admin-input" type="number" min={1} max={4} value={form.video_concurrency} onChange={e => setForm({ ...form, video_concurrency: Math.max(1, Math.min(4, Number(e.target.value) || 2)) })} /></Field>
+              </section>}
+
               {form.system_workspace && (
                 <section className="rounded-2xl border border-cyan-100 bg-cyan-50/50 p-4">
                   <div className="flex items-center gap-2 text-sm font-semibold text-cyan-800"><Layers size={16} />无限画布模板管理</div>
+                  <Field label="提示词增强模型"><select className="admin-input" value={form.prompt_enhance_model_code} onChange={e => setForm({ ...form, prompt_enhance_model_code: e.target.value })}><option value="">使用工作流分析模型 / Agent 主聊天模型</option>{chatModels.map(m => <option key={m.code} value={m.code}>{m.display_name} / {m.code}</option>)}</select></Field>
                   <p className="mt-2 text-xs leading-5 text-cyan-700">
                     可直接管理前台“导入画布”中的模板。内置类型会由前端创建标准节点；完整自定义节点画布仍可通过下方高级 JSON 的 document 配置。
                   </p>
-                  {["content_image_post", "one_click_viral_remake", "viral_remake", "video_remake", "video_creation"].includes(form.code) && <div className="mt-4 grid gap-3 rounded-xl border border-cyan-100 bg-white p-3 md:grid-cols-4">
+                  {["content_image_post", "one_click_viral_remake", "viral_remake", "video_remake", "video_creation", "video_creation_v2"].includes(form.code) && <div className="mt-4 grid gap-3 rounded-xl border border-cyan-100 bg-white p-3 md:grid-cols-4">
                     <Field label={form.code === "content_image_post" ? "默认内容分析模型" : "默认分析与改写模型"}>
                       <select className="admin-input" value={form.analysis_model_code} onChange={(e) => setForm({ ...form, analysis_model_code: e.target.value })}>
                         <option value="">自动选择</option>
@@ -1348,19 +1469,19 @@ export default function AgentsAdminPage() {
                         {[2, 3, 4, 5, 6].map((count) => <option key={count} value={count}>{count} 张配图</option>)}
                       </select>
                     </Field>}
-                    {form.code === "video_creation" && <Field label="默认配音模型">
+                    {["video_creation", "video_creation_v2"].includes(form.code) && <Field label="默认配音模型">
                       <select className="admin-input" value={form.narration_model_code} onChange={(e) => setForm({ ...form, narration_model_code: e.target.value })}>
                         <option value="">自动选择</option>
                         {audioModels.map((model) => <option key={model.code} value={model.code}>{model.display_name} / {model.code}</option>)}
                       </select>
                     </Field>}
-                    {form.code === "video_creation" && <>
+                    {["video_creation", "video_creation_v2"].includes(form.code) && <>
                       <Field label="默认视频片段数">
                         <select className="admin-input" value={form.default_segment_count} onChange={(e) => setForm({ ...form, default_segment_count: Number(e.target.value) })}>
                           {[1, 2, 3, 4, 6, 8].map((count) => <option key={count} value={count}>{count} 个片段</option>)}
                         </select>
                       </Field>
-                      <Field label="默认单段时长（秒）"><input type="number" min={1} max={600} step={0.5} className="admin-input" value={form.default_segment_duration} onChange={(e) => setForm({ ...form, default_segment_duration: Math.max(1, Number(e.target.value) || 8) })} /></Field>
+                      <Field label="默认模型单段素材时长（秒）"><input type="number" min={1} max={600} step={0.5} className="admin-input" value={form.default_segment_duration} onChange={(e) => setForm({ ...form, default_segment_duration: Math.max(1, Number(e.target.value) || 8) })} /><p className="mt-1 text-xs text-gray-500">成片总时长由用户设定；系统按该素材时长自动计算片段数并裁切末段。</p></Field>
                       <Field label="默认确认方式"><label className="flex h-10 items-center gap-2 rounded-xl border border-gray-100 px-3 text-sm"><input type="checkbox" checked={form.default_story_review_required} onChange={(e) => setForm({ ...form, default_story_review_required: e.target.checked })} />生成媒体前确认分镜</label></Field>
                     </>}
                     <p className="text-[11px] leading-5 text-cyan-700 md:col-span-4">这里设置新建画布的默认模型；前台仍可在每次任务中选择其他已启用模型。未声明所需能力的模型仍可选择，但上游不支持对应输入时生成会失败。</p>
@@ -1392,16 +1513,21 @@ export default function AgentsAdminPage() {
               {form.isEdit && form.code === "general_creative_agent" && <AgentPolicyEditor />}
               {!form.system_workspace && <section className="grid gap-4 rounded-2xl border border-gray-100 p-4 md:grid-cols-2">
                 <div className="md:col-span-2 flex items-center gap-2 text-sm font-semibold text-gray-900"><Settings2 size={16} />模型与计费</div>
+                {form.code === "product_refine" && <Field label="商品细节验收模型（必填）"><select className="admin-input" value={form.quality_model_code} onChange={e => setForm({ ...form, quality_model_code: e.target.value })}><option value="">请选择可读图的模型</option>{chatModels.map(m => <option key={m.code} value={m.code}>{m.display_name} / {m.code}</option>)}</select><p className="mt-1 text-xs text-gray-500">编辑模型必须使用支持多图和蒙版的 OpenAI Images 线路；其他线路不会降级成整图重绘。</p></Field>}
+                {form.code === "product_refine" && <Field label="默认验收强度"><select className="admin-input" value={form.default_product_review_mode} onChange={e => setForm({ ...form, default_product_review_mode: e.target.value === "strict" ? "strict" : "standard" })}><option value="standard">标准 · 定位后验收</option><option value="strict">严格 · 再做一次独立复核</option></select><p className="mt-1 text-xs text-gray-500">用户仍可在高级设置中按任务切换。</p></Field>}
+                {form.code === "product_refine" && <div className="md:col-span-2"><Field label="商品品类专项规则（JSON）"><textarea className="admin-input min-h-52 font-mono text-xs leading-5" value={form.product_category_rules_json} onChange={e => setForm({ ...form, product_category_rules_json: e.target.value })} /><p className="mt-1 text-xs text-gray-500">键为商品类别，值为该品类必须执行的结构与交互验收规则。JSON 无效时不会写入规则。</p></Field></div>}
+                {form.code === "product_refine" && <div className="md:col-span-2"><Field label="商品展示方式补充规则（JSON）"><textarea className="admin-input min-h-44 font-mono text-xs leading-5" value={form.product_operation_rules_json} onChange={e => setForm({ ...form, product_operation_rules_json: e.target.value })} /><p className="mt-1 text-xs text-gray-500">键为 auto_showcase、local_repair、wear、hold_use、background、detail 或 custom。规则只补充用户未说明的内容，用户明确要求始终优先。</p></Field></div>}
                 {!isVideoUtilityType(form.generation_type) && form.generation_type !== "virtual_try_on" && <Field label={form.generation_type === "creative_agent" ? "Agent 主聊天模型" : "分析大模型"}><select className="admin-input" value={form.analysis_model_code} onChange={(e) => setForm({ ...form, analysis_model_code: e.target.value })}><option value="">请选择{form.generation_type === "creative_agent" ? "主聊天" : "分析"}模型</option>{chatModels.filter((m) => !/multi.?collab|多模型协作/i.test(`${m.code} ${m.display_name}`)).map((m) => <option key={m.code} value={m.code}>{m.display_name} / {m.code}</option>)}</select>{form.generation_type === "creative_agent" && <p className="mt-1.5 text-[11px] leading-5 text-gray-400">Agent 会使用此模型理解需求、判断图片或视频意图，并生成执行计划。</p>}</Field>}
                 {form.generation_type === "creative_agent" ? (
                   <>
+                    <Field label="Agent 备用聊天模型"><select className="admin-input" value={form.fallback_model_code} onChange={(e) => setForm({ ...form, fallback_model_code: e.target.value })}><option value="">不自动切换</option>{chatModels.filter((m) => m.code !== form.analysis_model_code && !/multi.?collab|多模型协作/i.test(`${m.code} ${m.display_name}`)).map((m) => <option key={m.code} value={m.code}>{m.display_name} / {m.code}</option>)}</select><p className="mt-1.5 text-[11px] leading-5 text-gray-400">主模型在输出正文前被服务商内容审核终止时，只自动切换一次；失败请求不会重复扣费。深度思考请求的备用模型也必须支持思考开关。</p></Field>
                     <Field label="Agent 图片生成模型"><select className="admin-input" value={form.image_model_code} onChange={(e) => setForm({ ...form, image_model_code: e.target.value })}><option value="">请选择图片模型</option>{imageModels.map((m) => <option key={m.code} value={m.code}>{m.display_name} / {m.code}</option>)}</select></Field>
                     <Field label="Agent 视频生成模型"><select className="admin-input" value={form.video_model_code} onChange={(e) => setForm({ ...form, video_model_code: e.target.value })}><option value="">请选择视频模型</option>{videoModels.map((m) => <option key={m.code} value={m.code}>{m.display_name} / {m.code}</option>)}</select></Field>
                     <Field label="Agent 文本转语音模型"><select className="admin-input" value={form.speech_model_code} onChange={(e) => setForm({ ...form, speech_model_code: e.target.value })}><option value="">请选择语音模型</option>{audioModels.map((m) => <option key={m.code} value={m.code}>{m.display_name} / {m.code}</option>)}</select></Field>
                     <Field label="Agent 歌曲音乐模型"><select className="admin-input" value={form.music_model_code} onChange={(e) => setForm({ ...form, music_model_code: e.target.value })}><option value="">请选择音乐模型</option>{musicModels.map((m) => <option key={m.code} value={m.code}>{m.display_name} / {m.code}</option>)}</select></Field>
                   </>
                 ) : form.generation_type !== "comic_drama" && form.generation_type !== "novel_workshop" && (
-                  <Field label={form.generation_type === "video_upscale" ? "视频超分模型" : form.generation_type === "video_redraw" ? "视频转绘模型" : form.generation_type === "subtitle_remove" ? "硬字幕 AI 修复模型（可选）" : form.generation_type === "video" ? "视频生成模型" : "图片生成模型"}>
+                  <Field label={form.code === "product_refine" ? "商品编辑模型" : form.generation_type === "video_upscale" ? "视频超分模型" : form.generation_type === "video_redraw" ? "视频转绘模型" : form.generation_type === "subtitle_remove" ? "硬字幕 AI 修复模型（可选）" : form.generation_type === "video" ? "视频生成模型" : "图片生成模型"}>
                     <select className="admin-input" value={form.generation_model_code} onChange={(e) => setForm({ ...form, generation_model_code: e.target.value })}>
                       <option value="">{form.generation_type === "subtitle_remove" ? "不配置（仅支持独立字幕轨）" : "请选择生成模型"}</option>{generationModels.map((m) => {
                         const rule = m.runtime_rule || {};
@@ -1411,6 +1537,7 @@ export default function AgentsAdminPage() {
                         return <option key={m.code} value={m.code}>{m.display_name} / {m.code}{capability && !declared ? `（未声明${form.generation_type === "video_upscale" ? "超分" : form.generation_type === "video_redraw" ? "转绘" : "去字幕"}能力）` : ""}</option>;
                       })}
                     </select>
+                    {form.code === "product_refine" && <p className="mt-1.5 text-[11px] leading-5 text-gray-500">可在 GPT Image 2 与 GPT Image 2.5 兼容模型间切换。模型必须配置 OpenAI Images 蒙版编辑线路；前端会读取模型的比例、质量选项和默认参数。</p>}
                     {form.generation_type === "video_upscale" && <p className="mt-1.5 text-[11px] leading-5 text-amber-600">必须选择上游真正支持视频转视频/超分的模型；普通文生视频模型不会自动获得超分能力。请求会携带 operation=upscale、源视频和目标清晰度。</p>}
                     {form.generation_type === "video_redraw" && <p className="mt-1.5 text-[11px] leading-5 text-amber-600">必须选择真正支持 video-to-video/风格迁移的上游模型；系统会发送源视频、可选风格参考图、强度与一致性参数。</p>}
                     {form.generation_type === "subtitle_remove" && <p className="mt-1.5 text-[11px] leading-5 text-amber-600">独立字幕轨由 Worker 使用 FFmpeg 无损移除，不产生模型费用；烧录在画面里的硬字幕必须配置支持局部修复/去字幕的模型。</p>}
@@ -1470,6 +1597,7 @@ export default function AgentsAdminPage() {
                 {form.generation_type !== "creative_agent" && !isVideoUtilityType(form.generation_type) && <Field label="默认生成数量"><input type="number" min={1} max={50} className="admin-input" value={form.default_count} onChange={(e) => setForm({ ...form, default_count: Math.max(1, Number(e.target.value) || 1) })} /></Field>}
                 {form.generation_type !== "creative_agent" && !isVideoUtilityType(form.generation_type) && <Field label="AI方案数量"><input type="number" min={1} max={5} className="admin-input" value={form.candidate_count} onChange={(e) => setForm({ ...form, candidate_count: Math.min(5, Math.max(1, Number(e.target.value) || 3)) })} /></Field>}
                 {form.generation_type !== "creative_agent" && <Field label="工作流收费"><input type="number" min={0} step="0.01" className="admin-input" value={form.unit_price} onChange={(e) => setForm({ ...form, unit_price: Number(e.target.value) || 0 })} /></Field>}
+                {form.code === "product_refine" && <p className="self-end text-[11px] leading-5 text-gray-400">预计费用 = 工作流收费 + 生成数量 × 所选图片模型的后台单价；自动修正不重复增加预计费用。</p>}
                 {form.generation_type === "creative_agent" && <p className="md:col-span-2 rounded-xl bg-gray-50 px-3 py-2 text-[11px] leading-5 text-gray-500">通用智能体不额外收取固定工作流费用，主聊天分析和最终图片或视频分别按所配置模型的实际计费规则结算。</p>}
                 {form.generation_type === "novel_workshop" && <p className="self-end text-[11px] leading-5 text-gray-400">总费用 = 工作流收费 + 大模型用量费；大模型用量费取「上游真实扣费」与「按模型设定的输入/输出/缓存单价计算的费用」中的较低者。创建时按目标篇幅预估冻结，完成/取消/失败按实际用量结算。</p>}
                 {isVideoUtilityType(form.generation_type) && <p className="self-end text-[11px] leading-5 text-gray-400">最终冻结金额 = 工作流收费 + 所选模型估算费用；完成后按实际模型任务费用结算。独立字幕轨移除不产生模型费用。</p>}

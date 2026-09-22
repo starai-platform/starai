@@ -28,7 +28,7 @@ func TestAnalysisSendsLocalReferencePixelsInEveryProtocol(t *testing.T) {
 	}
 	for _, spec := range []struct{ protocol, mode string }{{"openai", "chat"}, {"openai", "responses"}, {"claude", "chat"}, {"gemini", "chat"}} {
 		body, _ := buildWorkerLLMRequest(workerModelRoute{Protocol: spec.protocol}, spec.mode, "vision", "system", "user", 0.35)
-		applyAgentVisionContent(context.Background(), body, spec.protocol, spec.mode, "system", "user", refs)
+		applyComicVisionContent(context.Background(), body, spec.protocol, spec.mode, "system", "user", refs)
 		raw, _ := json.Marshal(body)
 		if !strings.Contains(string(raw), strings.SplitN(refs[0], ",", 2)[1]) || strings.Contains(string(raw), server.URL) {
 			t.Fatalf("%s/%s missing image bytes: %s", spec.protocol, spec.mode, raw)
@@ -69,7 +69,7 @@ func TestLLMMediaValidationAndVideoSerialization(t *testing.T) {
 	ref := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString([]byte("video fixture"))
 	for _, protocol := range []string{"openai", "gemini"} {
 		body, _ := buildWorkerLLMRequest(workerModelRoute{Protocol: protocol}, "chat", "model", "system", "user", 0.3)
-		applyAgentVisionContent(ctx, body, protocol, "chat", "system", "user", nil)
+		applyComicVisionContent(ctx, body, protocol, "chat", "system", "user", nil)
 		if err := applyWorkerVideoContent(ctx, body, protocol, []string{ref}); err != nil {
 			t.Fatal(err)
 		}

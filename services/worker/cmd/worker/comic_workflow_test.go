@@ -120,7 +120,7 @@ func TestComicCompositionPreservesEveryShotAtTargetDuration(t *testing.T) {
 				inputs["aspect_ratio"] = "9:16"
 				inputs["orientation"] = "portrait"
 			}
-			final, errMsg := composeComicDramaVideo(ctx, nil, "test", storyboards, segments, voices, inputs, nil)
+			final, errMsg := composeComicDramaVideo(ctx, nil, "test", storyboards, segments, voices, inputs, nil, "", "", WorkflowTaskPayload{})
 			if errMsg != "" {
 				t.Fatal(errMsg)
 			}
@@ -474,11 +474,11 @@ func TestComicNarrationPerspectiveAndSpeechSelection(t *testing.T) {
 	}
 }
 
-func TestComicIdentityPromptTreatsFirstReferenceAsIdentitySource(t *testing.T) {
+func TestComicIdentityPromptDoesNotAssumeFirstReferenceIsPerson(t *testing.T) {
 	prompt := comicIdentityPrompt(map[string]interface{}{
 		"reference_images": []interface{}{"https://cdn.example/hero.png"},
 	}, "scene prompt")
-	for _, expected := range []string{"immutable identity source", "facial geometry", "scene prompt"} {
+	for _, expected := range []string{"不交换人物身份", "不把场景或道具当作主角", "scene prompt"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("identity prompt does not contain %q: %s", expected, prompt)
 		}

@@ -45,6 +45,7 @@ func TestAgentLightweightDatabaseFlow(t *testing.T) {
 	_, err = pool.Exec(ctx, `CREATE TABLE conversations(id bigserial PRIMARY KEY,public_id text,user_id bigint,agent_state jsonb DEFAULT '{}',updated_at timestamptz DEFAULT now());
  CREATE TABLE conversation_messages(id bigserial PRIMARY KEY,conversation_id bigint,role text,content text);
  CREATE TABLE tasks(task_no text,user_id bigint,input jsonb,status text);
+ CREATE TABLE model_routes(model_id bigint,is_enabled bool);
  CREATE TABLE workflow_projects(public_id text,user_id bigint,inputs jsonb,outputs jsonb,status text);
  CREATE TABLE workflow_definitions(id bigserial PRIMARY KEY,code text UNIQUE,name text,description text,icon text,category text,nodes jsonb DEFAULT '[]',input_schema jsonb DEFAULT '{}',price_rule jsonb DEFAULT '{}',display_config jsonb DEFAULT '{}',runtime_config jsonb DEFAULT '{}',is_enabled boolean DEFAULT true,sort_order int DEFAULT 0,updated_at timestamptz DEFAULT now());
  CREATE TABLE models(id bigserial PRIMARY KEY,code text,display_name text DEFAULT '',new_api_model text DEFAULT '',new_api_endpoint text DEFAULT '',request_mode text DEFAULT 'video',category text DEFAULT 'video',icon_url text,description text,tags jsonb DEFAULT '[]',input_schema jsonb,default_params jsonb DEFAULT '{}',new_api_extra_params jsonb DEFAULT '{}',price_rule jsonb DEFAULT '{}',runtime_rule jsonb DEFAULT '{}',retention_days int DEFAULT 7,is_enabled boolean DEFAULT true,sort_order int DEFAULT 0);
@@ -180,7 +181,7 @@ func TestAgentLightweightDatabaseFlow(t *testing.T) {
 	}
 	// Reproduce the latest user's prompt-only correction through the real draft
 	// persistence/finalization path, not just the text classifier.
-	_, err = pool.Exec(ctx, `INSERT INTO conversations(public_id,user_id) VALUES ('prompt-edit',1)`)
+	_, err = pool.Exec(ctx, `INSERT INTO conversations(public_id,user_id) VALUES ('prompt-edit',1); INSERT INTO models(code,category,request_mode,input_schema) VALUES ('chat','chat','chat_completions','{}')`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,27 +190,32 @@ func TestAgentLightweightDatabaseFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	editDraft.Slots = map[string]interface{}{"script": "既有故事", "character": "学生", "target_duration_sec": 14}
-	editPlan, err := h.finalizeCreativeAgentDraft(ctx, 1, "prompt-edit", creativeAgentPlanRequest{Draft: editDraft}, map[string]interface{}{
+	editPlan, err := h.finalizeCreativeAgentDraft(ctx, 1, "prompt-edit", creativeAgentPlanRequest{Draft: editDraft, ModelCode: "chat"}, map[string]interface{}{
 		"intent": "workflow", "action": "update", "reply": "真人短片提示词：开场发现失窃，结尾交代结果。",
 	}, "帮我改成时长8秒 你现在只有文案，我需要完整的生成视频的提示词。不是文案")
 	if err != nil {
 		t.Fatal(err)
 	}
 	savedEdit, err := chat.GetAgentDraft(ctx, 1, "prompt-edit")
-	if err != nil || savedEdit.Status != "draft" || editPlan["intent"] != "chat" || savedEdit.Slots["generation_prompt"] == nil || creativeAgentPositiveInt(savedEdit.Slots["target_duration_sec"]) != 8 {
-		t.Fatalf("prompt editing offered execution: %#v %v", savedEdit, err)
+	if err != nil || savedEdit.Status != "draft" || editPlan["intent"] != "chat" || editPlan["needs_confirm"] != false || creativeAgentPositiveInt(savedEdit.Slots["target_duration_sec"]) != 8 {
+		t.Fatalf("prompt editing did not stay in chat: %#v %v", savedEdit, err)
 	}
-	if err = chat.ClaimAgentDraft(ctx, 1, "prompt-edit", savedEdit.Version); err == nil {
-		t.Fatal("text-only draft could be executed")
+	if err = chat.ClaimAgentDraft(ctx, 1, "prompt-edit", 0); err == nil {
+		t.Fatal("old text confirmation was accepted")
 	}
 	if editPlan["artifact"] == nil {
-		t.Fatal("validated artifact missing from response/history")
+		t.Fatal("completed prompt was not available for later media generation")
+	}
+	savedEdit.SlotIssues = map[string]string{"quality": "请选择支持的画质"}
+	chatPlan, err := h.finalizeCreativeAgentDraft(ctx, 1, "prompt-edit", creativeAgentPlanRequest{Draft: savedEdit, Preview: true}, map[string]interface{}{"intent": "chat", "reply": "工作效率是投入时间与完成工作的关系。"}, "解释一下工作效率")
+	if err != nil || chatPlan["intent"] != "chat" || chatPlan["needs_confirm"] != false {
+		t.Fatalf("ordinary chat was blocked by old media parameters: %#v %v", chatPlan, err)
 	}
 	badDraft, err := chat.BeginAgentDraftTurn(ctx, 1, "prompt-edit", savedEdit.Version)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = h.finalizeCreativeAgentDraft(ctx, 1, "prompt-edit", creativeAgentPlanRequest{Draft: badDraft}, map[string]interface{}{"intent": "chat", "reply": "[场景描述]：[具体场景，如：办公室]"}, "帮我重新写一个视频提示词")
+	_, err = h.finalizeCreativeAgentDraft(ctx, 1, "prompt-edit", creativeAgentPlanRequest{Draft: badDraft}, map[string]interface{}{"intent": "video", "slot_updates": map[string]interface{}{"generation_prompt": "[场景描述]：[具体场景，如：办公室]"}}, "根据提示词生成8秒视频")
 	if err != nil {
 		t.Fatal(err)
 	}

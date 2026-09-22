@@ -102,9 +102,28 @@ func processComposeTask(ctx context.Context, pool *pgxpool.Pool, p ComposeTaskPa
 		sources,
 		stringAny(p.Input["mode"]),
 		stringAny(p.Input["output_size"]),
+		intAny(p.Input["target_duration_sec"]),
 	)
 	if composeErr != nil {
 		return fail("COMPOSE_ERROR", composeErr.Error())
+	}
+	subtitleCount := 0
+	subtitleTiming := "script"
+	if outputKind == "video" && p.Input["subtitles"] != nil {
+		var subtitleErr error
+		raw := p.Input["subtitles"]
+		if stringAny(p.Input["subtitle_timing"]) == "speech" {
+			subtitleTiming = "script_fallback"
+			if cues, err := parseComposeSubtitles(raw); err == nil {
+				if adjusted, changed := alignComposeSubtitleTiming(ctx, outputPath, cues); changed {
+					raw, subtitleTiming = adjusted, "speech_boundaries"
+				}
+			}
+		}
+		outputPath, subtitleCount, subtitleErr = burnComposeSubtitles(ctx, tmpDir, outputPath, raw, stringAny(p.Input["subtitle_style"]))
+		if subtitleErr != nil {
+			return fail("COMPOSE_ERROR", "字幕烧录失败："+subtitleErr.Error())
+		}
 	}
 	outputData, err := os.ReadFile(outputPath)
 	if err != nil || len(outputData) == 0 {
@@ -119,6 +138,22 @@ func processComposeTask(ctx context.Context, pool *pgxpool.Pool, p ComposeTaskPa
 
 	outputKey := map[string]string{"image": "image_url", "video": "video_url", "audio": "audio_url"}[outputKind]
 	outputMap := map[string]interface{}{outputKey: publicURL, "url": publicURL, "media_kind": outputKind, "source_count": len(sources)}
+	if subtitleCount > 0 {
+		outputMap["subtitle_count"] = subtitleCount
+		outputMap["subtitle_timing"] = subtitleTiming
+		outputMap["subtitle_style"] = stringAny(p.Input["subtitle_style"])
+	}
+	if stringAny(p.Input["mode"]) == "speech" {
+		audio, readErr := os.ReadFile(filepath.Join(tmpDir, "speech.wav"))
+		if readErr != nil {
+			return fail("COMPOSE_ERROR", "读取镜头配音失败")
+		}
+		audioURL, uploadErr := objectStore.Upload(ctx, fmt.Sprintf("works/compose/%s/speech.wav", p.TaskNo), "audio/wav", bytes.NewReader(audio), int64(len(audio)))
+		if uploadErr != nil {
+			return fail("UPLOAD_FAILED", "上传镜头配音失败")
+		}
+		outputMap["speech_audio_url"] = audioURL
+	}
 	outputJSON, _ := json.Marshal(outputMap)
 	var taskID int64
 	pool.QueryRow(ctx, `SELECT id FROM tasks WHERE task_no=$1`, p.TaskNo).Scan(&taskID)
@@ -139,7 +174,127 @@ func processComposeTask(ctx context.Context, pool *pgxpool.Pool, p ComposeTaskPa
 	return nil
 }
 
-func composeCanvasMedia(ctx context.Context, tmpDir string, sources []composeSource, mode, outputSize string) (string, string, string, error) {
+type composeSubtitleCue struct {
+	StartSec       float64 `json:"start_sec"`
+	EndSec         float64 `json:"end_sec"`
+	Text           string  `json:"text"`
+	SecondaryText  string  `json:"secondary_text,omitempty"`
+	SpeechStartSec float64 `json:"speech_start_sec,omitempty"`
+	SpeechEndSec   float64 `json:"speech_end_sec,omitempty"`
+}
+
+func parseComposeSubtitles(raw interface{}) ([]composeSubtitleCue, error) {
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var cues []composeSubtitleCue
+	if err = json.Unmarshal(data, &cues); err != nil {
+		return nil, err
+	}
+	if len(cues) > 500 {
+		return nil, fmt.Errorf("字幕数量超过500条")
+	}
+	totalRunes := 0
+	for index := range cues {
+		cues[index].Text = wrapSubtitleText(strings.TrimSpace(cues[index].Text))
+		cues[index].SecondaryText = wrapSubtitleText(cues[index].SecondaryText)
+		totalRunes += len([]rune(cues[index].Text)) + len([]rune(cues[index].SecondaryText))
+		if cues[index].Text == "" || cues[index].StartSec < 0 || cues[index].EndSec <= cues[index].StartSec || cues[index].EndSec > 600 {
+			return nil, fmt.Errorf("第%d条字幕时间或文本无效", index+1)
+		}
+	}
+	if totalRunes > 30000 {
+		return nil, fmt.Errorf("字幕文本过长")
+	}
+	return cues, nil
+}
+
+func wrapSubtitleText(value string) string {
+	var wrapped []string
+	for _, raw := range strings.Split(strings.ReplaceAll(value, "\r", ""), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		// Keep authored phrases intact; libass handles responsive line wrapping.
+		wrapped = append(wrapped, line)
+	}
+	return strings.Join(wrapped, "\n")
+}
+
+func assTime(seconds float64) string {
+	centiseconds := int(seconds*100 + 0.5)
+	hours := centiseconds / 360000
+	centiseconds %= 360000
+	minutes := centiseconds / 6000
+	centiseconds %= 6000
+	return fmt.Sprintf("%d:%02d:%02d.%02d", hours, minutes, centiseconds/100, centiseconds%100)
+}
+
+func assText(value string) string {
+	value = strings.ReplaceAll(value, "\\", "\\\\")
+	value = strings.ReplaceAll(value, "{", "\\{")
+	value = strings.ReplaceAll(value, "}", "\\}")
+	value = strings.ReplaceAll(value, "\r", "")
+	return strings.ReplaceAll(value, "\n", "\\N")
+}
+
+func subtitleFilterPath(path string) string {
+	path = filepath.ToSlash(path)
+	for _, replacement := range [][2]string{{"\\", "\\\\"}, {":", "\\:"}, {"'", "\\'"}, {",", "\\,"}, {"[", "\\["}, {"]", "\\]"}} {
+		path = strings.ReplaceAll(path, replacement[0], replacement[1])
+	}
+	return path
+}
+
+func burnComposeSubtitles(ctx context.Context, tmpDir, inputPath string, raw interface{}, styles ...string) (string, int, error) {
+	cues, err := parseComposeSubtitles(raw)
+	if err != nil || len(cues) == 0 {
+		return inputPath, 0, err
+	}
+	width, height := probeMediaDimensions(ctx, inputPath)
+	if width <= 0 || height <= 0 {
+		return inputPath, 0, fmt.Errorf("无法读取成片尺寸")
+	}
+	style := "clean"
+	if len(styles) > 0 && styles[0] != "" {
+		style = styles[0]
+	}
+	content := composeSubtitleASS(cues, width, height, style)
+	assPath := filepath.Join(tmpDir, "subtitles.ass")
+	if err = os.WriteFile(assPath, []byte(content), 0600); err != nil {
+		return inputPath, 0, err
+	}
+	outputPath := filepath.Join(tmpDir, "result_subtitled.mp4")
+	filter := "subtitles=filename='" + subtitleFilterPath(assPath) + "'"
+	if err = runFFmpeg(ctx, "-y", "-i", inputPath, "-vf", filter, "-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "copy", "-movflags", "+faststart", outputPath); err != nil {
+		return inputPath, 0, err
+	}
+	return outputPath, len(cues), nil
+}
+
+func composeCanvasMedia(ctx context.Context, tmpDir string, sources []composeSource, mode, outputSize string, targetSeconds ...int) (string, string, string, error) {
+	if mode == "synced" {
+		if len(sources) != 2 || len(targetSeconds) == 0 || targetSeconds[0] <= 0 || sources[0].Kind != "video" || sources[1].Kind != "audio" {
+			return "", "", "", fmt.Errorf("同步结果需要视频和原配音")
+		}
+		for _, source := range sources {
+			duration, err := probeComicAudioDuration(ctx, source.Path)
+			if err != nil || duration < float64(targetSeconds[0])-0.1 || duration > float64(targetSeconds[0])+0.1 {
+				return "", "", "", fmt.Errorf("同步结果时长与原镜头不一致，请重试口型同步；未裁剪或变速")
+			}
+		}
+		// Keep the locked speech take; never retime the lip-synced frames.
+		return composeCanvasMedia(ctx, tmpDir, sources, "mux", outputSize)
+	}
+	if mode == "speech" {
+		seconds := 0
+		if len(targetSeconds) > 0 {
+			seconds = targetSeconds[0]
+		}
+		return prepareShotSpeech(ctx, tmpDir, sources, seconds)
+	}
 	var videos, audios, images []composeSource
 	for _, source := range sources {
 		switch source.Kind {
@@ -185,24 +340,35 @@ func composeCanvasMedia(ctx context.Context, tmpDir string, sources []composeSou
 		if width <= 0 || height <= 0 {
 			width, height = 1920, 1080
 		}
-		preserveSourceAudio := len(audios) == 0
-		if preserveSourceAudio {
-			for _, source := range videos {
-				if !mediaHasAudio(ctx, source.Path) {
-					preserveSourceAudio = false
-					break
-				}
+		// A silent shot must not remove the native dialogue from other shots.
+		preserveSourceAudio := false
+		sourceHasAudio := make([]bool, len(videos))
+		if len(audios) == 0 {
+			for index, source := range videos {
+				sourceHasAudio[index] = mediaHasAudio(ctx, source.Path)
+				preserveSourceAudio = preserveSourceAudio || sourceHasAudio[index]
 			}
 		}
 		normalized := make([]string, 0, len(videos))
 		for index, source := range videos {
 			path := filepath.Join(tmpDir, fmt.Sprintf("normalized_%03d.mp4", index+1))
 			filter := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black,setsar=1", width, height, width, height)
-			args := []string{"-y", "-i", source.Path, "-vf", filter, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-r", "30"}
+			args := []string{"-y", "-i", source.Path}
+			if preserveSourceAudio && !sourceHasAudio[index] {
+				args = append(args, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0", "-shortest")
+			}
+			args = append(args, "-vf", filter, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-r", "30")
 			if preserveSourceAudio {
 				args = append(args, "-c:a", "aac", "-ar", "48000", "-ac", "2")
 			} else {
 				args = append(args, "-an")
+			}
+			if len(targetSeconds) > 0 && targetSeconds[0] > 0 {
+				duration := float64(targetSeconds[0]) / float64(len(videos))
+				args = append(args, "-vf", filter+",tpad=stop_mode=clone:stop_duration=600", "-t", strconv.FormatFloat(duration, 'f', 6, 64))
+				if preserveSourceAudio {
+					args = append(args, "-af", "apad")
+				}
 			}
 			args = append(args, path)
 			if err := runFFmpeg(ctx, args...); err != nil {

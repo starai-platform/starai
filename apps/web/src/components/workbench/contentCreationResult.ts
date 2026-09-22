@@ -14,9 +14,9 @@ function publishSource(raw: string) {
       ? parsed.content_post
       : parsed) as Record<string, unknown>;
     const sections = [
-      textValue(post.title),
+      textValue(post.title ?? (Array.isArray(post.titles) ? post.titles[0] : "")),
       textValue(post.hook),
-      textValue(post.body ?? post.content),
+      textValue(post.body ?? post.body_markdown ?? post.content),
       textValue(post.cta),
       textValue(post.hashtags ?? post.tags),
     ].filter(Boolean);
@@ -26,6 +26,12 @@ function publishSource(raw: string) {
   }
 
   return source.split(/\n\s*[-*_#\s]*(?:配图(?:规划|方案|提示词)|image plan|visual plan)[-*_:#：\s]*(?:\n|$)/i, 1)[0].trim();
+}
+
+export function contentImageMarkersValid(raw: string, count: number): boolean {
+  if (!Number.isInteger(count) || count < 1) return false;
+  const markers = [...publishSource(raw).matchAll(/(?:【配图\s*(\d+)】|\[Image\s+(\d+)\])/gi)].map(match => Number(match[1] || match[2]));
+  return markers.length === count && markers.every((value, index) => value === index + 1);
 }
 
 function cleanMarkdown(value: string) {

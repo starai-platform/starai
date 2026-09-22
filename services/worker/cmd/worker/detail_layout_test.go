@@ -23,13 +23,18 @@ func TestDetailLayoutKeepsPhotoAndWrapsApprovedCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	header := result.Bounds().Dy() - photo.Bounds().Dy()
-	if header < 100 || result.Bounds().Dx() != 800 || result.At(24, header+35) != photo.At(24, 35) {
-		t.Fatal("photo changed or caption clipped")
+	if result.Bounds() != photo.Bounds() || result.At(24, 35) != photo.At(24, 35) {
+		t.Fatal("module size changed or pixels outside the copy card were overwritten")
 	}
-	hero, err := layoutDetailModule(photo, map[string]interface{}{"type": "hero", "copy_title": "Raincoat"}, typeface)
-	if err != nil || hero.Bounds().Dy() <= photo.Bounds().Dy() {
-		t.Fatal("hero hierarchy was not rendered", err)
+	if result.At(520, 300) == photo.At(520, 300) {
+		t.Fatal("copy card was not integrated into the planned safe area")
+	}
+	hero, err := layoutDetailModule(photo, map[string]interface{}{"type": "hero", "copy_title": "Raincoat", "_style": "background #f5f5f7, accent #102030"}, typeface)
+	if err != nil || hero.Bounds() != photo.Bounds() {
+		t.Fatal("hero hierarchy was not rendered in place", err)
+	}
+	if hero.At(40, 40) == photo.At(40, 40) {
+		t.Fatal("hero ignored the planned accent card")
 	}
 	blank, err := layoutDetailModule(photo, nil, typeface)
 	if err != nil || blank.Bounds() != photo.Bounds() {
@@ -38,6 +43,13 @@ func TestDetailLayoutKeepsPhotoAndWrapsApprovedCopy(t *testing.T) {
 	_, err = layoutDetailModule(photo, map[string]interface{}{"copy_title": "中文"}, typeface)
 	if err == nil {
 		t.Fatal("unsupported glyph silently rendered")
+	}
+}
+
+func TestDetailPaletteUsesNamedDesignSystemColors(t *testing.T) {
+	background, accent := detailPalette(`{"palette":{"accent":"#65A8FF","background":"#EEF7FF","primary":"#15304D"}}`)
+	if background != (color.RGBA{238, 247, 255, 255}) || accent != (color.RGBA{101, 168, 255, 255}) {
+		t.Fatalf("design system palette was reordered: background=%#v accent=%#v", background, accent)
 	}
 }
 

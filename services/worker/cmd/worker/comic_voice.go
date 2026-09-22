@@ -109,7 +109,7 @@ func comicVideoCheckpointCompatible(item map[string]interface{}, modelCode, aspe
 		stringAny(item["model_code"]) == modelCode &&
 		comicWorkerAspectRatio(stringAny(item["aspect_ratio"])) == aspect &&
 		stringAny(item["reference_image_url"]) == referenceImageURL &&
-		stringAny(item["prompt"]) == prompt
+		firstNonEmpty(stringAny(item["source_prompt"]), stringAny(item["prompt"])) == prompt
 }
 
 func comicAudioCheckpointCompatible(item map[string]interface{}, modelCode, gender, voice, speechText string) bool {

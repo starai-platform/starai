@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"log"
 	"reflect"
 	"regexp"
 	"sort"
@@ -23,6 +24,8 @@ var creativeSlotGuidance = map[string]string{
 	"use_previous_media":    "请明确是否引用上一条生成的素材",
 	"is_instrumental":       "请明确制作纯音乐还是带歌词的歌曲",
 	"voice_gender":          "请明确使用男声还是女声",
+	"speech_rate":           "请指定 0.5～2 倍语速",
+	"max_speech_rate":       "请指定允许加速的上限（0.5～2 倍）",
 	"prompt":                "请提供文本形式的制作需求（不超过 20000 字）",
 	"script":                "请提供完整文案正文（不超过 20000 字）",
 	"generation_prompt":     "请提供一个完整的生成提示词（不超过 20000 字）",
@@ -30,6 +33,10 @@ var creativeSlotGuidance = map[string]string{
 	"style":                 "请用文字描述风格（不超过 20000 字）",
 	"ending":                "请用文字描述结尾（不超过 20000 字）",
 	"music_prompt":          "请用文字描述曲风、情绪和场景（不超过 20000 字）",
+	"platform":              "请用文字说明发布平台或用途（不超过 20000 字）",
+	"image_count":           "图片或教学图页数量可选 1–6 张；更多内容请分批制作",
+	"document_page_count":   "文档图片页数可选 1–100 页，或使用自动分页",
+	"requirements":          "请将补充要求控制在 20000 字以内",
 }
 
 func normalizeCreativeSlotValue(key string, value interface{}) interface{} {
@@ -83,6 +90,35 @@ func prepareCreativeSlotUpdates(d *service.AgentDraft, updates, evidence map[str
 		d.SlotIssues = map[string]string{}
 	}
 	notes := []string{}
+	// Retire the obsolete minimum-two error instead of trapping saved drafts.
+	if d.SlotIssues["image_count"] == "图文配图数量可选 2–6 张" {
+		delete(d.SlotIssues, "image_count")
+		if count := creativeAgentRequestedImageCount(stringAny(d.Slots["prompt"])); count > 0 {
+			updates["image_count"] = count
+		}
+	}
+	if !creativeAgentTextOnly(text) && (creativeAgentContentImageWorkflowCue(text) || creativeAgentImageRequest(text) || stringAny(d.Slots["media_type"]) == "image" || stringAny(updates["media_type"]) == "image") {
+		if count := creativeAgentRequestedImageCount(text); count > 0 {
+			updates["image_count"], evidence["image_count"] = count, text
+		}
+	}
+	// Descriptive fields invented by the planner are not upstream parameters.
+	// Keep the user's wording while ignoring unrecognized executable fields.
+	for key := range updates {
+		if _, known := creativeSlotGuidance[key]; known {
+			continue
+		}
+		delete(updates, key)
+		delete(evidence, key)
+		log.Printf("creative agent: ignored unsupported proposed slot %q", key)
+		if strings.TrimSpace(text) != "" && !creativeAgentClarificationQuestion(text) {
+			previous := stringAny(d.Slots["requirements"])
+			if !strings.Contains(previous, strings.TrimSpace(text)) {
+				updates["requirements"] = strings.TrimSpace(previous + "\n" + text)
+				evidence["requirements"] = text
+			}
+		}
+	}
 	// Exact user constraints win even when the model omits or mistypes them.
 	if lo, hi, ok := creativeAgentRequestedDuration(nil, text); ok {
 		updates["target_duration_sec"], evidence["target_duration_sec"] = (lo+hi)/2, text
@@ -106,6 +142,10 @@ func prepareCreativeSlotUpdates(d *service.AgentDraft, updates, evidence map[str
 	if gender, quote, ok := creativeAgentRequestedVoiceGender(text); ok {
 		updates["voice_gender"], evidence["voice_gender"] = gender, quote
 	}
+	if rate, maxRate, ok := creativeAgentRequestedSpeechRates(text); ok {
+		updates["speech_rate"], evidence["speech_rate"] = rate, text
+		updates["max_speech_rate"], evidence["max_speech_rate"] = maxRate, text
+	}
 	if regexp.MustCompile(`纯音乐|无歌词|不要歌词|不需要歌词`).MatchString(text) {
 		updates["is_instrumental"], evidence["is_instrumental"] = true, text
 	} else if regexp.MustCompile(`带歌词|有人声|演唱|唱一首`).MatchString(text) {
@@ -118,12 +158,18 @@ func prepareCreativeSlotUpdates(d *service.AgentDraft, updates, evidence map[str
 	sort.Strings(keys)
 	for _, key := range keys {
 		value := updates[key]
-		guidance, known := creativeSlotGuidance[key]
-		if !known {
-			return nil, nil, nil, fmt.Errorf("本轮方案包含不支持的参数，原需求已保留；请说明要调整的内容，我会重新整理待确认方案")
-		}
+		guidance := creativeSlotGuidance[key]
 		quote := stringAny(evidence[key])
 		explicit := strings.TrimSpace(quote) != "" && strings.Contains(text, quote)
+		if key == "aspect_ratio" {
+			// A usage quote such as “官网” is a recommendation basis, not an
+			// explicit request for the planner's chosen orientation.
+			ratio, _, ok := creativeAgentRequestedAspectRatio(quote)
+			if !ok || ratio != normalizeCreativeSlotValue(key, value) {
+				explicit = false
+				delete(evidence, key)
+			}
+		}
 		qualityMentioned := regexp.MustCompile(`(?i)画质|清晰度|分辨率|高清|超清|\b(?:\d+[pk]|f?hd|uhd)\b`).MatchString(text)
 		if key == "quality" && !qualityMentioned {
 			// A quote like "做成视频" is not evidence of a quality preference.
@@ -159,6 +205,51 @@ func prepareCreativeSlotUpdates(d *service.AgentDraft, updates, evidence map[str
 		}
 	}
 	return updates, evidence, notes, nil
+}
+
+// Resolve common delivery contexts before model validation and canvas creation.
+// Explicit orientation always wins; mixed contexts require a user decision.
+func creativeAgentVideoAspectRatio(d *service.AgentDraft) {
+	d.Init()
+	if d.SlotIssues["aspect_ratio"] != "" {
+		return
+	}
+	ratio := stringAny(d.Slots["aspect_ratio"])
+	source := d.Sources["aspect_ratio"]
+	if requested, _, ok := creativeAgentRequestedAspectRatio(source.Evidence); ratio != "" && source.Source == "user" && ok && requested == ratio {
+		return
+	}
+	platform := strings.TrimSpace(stringAny(d.Slots["platform"]))
+	horizontal := regexp.MustCompile(`(?i)官网|官方网站|网站首页|桌面端|演示大屏|发布会大屏|website|landing\s*page`).MatchString(platform)
+	vertical := regexp.MustCompile(`(?i)抖音|tiktok|shorts|reels|手机全屏|移动端全屏`).MatchString(platform)
+	ambiguous := horizontal && !vertical && regexp.MustCompile(`(?i)手机|移动|mobile`).MatchString(platform)
+	if horizontal != vertical && !ambiguous {
+		ratio = "16:9"
+		if vertical {
+			ratio = "9:16"
+		}
+		d.SetSlot("aspect_ratio", ratio, "scenario", platform)
+		delete(d.SlotIssues, "aspect_ratio")
+	} else if horizontal || (platform == "" && source.Source == "inferred") || source.Source == "scenario" {
+		delete(d.Slots, "aspect_ratio")
+		delete(d.Sources, "aspect_ratio")
+	}
+}
+
+func creativeAgentRequestedSpeechRates(text string) (float64, float64, bool) {
+	if !regexp.MustCompile(`语速|倍速|加速|播放速度`).MatchString(text) {
+		return 0, 0, false
+	}
+	matches := regexp.MustCompile(`(\d+(?:\.\d+)?)\s*倍`).FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return 0, 0, false
+	}
+	rate, _ := strconv.ParseFloat(matches[0][1], 64)
+	maximum := rate
+	if len(matches) > 1 && regexp.MustCompile(`可以|允许|最高|最多|上限|必要时`).MatchString(text) {
+		maximum, _ = strconv.ParseFloat(matches[len(matches)-1][1], 64)
+	}
+	return rate, maximum, true
 }
 
 func creativeAgentRequestedVoiceGender(text string) (string, string, bool) {

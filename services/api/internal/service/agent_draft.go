@@ -17,18 +17,29 @@ type AgentSlotSource struct {
 	Version  int64  `json:"version"`
 }
 
+type AgentDocumentRevision struct {
+	Text         string   `json:"text"`
+	Version      int64    `json:"version"`
+	AssetIDs     []string `json:"asset_ids,omitempty"`
+	PendingEdits string   `json:"pending_edits,omitempty"`
+}
+
 // One active draft per conversation. Executed tasks keep their own immutable inputs.
 type AgentDraft struct {
-	Version       int64                      `json:"version"`
-	Status        string                     `json:"status"`
-	Slots         map[string]interface{}     `json:"slots"`
-	Sources       map[string]AgentSlotSource `json:"sources"`
-	Missing       []string                   `json:"missing_fields"`
-	Plan          map[string]interface{}     `json:"plan,omitempty"`
-	ExecutionRef  string                     `json:"execution_ref,omitempty"`
-	ExecutionKind string                     `json:"execution_kind,omitempty"`
-	Error         string                     `json:"error,omitempty"`
-	SlotIssues    map[string]string          `json:"slot_issues,omitempty"`
+	Version         int64                      `json:"version"`
+	Status          string                     `json:"status"`
+	Slots           map[string]interface{}     `json:"slots"`
+	Sources         map[string]AgentSlotSource `json:"sources"`
+	Missing         []string                   `json:"missing_fields"`
+	Plan            map[string]interface{}     `json:"plan,omitempty"`
+	ExecutionRef    string                     `json:"execution_ref,omitempty"`
+	ExecutionKind   string                     `json:"execution_kind,omitempty"`
+	Error           string                     `json:"error,omitempty"`
+	SlotIssues      map[string]string          `json:"slot_issues,omitempty"`
+	DocumentContext string                     `json:"document_context,omitempty"`
+	LastUserMessage string                     `json:"last_user_message,omitempty"`
+	IncompleteReply string                     `json:"incomplete_reply,omitempty"`
+	Document        *AgentDocumentRevision     `json:"document,omitempty"`
 }
 
 func (d *AgentDraft) Init() {
@@ -59,21 +70,27 @@ func ApplyAgentSlotUpdates(d *AgentDraft, updates, evidence map[string]interface
 	for key, value := range updates {
 		valid := false
 		switch key {
-		case "prompt", "script", "generation_prompt", "character", "style", "ending", "music_prompt", "platform":
+		case "prompt", "script", "generation_prompt", "character", "style", "ending", "music_prompt", "platform", "requirements":
 			s, ok := value.(string)
 			valid = ok && len([]rune(s)) <= 20000
 		case "media_type":
 			s, ok := value.(string)
-			valid = ok && (s == "image" || s == "video" || s == "speech" || s == "music")
+			valid = ok && (s == "text" || s == "image" || s == "video" || s == "speech" || s == "music")
 		case "voice_gender":
 			s, ok := value.(string)
 			valid = ok && (s == "male" || s == "female")
 		case "target_duration_sec":
 			n := intFromAgentAny(value)
 			valid = n >= 1 && n <= 600 && fmt.Sprint(n) == fmt.Sprint(value)
+		case "speech_rate", "max_speech_rate":
+			n, err := strconv.ParseFloat(fmt.Sprint(value), 64)
+			valid = err == nil && n >= 0.5 && n <= 2
 		case "image_count":
 			n := intFromAgentAny(value)
-			valid = n >= 2 && n <= 6 && fmt.Sprint(n) == fmt.Sprint(value)
+			valid = n >= 1 && n <= 6 && fmt.Sprint(n) == fmt.Sprint(value)
+		case "document_page_count":
+			n := intFromAgentAny(value)
+			valid = n >= 0 && n <= 100 && fmt.Sprint(n) == fmt.Sprint(value)
 		case "aspect_ratio":
 			s, ok := value.(string)
 			valid = ok && (s == "" || s == "16:9" || s == "9:16" || s == "1:1" || s == "4:3" || s == "3:4")
@@ -219,7 +236,9 @@ func (s *ChatService) BeginAgentDraftTurn(ctx context.Context, userID int64, con
 		return nil, errors.New("已确认的任务正在提交，请先查看任务状态，不要重复执行")
 	}
 	d.Version++
-	d.Status, d.ExecutionRef, d.ExecutionKind, d.Error, d.Plan = "planning", "", "", "", nil
+	// Keep the last proposal and execution reference available for discussion
+	// and incremental edits. Status and version fence execution during this turn.
+	d.Status, d.Error = "planning", ""
 	raw, _ := json.Marshal(d)
 	result, err := s.db.Exec(ctx, `UPDATE conversations SET agent_state=$3,updated_at=now()
 	 WHERE public_id=$1 AND user_id=$2 AND COALESCE((agent_state->>'version')::bigint,0)=$4
@@ -251,6 +270,19 @@ func (s *ChatService) SaveAgentDraft(ctx context.Context, userID int64, conversa
 
 func AgentConfirmationKey(conversationID string, version int64) string {
 	return fmt.Sprintf("%s:%d", conversationID, version)
+}
+
+// A failed planner is not an executable plan. Fence cleanup against cancellation,
+// successful finalization and newer turns; keep source material for a manual retry.
+func (s *ChatService) FailAgentPlanning(ctx context.Context, userID int64, conversationID string, version int64, message, partial string) error {
+	chars := []rune(partial)
+	if len(chars) > 8000 {
+		partial = string(chars[:8000]) + "\n[未完成草稿已截断，不可执行]"
+	}
+	patch, _ := json.Marshal(map[string]interface{}{"status": "failed", "error": message, "incomplete_reply": partial, "plan": nil})
+	_, err := s.db.Exec(ctx, `UPDATE conversations SET agent_state=agent_state || $4::jsonb,updated_at=now()
+	 WHERE public_id=$1 AND user_id=$2 AND (agent_state->>'version')::bigint=$3 AND agent_state->>'status'='planning'`, conversationID, userID, version, patch)
+	return err
 }
 
 func (s *ChatService) ClaimAgentDraft(ctx context.Context, userID int64, conversationID string, version int64) error {

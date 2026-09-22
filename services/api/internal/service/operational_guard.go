@@ -87,7 +87,7 @@ func (s *OpsService) operationalStats(ctx context.Context, workerHeartbeat *time
 	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM tasks WHERE status='pending'`).Scan(&st.PendingTasks)
 	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM tasks WHERE status='running'`).Scan(&st.RunningTasks)
 	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM tasks WHERE status IN ('pending','running') AND created_at < now() - interval '6 hours'`).Scan(&st.StaleTasks)
-	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM workflow_projects WHERE status IN ('pending','running') AND created_at < now() - interval '12 hours'`).Scan(&st.StaleWorkflows)
+	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM workflow_projects WHERE status IN ('pending','running','canceling') AND created_at < now() - interval '12 hours'`).Scan(&st.StaleWorkflows)
 	_ = s.db.QueryRow(ctx, `SELECT COUNT(*) FROM tasks WHERE status='failed' AND updated_at >= now() - interval '24 hours'`).Scan(&st.RecentFailedTasks)
 	if workerHeartbeat != nil {
 		formatted := workerHeartbeat.Format(time.RFC3339)
@@ -192,7 +192,7 @@ func (s *OpsService) ReleaseFrozenBalance(ctx context.Context, freezeID int64) (
 			return nil, err
 		}
 	case "workflow":
-		if _, err = tx.Exec(ctx, `UPDATE workflow_projects SET status='failed', error_message='Workflow released by admin', finished_at=now(), updated_at=now() WHERE public_id=$1 AND status IN ('pending','running')`, item.RefID); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE workflow_projects SET status='failed', error_message='Workflow released by admin', finished_at=now(), updated_at=now() WHERE public_id=$1 AND status IN ('pending','running','canceling')`, item.RefID); err != nil {
 			return nil, err
 		}
 	}
@@ -398,7 +398,7 @@ func (s *OpsService) failStaleWorkflows(ctx context.Context) (int, error) {
 			tx.Rollback(ctx)
 			continue
 		}
-		_, err = tx.Exec(ctx, `UPDATE workflow_projects SET status='failed', error_message='Workflow timed out by operational guard', finished_at=now(), updated_at=now() WHERE public_id=$1 AND status IN ('pending','running')`, publicID)
+		_, err = tx.Exec(ctx, `UPDATE workflow_projects SET status='failed', error_message='Workflow timed out by operational guard', finished_at=now(), updated_at=now() WHERE public_id=$1 AND status IN ('pending','running','canceling')`, publicID)
 		if err == nil {
 			_, err = tx.Exec(ctx, `UPDATE wallets SET frozen_compute=GREATEST(frozen_compute-$1,0), updated_at=now() WHERE user_id=$2`, amount, userID)
 		}
@@ -488,7 +488,7 @@ func (s *OpsService) settleStuckWorkflowFreeze(ctx context.Context, freezeID int
 		_, err := tx.Exec(ctx, `
 			UPDATE workflow_projects
 			SET status='canceled', actual_cost=$2, error_message=$3, finished_at=now(), updated_at=now()
-			WHERE id=$1 AND status IN ('pending','running','waiting_confirm')`, projectID, cumulativeCost, reason)
+			WHERE id=$1 AND status IN ('pending','running','canceling','waiting_confirm')`, projectID, cumulativeCost, reason)
 		return err
 	}
 	if chargeCost > 0 {
@@ -640,7 +640,7 @@ func (s *OpsService) failOrphanedStaleWorkflows(ctx context.Context) (int, error
 			UPDATE workflow_projects p SET status='failed',
 				error_message='Workflow timed out by operational guard',
 				finished_at=now(), updated_at=now()
-			WHERE p.status IN ('pending','running')
+			WHERE p.status IN ('pending','running','canceling')
 			  AND p.created_at < now() - interval '12 hours'
 			  AND NOT EXISTS (
 				SELECT 1 FROM balance_freezes f

@@ -28,7 +28,7 @@ func processNovelWorkshopWorkflow(
 	outputs := loadWorkflowOutputs(ctx, pool, p.ProjectID)
 	autopilot := boolAny(outputs["autopilot"]) || stringAny(inputs["_mode"]) == "auto"
 
-	pool.Exec(ctx, `UPDATE workflow_projects SET status='running', started_at=COALESCE(started_at, now()), updated_at=now() WHERE id=$1`, p.ProjectID)
+	pool.Exec(ctx, `UPDATE workflow_projects SET status='running', started_at=COALESCE(started_at, now()), updated_at=now() WHERE id=$1 AND status IN ('pending','running')`, p.ProjectID)
 
 	// 阶段1: 故事策划（Planning）
 	planning, ok := mapAny(outputs["planning"])
@@ -47,6 +47,9 @@ func processNovelWorkshopWorkflow(
 		outputs["current_stage"] = "planning_confirm"
 		outputs["autopilot"] = autopilot
 		saveWorkflowOutputs(ctx, pool, p.ProjectID, outputs)
+		if stopped, stopErr := stopWorkflowIfRequested(ctx, pool, p, publicID, estimated); stopped {
+			return stopErr
+		}
 
 		// 如果不是自动托管模式，暂停等待用户确认；
 		// 逐步确认模式按步骤分段扣费：策划完成先扣策划这一步的费用。
@@ -54,7 +57,7 @@ func processNovelWorkshopWorkflow(
 			if err := chargeStepBilling(ctx, pool, p.UserID, p.ProjectID, publicID, workflowActualCost(ctx, pool, p.ProjectID, outputs)); err != nil {
 				log.Printf("Novel project %s planning step billing failed: %v", publicID, err)
 			}
-			pool.Exec(ctx, `UPDATE workflow_projects SET status='waiting_confirm', updated_at=now() WHERE id=$1`, p.ProjectID)
+			pool.Exec(ctx, `UPDATE workflow_projects SET status='waiting_confirm', updated_at=now() WHERE id=$1 AND status='running'`, p.ProjectID)
 			return nil
 		}
 	}
@@ -110,6 +113,9 @@ func processNovelWorkshopWorkflow(
 	allChapters := flattenChapters(volumes)
 
 	for currentChapter < len(allChapters) {
+		if stopped, stopErr := stopWorkflowIfRequested(ctx, pool, p, publicID, estimated); stopped {
+			return stopErr
+		}
 		chapterInfo := allChapters[currentChapter]
 		chapterNumber := currentChapter + 1
 
@@ -216,6 +222,9 @@ func processNovelWorkshopWorkflow(
 		outputs["current_chapter"] = currentChapter
 		outputs["setting_ledger"] = settingLedger
 		saveWorkflowOutputs(ctx, pool, p.ProjectID, outputs)
+		if stopped, stopErr := stopWorkflowIfRequested(ctx, pool, p, publicID, estimated); stopped {
+			return stopErr
+		}
 
 		// 每完成batch_size章或完成一卷，暂停确认（如果不是自动托管）；
 		// 分段扣费：已完成的这批章节先结算，剩余冻结继续担保后续章节。
@@ -225,7 +234,7 @@ func processNovelWorkshopWorkflow(
 			if err := chargeStepBilling(ctx, pool, p.UserID, p.ProjectID, publicID, workflowActualCost(ctx, pool, p.ProjectID, outputs)); err != nil {
 				log.Printf("Novel project %s batch step billing failed: %v", publicID, err)
 			}
-			pool.Exec(ctx, `UPDATE workflow_projects SET status='waiting_confirm', updated_at=now() WHERE id=$1`, p.ProjectID)
+			pool.Exec(ctx, `UPDATE workflow_projects SET status='waiting_confirm', updated_at=now() WHERE id=$1 AND status='running'`, p.ProjectID)
 			return nil
 		}
 	}
@@ -591,12 +600,20 @@ func completeNovelWorkflow(
 	estimated float64,
 	outputs map[string]interface{},
 ) error {
+	if stopped, stopErr := stopWorkflowIfRequested(ctx, pool, p, publicID, estimated); stopped {
+		return stopErr
+	}
 	totalCost := workflowActualCost(ctx, pool, p.ProjectID, outputs)
 	chargeCost := incrementalWorkflowCharge(ctx, pool, p.ProjectID, totalCost)
 
 	if err := chargeBillingWithFinalize(ctx, pool, p.UserID, estimated, chargeCost, "workflow", publicID, "workflow_usage", "AI小说工坊", func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `
-			UPDATE workflow_projects SET status='succeeded', outputs=$1, actual_cost=$2, error_message=NULL, finished_at=now(), updated_at=now() WHERE id=$3 AND status='running'`,
+			UPDATE workflow_projects SET
+				status=CASE WHEN status='canceling' THEN 'canceled' ELSE 'succeeded' END,
+				outputs=$1, actual_cost=$2,
+				error_message=CASE WHEN status='canceling' THEN '用户已停止，已完成内容已保留' ELSE NULL END,
+				finished_at=now(), updated_at=now()
+			WHERE id=$3 AND status IN ('running','canceling')`,
 			mustJSON(outputs), totalCost, p.ProjectID)
 		if err != nil {
 			return err

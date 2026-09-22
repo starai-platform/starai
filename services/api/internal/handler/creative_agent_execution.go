@@ -19,20 +19,50 @@ func creativeAgentMediaRequest(text string) bool {
 	if creativeAgentContentImageWorkflowCue(text) {
 		return true
 	}
+	if creativeAgentSpeechRequest(text) {
+		return true
+	}
+	text = creativeAgentWithoutTextOnlyImages(text)
 	text = regexp.MustCompile(`(?i)(?:短视频|视频|短剧|图片|图像|图)(?:生成)?\s*(?:的)?\s*(提示词|prompt|文案|脚本)|生成(?:视频|图片|图)(?:的)?提示词`).ReplaceAllString(text, "文字稿")
 	return regexp.MustCompile(`(生成|制作|做成|合成|转成|画).{0,40}(视频|短视频|短剧|成片|图片|图像|图|海报|插画|配音|音乐|歌曲)`).MatchString(text)
 }
 
 func creativeAgentContentImageWorkflowCue(text string) bool {
+	if creativeAgentDocumentImageRequest(text) {
+		return true
+	}
 	text = strings.ToLower(strings.TrimSpace(text))
-	content := `(?:图文(?:内容|帖子|笔记|方案)?|配图(?:文案)?|轮播图|卡片图|小红书(?:笔记|帖子|内容)?|微信公众号(?:推文|文章|内容)?|公众号(?:推文|文章)|今日头条(?:文章|内容)?|头条文章)`
+	if regexp.MustCompile(`(?:不要|不用|无需|不需要)\s*(?:生成)?(?:配图|图片)|纯文字|只(?:要|写)(?:正文|文案|文字)`).MatchString(text) {
+		return false
+	}
+	content := `(?:图文(?:内容|帖子|笔记|方案)?|配图|轮播图|卡片图)`
 	return regexp.MustCompile(`(?:生成|制作|创作|产出|做|整理成|写|撰写).{0,32}` + content + `|` + content + `.{0,20}(?:生成|制作|创作|产出|做一套|撰写)`).MatchString(text)
+}
+
+func creativeAgentDocumentImageRequest(text string) bool {
+	if creativeAgentGenerationProhibited(text) || regexp.MustCompile(`只(?:要|写)(?:正文|文案|文字)|纯文字|(?:写|优化|修改|提供).{0,10}提示词|^(?:为什么|怎么|如何|解释|读取)`).MatchString(text) {
+		return false
+	}
+	action := regexp.MustCompile(`(?i)生成|制作|做成|做出|绘制|画成|转成|转为|整理成`).MatchString(text)
+	educational := regexp.MustCompile(`教辅|教学.{0,8}(?:图|册)|学习笔记|手绘笔记|知识卡|绘本|绘画册|图文画册|图文绘画册`).MatchString(text)
+	document := regexp.MustCompile(`(?i)(?:文档|word|pdf|docx|附件).{0,45}(?:图片|图页|插图|配图|图文|画册)`).MatchString(text)
+	visualBrief := educational && regexp.MustCompile(`图片|图页|图文画册|绘画册|知识卡`).MatchString(text) && regexp.MustCompile(`输出|排版|绘制|生成|制作`).MatchString(text)
+	return action && (educational || document) || visualBrief
+}
+
+func creativeAgentWithoutTextOnlyImages(text string) string {
+	if regexp.MustCompile(`(?:不要|不用|无需|不需要)\s*(?:生成)?(?:配图|图片)|纯文字|只(?:要|写)(?:正文|文案|文字)`).MatchString(text) {
+		text = regexp.MustCompile(`(?:不要|不用|无需|不需要)\s*(?:生成)?(?:配图|图片)`).ReplaceAllString(text, "")
+		text = strings.ReplaceAll(text, "图文", "文字")
+	}
+	return text
 }
 
 func creativeAgentImageRequest(text string) bool {
 	if creativeAgentGenerationProhibited(text) || creativeAgentContentImageWorkflowCue(text) {
 		return false
 	}
+	text = creativeAgentWithoutTextOnlyImages(text)
 	text = regexp.MustCompile(`(?i)(?:图片|图像|图)(?:生成)?\s*(?:的)?\s*(?:提示词|prompt|文案|脚本)|生成(?:图片|图)(?:的)?提示词`).ReplaceAllString(text, "文字稿")
 	return regexp.MustCompile(`(?:生成|制作|做成|画|出).{0,32}(?:图片|图像|图|海报|插画)`).MatchString(text)
 }
@@ -45,6 +75,10 @@ func creativeAgentVideoRequest(text string) bool {
 	return regexp.MustCompile(`(?:生成|制作|做成|合成|转成|拍).{0,40}(?:视频|短视频|短剧|成片)`).MatchString(text)
 }
 
+func creativeAgentSpeechRequest(text string) bool {
+	return !creativeAgentGenerationProhibited(text) && regexp.MustCompile(`(?:转换成|转成|生成|制作|合成|朗读|读出|转为).{0,35}(?:音频|语音|配音)|(?:朗读|配音).{0,20}(?:文案|正文|这段|这份)`).MatchString(text)
+}
+
 func creativeAgentGenerationProhibited(text string) bool {
 	return regexp.MustCompile(`^(取消|停止)|(?:先别|不要|不用|暂不|不需要)(再|继续|自动|立即|直接|现在|马上|帮我|去|先|\s)*(生成|制作|执行)`).MatchString(strings.TrimSpace(text))
 }
@@ -54,11 +88,15 @@ func creativeAgentPromptDraftRequest(text string) bool {
 }
 
 func creativeAgentWritingRequest(text string) bool {
-	return creativeAgentPromptDraftRequest(text) || regexp.MustCompile(`(写|创作|编|改|润色|完善|整理).{0,30}(文案|脚本|故事|歌词|文章|文字内容|资料|信息)|(?:文案|脚本|故事|歌词|文章|文字内容|资料|信息).{0,12}(改|润色|完善|整理)`).MatchString(text)
+	return creativeAgentPromptDraftRequest(text) || regexp.MustCompile(`(?i)(写|创作|编|改|润色|完善|整理|生成|导出).{0,30}(合同|协议|文档|条款|报告|简历|word|pdf|docx|文案|脚本|故事|歌词|文章|推文|笔记|文字内容|资料|信息)|(?:合同|协议|文档|条款|报告|简历|文案|脚本|故事|歌词|文章|文字内容|资料|信息).{0,12}(改|润色|完善|整理)`).MatchString(text)
 }
 
 func creativeAgentResearchOnly(text string) bool {
 	return !creativeAgentMediaRequest(text) && regexp.MustCompile(`搜索|联网|热搜|榜单|检索|提取.{0,20}(文案|内容)`).MatchString(text)
+}
+
+func creativeAgentClarificationQuestion(text string) bool {
+	return regexp.MustCompile(`^(这是什么|为什么|为何|怎么回事|什么意思|解释|说明|不对|有问题|具体.*(参数|不支持)|我不是.*(提交|说过|告诉))`).MatchString(strings.TrimSpace(text))
 }
 
 func creativeAgentTextOnly(text string) bool {
@@ -71,22 +109,22 @@ func creativeAgentTextOnly(text string) bool {
 	if creativeAgentContentImageWorkflowCue(text) {
 		return false
 	}
-	if creativeAgentPromptDraftRequest(text) || regexp.MustCompile(`^(这是什么|为什么|为何|怎么回事|什么意思|解释|说明|不对|有问题|你这.*(啥|什么)|你.*整理.*(啥|什么))`).MatchString(text) {
+	if creativeAgentPromptDraftRequest(text) || creativeAgentClarificationQuestion(text) || regexp.MustCompile(`^(你这.*(啥|什么)|你.*整理.*(啥|什么))`).MatchString(text) {
 		return true
 	}
 	// "生成视频文案" produces text; "根据文案生成视频" produces media.
 	if creativeAgentMediaRequest(text) {
 		return false
 	}
-	return regexp.MustCompile(`文案|脚本|歌词|文章|文字内容|资料|信息|写.{0,8}故事|解释|这是什么|什么意思|怎么回事|先别|先讨论`).MatchString(text)
+	return regexp.MustCompile(`(?i)合同|协议|文档|条款|报告|简历|\bword\b|\bpdf\b|\bdocx\b|文案|脚本|歌词|文章|推文|笔记|纯文字|文字内容|资料|信息|写.{0,8}故事|解释|这是什么|什么意思|怎么回事|先别|先讨论`).MatchString(text)
 }
 
 func guardCreativeAgentIntent(plan map[string]interface{}, text string) map[string]interface{} {
 	intent := strings.ToLower(strings.TrimSpace(stringAny(plan["intent"])))
-	if creativeAgentTextOnly(text) && intent != "chat" && intent != "clarify" {
+	if intent == "text" || (creativeAgentTextOnly(text) && intent != "chat" && intent != "clarify") {
 		reply := stringAny(plan["reply"])
-		if creativeAgentWritingRequest(text) && len([]rune(stringAny(plan["prompt"]))) > len([]rune(reply)) {
-			reply = stringAny(plan["prompt"])
+		if reply == "" && creativeAgentPromptDraftRequest(text) {
+			reply = creativeAgentArtifactCandidate(plan)
 		}
 		if reply == "" {
 			reply = "我先和你确认需求或解释当前内容，不会创建生成任务。"
@@ -95,6 +133,7 @@ func guardCreativeAgentIntent(plan map[string]interface{}, text string) map[stri
 		plan = copyStringMap(plan)
 		plan["intent"], plan["reply"], plan["prompt"] = "chat", reply, ""
 		plan["params"], plan["needs_confirm"] = map[string]interface{}{}, false
+		plan["workflow_code"] = ""
 		return plan
 	}
 	plan["needs_confirm"] = intent == "image" || intent == "video" || intent == "workflow" || intent == "speech" || intent == "music"
@@ -142,9 +181,19 @@ func prepareCreativeAgentVideoPlan(plan map[string]interface{}, text string, mod
 	}
 	plan["model_code"], plan["needs_confirm"] = model.Code, true
 	if count > 1 || seconds != target || stringAny(plan["intent"]) == "workflow" || creativeAgentWorkflowCue(text) {
-		plan["intent"], plan["workflow_code"] = "workflow", "ai_comic_drama"
+		requestedWorkflow := stringAny(plan["workflow_code"])
+		plan["intent"], plan["workflow_code"] = "workflow", "video_creation"
+		if requestedWorkflow == "one_click_viral_remake" || requestedWorkflow == "viral_remake" {
+			plan["workflow_code"] = requestedWorkflow
+		}
+		if strings.Contains(text, "复刻") || strings.Contains(text, "反推") {
+			plan["workflow_code"] = "one_click_viral_remake"
+		}
 		params["storyboard_grid"], params["segment_duration_sec"], params["_mode"] = count, seconds, "auto"
 		plan["reply"] = fmt.Sprintf("待确认：使用 %s 生成 %d 段素材（每段 %d 秒），对齐后合成为 %d 秒成品。确认后才开始生成。", model.Code, count, seconds, target)
+		if count == 1 && seconds > target {
+			plan["reply"] = fmt.Sprintf("已按 %d 秒成品规划。所选模型单次生成 %d 秒，将生成素材后裁剪到 %d 秒，保留你的目标时长。请核对内容方案后确认。", target, seconds, target)
+		}
 	} else {
 		plan["intent"], plan["workflow_code"] = "video", ""
 		plan["reply"] = fmt.Sprintf("待确认：使用 %s 生成一段 %d 秒视频。确认后才开始生成。", model.Code, target)

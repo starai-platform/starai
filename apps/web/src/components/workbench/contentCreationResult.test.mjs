@@ -1,3 +1,4 @@
+import { contentImageMarkersValid } from "./contentCreationResult.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { socialPublishHTML, socialPublishText } from "./contentCreationResult.ts";
@@ -36,4 +37,18 @@ test("distributes legacy visuals when the copy has no image markers", () => {
   const html = socialPublishHTML("标题：示例\n\n第一段。\n\n第二段。", ["a.png", "b.png"]);
   assert.ok(html.indexOf("a.png") > html.indexOf("第一段。"));
   assert.ok(html.indexOf("b.png") > html.indexOf("第二段。"));
+});
+
+
+test("copy contracts support variable image counts and document body fields", () => {
+  for (const count of [2, 4, 6]) {
+    const text = Array.from({ length: count }, (_, i) => `段落\n【配图${i + 1}】`).join("\n") + "\n---配图规划---\n规划";
+    assert.equal(contentImageMarkersValid(text, count), true);
+    assert.equal(contentImageMarkersValid(text, count + 1), false);
+  }
+  assert.equal(contentImageMarkersValid("【配图1】【配图1】", 2), false);
+  const text = socialPublishText(JSON.stringify({ titles: ["主标题", "备用"], body_markdown: "这是一段正文内容。" }));
+  assert.match(text, /主标题/);
+  assert.match(text, /正文/);
+  assert.doesNotMatch(text, /备用/);
 });

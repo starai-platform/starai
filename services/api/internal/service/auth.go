@@ -173,6 +173,14 @@ func (s *AuthService) LoginPassword(ctx context.Context, email, password string)
 	return s.issueToken(userID, publicID, nickname, avatar, level, memberLevel, memberLevelID, referralCode, referrerID, referrerPublic, locale)
 }
 
+func ValidateUserLoginDays(value interface{}) error {
+	days, ok := value.(float64)
+	if !ok || days < 1 || days > 365 || days != float64(int(days)) {
+		return errors.New("用户登录有效期必须是 1–365 天的整数")
+	}
+	return nil
+}
+
 func (s *AuthService) issueToken(userID int64, publicID, nickname string, avatar *string, level, memberLevel string, memberLevelID int64, referralCode string, referrerID *int64, referrerPublic *string, locale string) (*AuthResult, error) {
 	claims := middleware.UserClaims{
 		UserID:   userID,

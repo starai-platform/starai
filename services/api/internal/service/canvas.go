@@ -72,8 +72,61 @@ func validateCanvasInput(input *SaveCanvasInput) error {
 	if err := json.Unmarshal(input.Document, &shape); err != nil {
 		return errors.New("画布数据格式无效")
 	}
+	if shape.Nodes == nil || shape.Edges == nil {
+		return errors.New("画布节点和连线必须是数组")
+	}
 	if len(shape.Nodes) > 500 || len(shape.Edges) > 1000 {
 		return errors.New("单个画布最多支持 500 个节点和 1000 条连线")
+	}
+	indegree := make(map[string]int, len(shape.Nodes))
+	for _, raw := range shape.Nodes {
+		var node struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &node); err != nil || strings.TrimSpace(node.ID) == "" {
+			return errors.New("画布节点缺少有效编号")
+		}
+		if _, exists := indegree[node.ID]; exists {
+			return errors.New("画布节点编号不能重复")
+		}
+		indegree[node.ID] = 0
+	}
+	edgeIDs := make(map[string]bool, len(shape.Edges))
+	outgoing := make(map[string][]string)
+	for _, raw := range shape.Edges {
+		var edge struct {
+			ID     string `json:"id"`
+			Source string `json:"source"`
+			Target string `json:"target"`
+		}
+		if err := json.Unmarshal(raw, &edge); err != nil || strings.TrimSpace(edge.ID) == "" || edgeIDs[edge.ID] {
+			return errors.New("画布连线编号无效或重复")
+		}
+		edgeIDs[edge.ID] = true
+		_, sourceExists := indegree[edge.Source]
+		_, targetExists := indegree[edge.Target]
+		if !sourceExists || !targetExists {
+			return errors.New("画布连线引用了不存在的节点")
+		}
+		indegree[edge.Target]++
+		outgoing[edge.Source] = append(outgoing[edge.Source], edge.Target)
+	}
+	queue := make([]string, 0, len(indegree))
+	for id, degree := range indegree {
+		if degree == 0 {
+			queue = append(queue, id)
+		}
+	}
+	for index := 0; index < len(queue); index++ {
+		for _, target := range outgoing[queue[index]] {
+			indegree[target]--
+			if indegree[target] == 0 {
+				queue = append(queue, target)
+			}
+		}
+	}
+	if len(queue) != len(shape.Nodes) {
+		return errors.New("画布连线不能形成循环")
 	}
 	return nil
 }
@@ -82,14 +135,14 @@ func (s *CanvasService) Create(ctx context.Context, userID int64, input SaveCanv
 	if err := validateCanvasInput(&input); err != nil {
 		return nil, err
 	}
-	item := &CanvasDTO{PublicID: util.NewPublicID("canvas")}
+	item := &CanvasDTO{PublicID: util.NewPublicID("canvas"), Document: input.Document}
 	var created, updated time.Time
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO infinite_canvases (public_id, user_id, workflow_code, title, document)
 		VALUES ($1,$2,$3,$4,$5)
-		RETURNING workflow_code, title, document, created_at, updated_at`,
+		RETURNING workflow_code, title, created_at, updated_at`,
 		item.PublicID, userID, input.WorkflowCode, input.Title, input.Document).
-		Scan(&item.WorkflowCode, &item.Title, &item.Document, &created, &updated)
+		Scan(&item.WorkflowCode, &item.Title, &created, &updated)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +151,7 @@ func (s *CanvasService) Create(ctx context.Context, userID int64, input SaveCanv
 	return item, nil
 }
 
-func (s *CanvasService) List(ctx context.Context, userID int64, workflowCode string, page, pageSize int) ([]CanvasDTO, int, error) {
+func (s *CanvasService) List(ctx context.Context, userID int64, workflowCode string, page, pageSize int, includeTotal ...bool) ([]CanvasDTO, int, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -109,8 +162,10 @@ func (s *CanvasService) List(ctx context.Context, userID int64, workflowCode str
 	if workflowCode == "" {
 		workflowCode = "infinite_canvas"
 	}
-	var total int
-	if err := s.db.QueryRow(ctx, `
+	total := -1
+	countTotal := len(includeTotal) == 0 || includeTotal[0]
+	if countTotal {
+		if err := s.db.QueryRow(ctx, `
 		SELECT COUNT(*)
 		FROM infinite_canvases
 		WHERE user_id=$1 AND workflow_code=$2
@@ -124,7 +179,12 @@ func (s *CanvasService) List(ctx context.Context, userID int64, workflowCode str
 		         OR CASE WHEN jsonb_typeof(node->'data'->'taskNos') = 'array' THEN jsonb_array_length(node->'data'->'taskNos') ELSE 0 END > 0
 		    )
 		  )`, userID, workflowCode).Scan(&total); err != nil {
-		return nil, 0, err
+			return nil, 0, err
+		}
+	}
+	limit := pageSize
+	if !countTotal {
+		limit++
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT public_id, workflow_code, title, created_at, updated_at
@@ -140,8 +200,8 @@ func (s *CanvasService) List(ctx context.Context, userID int64, workflowCode str
 		         OR CASE WHEN jsonb_typeof(node->'data'->'taskNos') = 'array' THEN jsonb_array_length(node->'data'->'taskNos') ELSE 0 END > 0
 		    )
 		  )
-		ORDER BY updated_at DESC
-		LIMIT $3 OFFSET $4`, userID, workflowCode, pageSize, (page-1)*pageSize)
+		ORDER BY updated_at DESC, id DESC
+		LIMIT $3 OFFSET $4`, userID, workflowCode, limit, (page-1)*pageSize)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -181,14 +241,15 @@ func (s *CanvasService) Update(ctx context.Context, userID int64, publicID strin
 		return nil, err
 	}
 	var item CanvasDTO
+	item.Document = input.Document
 	var created, updated time.Time
 	err := s.db.QueryRow(ctx, `
 		UPDATE infinite_canvases
 		SET title=$3, document=$4, updated_at=now()
 		WHERE user_id=$1 AND public_id=$2
-		RETURNING public_id, workflow_code, title, document, created_at, updated_at`,
+		RETURNING public_id, workflow_code, title, created_at, updated_at`,
 		userID, publicID, input.Title, input.Document).
-		Scan(&item.PublicID, &item.WorkflowCode, &item.Title, &item.Document, &created, &updated)
+		Scan(&item.PublicID, &item.WorkflowCode, &item.Title, &created, &updated)
 	if err != nil {
 		return nil, err
 	}

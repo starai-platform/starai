@@ -1,10 +1,26 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
+let redirectingToLogin = false;
 const responseCache = new Map<string, { expiresAt: number; promise: Promise<unknown> }>();
 const MAX_RESPONSE_CACHE_ENTRIES = 128;
 
 export function clearApiCache() {
   responseCache.clear();
+}
+
+export function clearUserSession() {
+  if (typeof window === "undefined") return;
+  clearApiCache();
+  localStorage.removeItem("token");
+  localStorage.removeItem("starai_session");
+  localStorage.removeItem("user");
+}
+
+export function redirectToLogin() {
+  if (typeof window === "undefined" || redirectingToLogin) return;
+  redirectingToLogin = true;
+  clearUserSession();
+  window.location.replace("/?login=1&reason=expired");
 }
 
 export function hasUserSession() {
@@ -36,6 +52,9 @@ function responseMessage(value: unknown): string {
 }
 
 async function parseResponse<T>(res: Response, fallback: string): Promise<T> {
+  if (res.status === 401 && typeof window !== "undefined" && window.location.pathname.startsWith("/app")) {
+    redirectToLogin();
+  }
   const raw = await res.text();
   let json: unknown;
   try {
@@ -78,6 +97,16 @@ export async function api<T>(
   return parseResponse<T>(res, "请求失败");
 }
 
+export async function apiBlob(path: string, options: RequestInit = {}): Promise<Blob> {
+  const res = await fetch(`${API_URL}${path}`, {
+    ...options,
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...localeHeaders(), ...legacyAuthHeaders(), ...(options.headers as Record<string, string>) },
+  });
+  if (!res.ok) await parseResponse(res, "文件下载失败");
+  return res.blob();
+}
+
 /**
  * Fetch localized content with the locale captured by the React render that
  * started the request. Reading localStorage inside api() alone is not enough:
@@ -112,6 +141,7 @@ function cachedRequest<T>(key: string, ttlMs: number, request: () => Promise<T>)
   }
 
   const promise = request().catch((error) => {
+    // A request from before expiry or logout must not delete its replacement.
     if (responseCache.get(key)?.promise === promise) responseCache.delete(key);
     throw error;
   });
@@ -119,6 +149,7 @@ function cachedRequest<T>(key: string, ttlMs: number, request: () => Promise<T>)
   return promise;
 }
 
+/** Coalesces short-lived read-only requests so nested workbench panels do not refetch the same metadata. */
 export function apiCached<T>(path: string, ttlMs = 30_000, varyByLocale = true): Promise<T> {
   const locale = varyByLocale && typeof window !== "undefined"
     ? localStorage.getItem("site_locale") || "zh-CN"

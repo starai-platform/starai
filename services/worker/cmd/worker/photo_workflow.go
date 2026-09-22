@@ -107,8 +107,11 @@ func processPhotoStudioWorkflow(ctx context.Context, pool *pgxpool.Pool, baseURL
 		outputs["current_step"] = "confirm"
 		outputs["autopilot"] = autopilot
 		saveWorkflowOutputs(ctx, pool, p.ProjectID, outputs)
+		if stopped, stopErr := stopWorkflowIfRequested(ctx, pool, p, publicID, estimated); stopped {
+			return stopErr
+		}
 		if !autopilot {
-			pool.Exec(ctx, `UPDATE workflow_projects SET status='waiting_confirm', updated_at=now() WHERE id=$1`, p.ProjectID)
+			pool.Exec(ctx, `UPDATE workflow_projects SET status='waiting_confirm', updated_at=now() WHERE id=$1 AND status='running'`, p.ProjectID)
 			return nil
 		}
 	}

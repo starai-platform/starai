@@ -1,5 +1,7 @@
 "use client";
 
+import { pollAsync } from "@/lib/pollAsync";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, CheckCircle2, Download, Film, FolderOpen, History, Image as ImageIcon, Loader2, RefreshCw, Sparkles, Upload, X } from "lucide-react";
 import { api, listAssets, uploadAsset } from "@/lib/api";
@@ -216,7 +218,8 @@ export function VideoUpscaleWorkspace({ workflow }: { workflow: WorkflowLike }) 
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [activeFeature, setActiveFeature] = useState(0);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollRef = useRef<(() => void) | null>(null);
+  const pollScopeRef = useRef<string | null>(null);
   const activeProjectKey = `video_utility_active_project:${workflow.code}`;
   const display = workflow.display_config || {};
   const fallbackFeatures: UtilityFeature[] = isRedraw
@@ -254,12 +257,18 @@ export function VideoUpscaleWorkspace({ workflow }: { workflow: WorkflowLike }) 
   useEffect(() => {
     if (!resolutions.includes(resolution)) setResolution(resolutions[0]);
   }, [resolution, resolutions]);
-  useEffect(() => () => {
-    if (pollRef.current) clearInterval(pollRef.current);
-  }, []);
+  useEffect(() => {
+    pollScopeRef.current = workflow.code;
+    return () => {
+      pollScopeRef.current = null;
+      pollRef.current?.();
+    };
+  }, [workflow.code]);
   useEffect(() => {
     if (project) return;
-    const timer = window.setInterval(() => setActiveFeature((value) => (value + 1) % Math.max(1, features.length)), 3600);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) setActiveFeature((value) => (value + 1) % Math.max(1, features.length));
+    }, 3600);
     return () => window.clearInterval(timer);
   }, [features.length, project]);
   useEffect(() => {
@@ -284,13 +293,15 @@ export function VideoUpscaleWorkspace({ workflow }: { workflow: WorkflowLike }) 
   const busy = project?.status === "pending" || project?.status === "running";
 
   const startPolling = (id: string) => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(async () => {
+    if (pollScopeRef.current !== workflow.code) return;
+    pollRef.current?.();
+    pollRef.current = pollAsync(async (signal) => {
       try {
-        const next = await api<Project>(`/api/agent-projects/${id}`);
+        const next = await api<Project>(`/api/agent-projects/${id}`, { signal });
+        if (signal.aborted) return;
         setProject(next);
         if (["succeeded", "failed", "canceled"].includes(next.status)) {
-          if (pollRef.current) clearInterval(pollRef.current);
+          pollRef.current?.();
         }
       } catch {
         // Keep the currently visible progress while a transient request is retried.
@@ -438,7 +449,7 @@ export function VideoUpscaleWorkspace({ workflow }: { workflow: WorkflowLike }) 
       await api(`/api/agent-projects/${project.public_id}/cancel`, { method: "POST" });
       const next = await api<Project>(`/api/agent-projects/${project.public_id}`);
       setProject(next);
-      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : ts("取消任务失败"));
     }
@@ -526,7 +537,7 @@ export function VideoUpscaleWorkspace({ workflow }: { workflow: WorkflowLike }) 
                 {isRedraw && styleReference && (
                   <div className="group/style relative min-h-[96px] w-24 shrink-0 overflow-hidden rounded-2xl border border-violet-100 bg-gray-100 dark:border-violet-400/20 dark:bg-white/5 sm:min-h-0 sm:w-20">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={styleReference.url} alt={styleReference.name} className="h-full min-h-[88px] w-full object-cover" />
+                    <img loading="lazy" decoding="async" src={styleReference.url} alt={styleReference.name} className="h-full min-h-[88px] w-full object-cover" />
                     <div className="absolute inset-x-0 bottom-0 truncate bg-black/65 px-1.5 py-1 text-center text-[9px] text-white">{ts("风格参考")}</div>
                     <button type="button" onClick={() => setStyleReference(null)} className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/65 text-white"><X size={11} /></button>
                   </div>
@@ -644,7 +655,7 @@ export function VideoUpscaleWorkspace({ workflow }: { workflow: WorkflowLike }) 
                 </div>
                 <div className="mt-4 rounded-2xl border border-violet-100 bg-violet-50/40 p-3 dark:border-violet-400/15 dark:bg-violet-400/5">
                   <div className="mb-2 flex items-center justify-between"><span className="flex items-center gap-2 text-sm font-medium"><ImageIcon size={15} />{ts("风格参考图（可选）")}</span>{styleReference && <button type="button" onClick={() => setStyleReference(null)} className="text-gray-400"><X size={14} /></button>}</div>
-                  {styleReference ? <div className="flex items-center gap-3"><img src={styleReference.url} alt="" className="h-16 w-16 rounded-xl object-cover" /><span className="min-w-0 flex-1 truncate text-xs">{styleReference.name}</span></div> : <div className="grid grid-cols-2 gap-2">
+                  {styleReference ? <div className="flex items-center gap-3"><img loading="lazy" decoding="async" src={styleReference.url} alt="" className="h-16 w-16 rounded-xl object-cover" /><span className="min-w-0 flex-1 truncate text-xs">{styleReference.name}</span></div> : <div className="grid grid-cols-2 gap-2">
                     <label className="flex h-10 cursor-pointer items-center justify-center gap-2 rounded-xl border border-violet-200 bg-white text-xs text-violet-700 dark:bg-white/5"><Upload size={14} />{ts("上传图片")}<input type="file" accept="image/*" className="hidden" onChange={(event) => { void selectStyleFile(event.target.files?.[0]); event.target.value = ""; }} /></label>
                       <button type="button" onClick={openStyleAssets} className="flex h-10 items-center justify-center gap-2 rounded-xl border border-violet-200 bg-white text-xs text-violet-700 dark:bg-white/5"><FolderOpen size={14} />{ts("资产库")}</button>
                   </div>}
@@ -660,7 +671,7 @@ export function VideoUpscaleWorkspace({ workflow }: { workflow: WorkflowLike }) 
                 <div className="mt-5">
                   <div className="mb-2 text-xs text-gray-400">{ts("处理模式")}</div>
                   <div className="grid grid-cols-3 gap-2">
-                    {[["auto", "自动识别"], ["soft_track", "字幕轨"], ["hardcoded_ai", "硬字幕 AI"]].map(([value, label]) => <button key={value} type="button" onClick={() => setSubtitleMode(value)} className={`min-h-10 rounded-xl border px-2 text-xs ${subtitleMode === value ? "border-emerald-400 bg-emerald-50 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200" : "border-gray-100 text-gray-500 dark:border-white/10"}`}>{label}</button>)}
+                    {[["auto", ts("自动识别")], ["soft_track", ts("字幕轨")], ["hardcoded_ai", ts("硬字幕 AI")]].map(([value, label]) => <button key={value} type="button" onClick={() => setSubtitleMode(value)} className={`min-h-10 rounded-xl border px-2 text-xs ${subtitleMode === value ? "border-emerald-400 bg-emerald-50 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200" : "border-gray-100 text-gray-500 dark:border-white/10"}`}>{label}</button>)}
                   </div>
                 </div>
                 <div className="mt-4">
@@ -676,7 +687,7 @@ export function VideoUpscaleWorkspace({ workflow }: { workflow: WorkflowLike }) 
               <span><span className="font-medium">{t("upscale.preserveAudio")}</span><span className="mt-0.5 block text-[11px] text-gray-400">{t("upscale.preserveAudioDesc")}</span></span>
               <input type="checkbox" checked={preserveAudio} onChange={(event) => setPreserveAudio(event.target.checked)} className="h-4 w-4 accent-cyan-500" />
             </label>
-            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={2} placeholder={isRedraw ? "描述目标画风，例如：日系动漫、厚涂插画、赛博朋克电影感" : isSubtitle ? "可选：补充字幕位置或需要保护的画面元素" : t("upscale.prompt")} className="mt-4 min-h-[64px] resize-none rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-sm outline-none focus:border-cyan-300 dark:border-white/10 dark:bg-white/5" />
+            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={2} placeholder={isRedraw ? ts("描述目标画风，例如：日系动漫、厚涂插画、赛博朋克电影感") : isSubtitle ? ts("可选：补充字幕位置或需要保护的画面元素") : t("upscale.prompt")} className="mt-4 min-h-[64px] resize-none rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-sm outline-none focus:border-cyan-300 dark:border-white/10 dark:bg-white/5" />
 
             {project && (
               <div className="mt-4 rounded-2xl border border-gray-100 bg-gray-50 p-3 dark:border-white/10 dark:bg-white/5">
@@ -686,7 +697,7 @@ export function VideoUpscaleWorkspace({ workflow }: { workflow: WorkflowLike }) 
                 </div>
                 <div className="mt-2 h-2 overflow-hidden rounded-full bg-gray-200 dark:bg-white/10"><div className={`h-full rounded-full transition-all ${project.status === "failed" ? "bg-red-500" : "bg-cyan-500"}`} style={{ width: `${progress}%` }} /></div>
                 {project.status === "failed" && <div className="mt-2 text-xs leading-5 text-red-500">{project.error_message || latestTask?.error_message || "处理失败"}</div>}
-                {project.status === "succeeded" && <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-gray-400"><span>{isUpscale ? `${t("upscale.target")}：${project.outputs?.target_resolution || resolution}` : isSubtitle ? `处理路径：${project.outputs?.subtitle_mode === "soft_track" ? "独立字幕轨无损移除" : "AI 硬字幕修复"}` : `风格强度：${Math.round(styleStrength * 100)}%`}</span><span>{t("upscale.actualCost", { value: Number(project.actual_cost || 0).toFixed(2) })}</span></div>}
+                {project.status === "succeeded" && <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-gray-400"><span>{isUpscale ? `${t("upscale.target")}：${project.outputs?.target_resolution || resolution}` : isSubtitle ? `处理路径：${project.outputs?.subtitle_mode === "soft_track" ? ts("独立字幕轨无损移除") : ts("AI 硬字幕修复")}` : `风格强度：${Math.round(styleStrength * 100)}%`}</span><span>{t("upscale.actualCost", { value: Number(project.actual_cost || 0).toFixed(2) })}</span></div>}
               </div>
             )}
             {error && <div className="mt-3 text-xs leading-5 text-red-500">{error}</div>}
@@ -744,7 +755,7 @@ export function VideoUpscaleWorkspace({ workflow }: { workflow: WorkflowLike }) 
                 <div className="flex items-center justify-between"><div><div className="font-semibold">{ts("选择风格参考图")}</div><div className="mt-1 text-xs text-gray-400">{ts("只显示当前账号可访问的图片资产")}</div></div><button onClick={() => setStyleAssetOpen(false)} className="flex h-9 w-9 items-center justify-center rounded-xl bg-gray-100 dark:bg-white/10"><X size={16} /></button></div>
             <div className="mt-4 grid max-h-[60vh] grid-cols-2 gap-3 overflow-y-auto pr-1 sm:grid-cols-4">
               {styleAssets.map((asset) => <button key={asset.public_id} type="button" onClick={() => { setStyleReference({ url: asset.url, name: asset.name || "风格参考图", public_id: asset.public_id }); setStyleAssetOpen(false); }} className="overflow-hidden rounded-xl border border-gray-100 bg-gray-50 text-left hover:border-violet-300 dark:border-white/10 dark:bg-white/5">
-                <img src={asset.url} alt="" className="aspect-square w-full object-cover" />
+                <img loading="lazy" decoding="async" src={asset.url} alt="" className="aspect-square w-full object-cover" />
                 <div className="truncate px-3 py-2 text-xs font-medium">{asset.name || "图片资产"}</div>
               </button>)}
               {styleAssets.length === 0 && <div className="col-span-full py-16 text-center text-sm text-gray-400">{ts("暂无可用图片资产")}</div>}

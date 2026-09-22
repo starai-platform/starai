@@ -45,6 +45,59 @@ func TestAgentDraftQuestionsAndNewTasks(t *testing.T) {
 	}
 }
 
+func TestAgentDraftDurationSurvivesPromptApprovalAndAspectClarification(t *testing.T) {
+	d := &service.AgentDraft{Version: 1, Slots: map[string]interface{}{"media_type": "video", "character": "玛利亚", "script": "已确定的理财文案", "target_duration_sec": 30}}
+	for i, turn := range []struct {
+		text    string
+		updates map[string]interface{}
+	}{
+		{"把视频压缩到15秒左右，然后出提示词", map[string]interface{}{"generation_prompt": "0-3秒展示存钱罐，3-12秒展示钱币增长动画，12-15秒人物微笑收尾。"}},
+		{"嗯，按上面的提示词给我生成视频", nil},
+		{"手机全屏短视频", map[string]interface{}{"platform": "手机全屏短视频"}},
+	} {
+		d.Version++
+		intent := "workflow"
+		if i == 0 {
+			intent = "chat"
+		}
+		if i == 2 {
+			d.Missing = []string{"aspect_ratio"}
+		}
+		plan := map[string]interface{}{"intent": intent, "action": "new_task", "slot_updates": turn.updates}
+		if err := mergeCreativeAgentDraft(d, plan, turn.text); err != nil {
+			t.Fatal(err)
+		}
+		if creativeAgentPositiveInt(d.Slots["target_duration_sec"]) != 15 || d.Slots["character"] != "玛利亚" || d.Slots["generation_prompt"] == nil {
+			t.Fatalf("turn %q lost established requirements: %#v", turn.text, d.Slots)
+		}
+		// Match the persisted JSON boundary between actual conversation turns.
+		raw, _ := json.Marshal(d)
+		if err := json.Unmarshal(raw, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	creativeAgentVideoAspectRatio(d)
+	if d.Slots["aspect_ratio"] != "9:16" || d.Sources["target_duration_sec"].Evidence != "把视频压缩到15秒左右，然后出提示词" {
+		t.Fatalf("clarification changed duration or lost its source: %#v", d)
+	}
+	if !agentDurationOnlyRequest("15秒左右") {
+		t.Fatal("approximate duration should not rewrite the brief")
+	}
+	if err := mergeCreativeAgentDraft(d, map[string]interface{}{"intent": "chat", "action": "new_task", "reply": "一只猫的全新故事"}, "新任务，给我写一个猫咪故事"); err != nil || d.Slots["target_duration_sec"] != nil {
+		t.Fatalf("explicit new task inherited old duration: %#v, %v", d, err)
+	}
+}
+
+func TestAgentPromptEditShowsPreparedTextInsteadOfAnotherConfirmation(t *testing.T) {
+	const prompt = "0-3秒展示存钱罐，3-12秒展示钱币增长动画，12-15秒人物微笑收尾。"
+	plan := guardCreativeAgentIntent(map[string]interface{}{
+		"intent": "workflow", "slot_updates": map[string]interface{}{"generation_prompt": prompt},
+	}, "把视频压缩到15秒左右，然后出提示词")
+	if plan["intent"] != "chat" || plan["needs_confirm"] != false || plan["reply"] != prompt {
+		t.Fatalf("prompt edit became another confirmation: %#v", plan)
+	}
+}
+
 func TestAgentDraftConfirmedRequestUsesServerSnapshot(t *testing.T) {
 	stored := map[string]interface{}{"plan_version": 7, "model_code": "approved-model", "prompt": "approved-script", "params": map[string]interface{}{"target_duration_sec": 22}, "asset_ids": []string{"approved-asset"}}
 	req := creativeAgentGenerateRequest{ConversationID: "conv", PlanVersion: 7, Confirmed: true}
@@ -73,5 +126,13 @@ func TestCreativeAgentLiteralAudioContentExcludesExecutionNotes(t *testing.T) {
 	}
 	if got := creativeAgentSlotPrompt(slots, "video"); !strings.Contains(got, "画幅：9:16") {
 		t.Fatalf("video prompt lost useful constraints: %q", got)
+	}
+}
+
+func TestCreativeAgentOrientationMatchesAspectRatio(t *testing.T) {
+	for ratio, want := range map[string]string{"9:16": "portrait", "3:4": "portrait", "16:9": "landscape", "4:3": "landscape", "1:1": ""} {
+		if got := creativeAgentOrientation(ratio); got != want {
+			t.Fatalf("ratio %s orientation=%q want=%q", ratio, got, want)
+		}
 	}
 }

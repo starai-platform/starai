@@ -77,9 +77,14 @@ func creativeAgentWantsTemplate(text string) bool {
 // media. Only invalid prompt-writing replies take this extra completion path.
 func (h *Handler) repairCreativeAgentArtifact(ctx context.Context, userID int64, input service.CompletionInput, plan map[string]interface{}, userText string) map[string]interface{} {
 	policy := service.AgentPolicyFromConfig(h.creativeAgentRuntimeConfig(ctx))
-	return repairCreativeAgentArtifactOnce(input, plan, userText, policy.ContentRepairAttempts, func(in service.CompletionInput) (*service.CompletionResult, error) {
+	complete := func(in service.CompletionInput) (*service.CompletionResult, error) {
+		if !creativeAgentTakeRecovery(ctx) {
+			return nil, errCreativeAgentRecoveryUsed
+		}
 		return h.chat.Completion(ctx, userID, in)
-	})
+	}
+	plan = repairCreativeAgentDocumentOnce(input, plan, userText, policy.ContentRepairAttempts, complete)
+	return repairCreativeAgentArtifactOnce(input, plan, userText, policy.ContentRepairAttempts, complete)
 }
 
 func repairCreativeAgentArtifactOnce(input service.CompletionInput, plan map[string]interface{}, userText string, attempts int, complete func(service.CompletionInput) (*service.CompletionResult, error)) map[string]interface{} {

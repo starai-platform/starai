@@ -255,6 +255,7 @@ type ReferralChildDTO struct {
 	Email          string  `json:"email"`
 	RechargeAmount float64 `json:"recharge_amount"`
 	CreatedAt      string  `json:"created_at"`
+	Note           string  `json:"note"`
 }
 
 func (s *WalletService) ReferralSummary(ctx context.Context, userID int64) (*ReferralSummaryDTO, error) {
@@ -271,7 +272,8 @@ func (s *WalletService) ReferralSummary(ctx context.Context, userID int64) (*Ref
 	rows, err := s.db.Query(ctx, `
 		SELECT u.id, u.public_id, COALESCE(u.nickname,''), COALESCE(ai.identifier,''), u.created_at,
 		       COALESCE((SELECT SUM(o.amount) FROM orders o WHERE o.user_id=u.id AND o.status='paid'),0)
-		       + COALESCE((SELECT SUM(wt.amount) FROM wallet_transactions wt WHERE wt.user_id=u.id AND wt.direction='in' AND wt.type='card_recharge'),0)
+		       + COALESCE((SELECT SUM(wt.amount) FROM wallet_transactions wt WHERE wt.user_id=u.id AND wt.direction='in' AND wt.type='card_recharge'),0),
+		       COALESCE(u.referrer_note,'')
 		FROM users u
 		LEFT JOIN auth_identities ai ON ai.user_id=u.id AND ai.provider='email'
 		WHERE u.referrer_id=$1
@@ -281,13 +283,38 @@ func (s *WalletService) ReferralSummary(ctx context.Context, userID int64) (*Ref
 		for rows.Next() {
 			var child ReferralChildDTO
 			var created time.Time
-			if rows.Scan(&child.ID, &child.PublicID, &child.Nickname, &child.Email, &created, &child.RechargeAmount) == nil {
+			if rows.Scan(&child.ID, &child.PublicID, &child.Nickname, &child.Email, &created, &child.RechargeAmount, &child.Note) == nil {
 				child.CreatedAt = created.Format(time.RFC3339)
 				out.Children = append(out.Children, child)
 			}
 		}
 	}
 	return &out, nil
+}
+
+func normalizeReferralNote(note string) (string, error) {
+	note = strings.TrimSpace(note)
+	if len([]rune(note)) > 200 {
+		return "", errors.New("备注不能超过 200 个字符")
+	}
+	return note, nil
+}
+
+func (s *WalletService) UpdateReferralNote(ctx context.Context, userID int64, childPublicID, note string) (string, error) {
+	note, err := normalizeReferralNote(note)
+	if err != nil {
+		return "", err
+	}
+	result, err := s.db.Exec(ctx, `
+		UPDATE users SET referrer_note=$1, updated_at=now()
+		WHERE public_id=$2 AND referrer_id=$3`, note, childPublicID, userID)
+	if err != nil {
+		return "", err
+	}
+	if result.RowsAffected() == 0 {
+		return "", errors.New("直属下级不存在")
+	}
+	return note, nil
 }
 
 func (s *WalletService) ListTransactions(ctx context.Context, userID int64, page, pageSize int) ([]TransactionItem, int, error) {

@@ -77,7 +77,13 @@ func (s *AgentService) List(ctx context.Context, includeDisabled bool) ([]Workfl
 func (s *AgentService) Get(ctx context.Context, code string) (*WorkflowDTO, error) {
 	row := s.db.QueryRow(ctx,
 		`SELECT code, name, description, icon, category, nodes, input_schema, price_rule, display_config, runtime_config, is_enabled, sort_order FROM workflow_definitions WHERE code=$1`, code)
-	return scanWorkflowRow(row)
+	w, err := scanWorkflowRow(row)
+	if err == nil && stringValue(w.RuntimeConfig["agent_mode"]) == "product_refine" {
+		if pricing, _, priceErr := s.productPricing(ctx, w.RuntimeConfig, w.PriceRule, 1, "high"); priceErr == nil {
+			w.RuntimeConfig["product_pricing"] = pricing
+		}
+	}
+	return w, err
 }
 
 func (s *AgentService) getDefinition(ctx context.Context, code string) (int64, *WorkflowDTO, error) {
@@ -259,15 +265,40 @@ func (s *AgentService) CreateProject(ctx context.Context, userID int64, code str
 		}
 	}
 	nodeEstimate := 0.0
+	productEstimate := 0.0
+	billingReservation := 0.0
+	if stringValue(def.RuntimeConfig["agent_mode"]) == "product_refine" {
+		if err := s.validateProductRequest(ctx, userID, def.RuntimeConfig, inputs); err != nil {
+			return nil, err
+		}
+		_, productEstimate, err = s.productPricing(ctx, def.RuntimeConfig, def.PriceRule, intFromAgentAny(inputs["count"]), stringValue(inputs["quality"]))
+		if err != nil {
+			return nil, err
+		}
+		executionBudget, budgetErr := s.productExecutionBudget(ctx, def.RuntimeConfig, intFromAgentAny(inputs["count"]), intFromAgentAny(inputs["max_repairs"]), stringValue(inputs["review_mode"]), stringValue(inputs["quality"]))
+		if budgetErr != nil {
+			return nil, budgetErr
+		}
+		inputs["max_cost"] = productEstimate
+		inputs["_execution_budget"] = executionBudget
+		billingReservation = productBillingReservation(productEstimate, executionBudget)
+		inputs["_billing_reservation"] = billingReservation
+	}
 	for _, node := range def.Nodes {
 		nodeEstimate += node.Cost
 	}
 	runtimeEstimate := s.estimateAgentRuntimeCost(ctx, def.RuntimeConfig, inputs)
 	estimated := estimateAgentProjectCost(def.PriceRule, inputs, nodeEstimate, runtimeEstimate)
+	if stringValue(def.RuntimeConfig["agent_mode"]) == "product_refine" {
+		estimated = productEstimate
+	}
+	if billingReservation <= 0 {
+		billingReservation = estimated
+	}
 	publicID := util.NewPublicID("wfp")
 	inputsJSON, _ := json.Marshal(inputs)
 	var projectID int64
-	if err := s.billing.FreezeWithFinalize(ctx, userID, estimated, "workflow", publicID, func(tx pgx.Tx) error {
+	if err := s.billing.FreezeWithFinalize(ctx, userID, billingReservation, "workflow", publicID, func(tx pgx.Tx) error {
 		if err := validateAgentSubmissionTx(ctx, tx, userID, inputs); err != nil {
 			return err
 		}
@@ -1561,7 +1592,7 @@ func (s *AgentService) estimateAgentRuntimeCost(ctx context.Context, runtimeCfg 
 	}
 	if code := stringValue(runtimeCfg["generation_model_code"]); code != "" {
 		generationInputs := inputs
-		if stringValue(inputs["creative_scene"]) == "detail_image" && stringValue(runtimeCfg["generation_type"]) != "video" {
+		if (stringValue(inputs["creative_scene"]) == "detail_image" || stringValue(inputs["creative_scene"]) == "auto") && stringValue(runtimeCfg["generation_type"]) != "video" {
 			generationInputs = make(map[string]interface{}, len(inputs)+2)
 			for key, value := range inputs {
 				generationInputs[key] = value
@@ -1571,8 +1602,12 @@ func (s *AgentService) estimateAgentRuntimeCost(ctx context.Context, runtimeCfg 
 				if requested := intFromAgentAny(inputs["count"]); requested >= 4 && requested <= 8 {
 					sectionCount = requested
 				} else {
-					sectionCount = 6
+					sectionCount = 5
 				}
+			}
+			// Auto analysis may choose a detail page; reserve for either outcome.
+			if stringValue(inputs["creative_scene"]) == "auto" && intFromAgentAny(inputs["count"]) > sectionCount {
+				sectionCount = intFromAgentAny(inputs["count"])
 			}
 			generationInputs["count"] = sectionCount
 			generationInputs["n"] = sectionCount
@@ -1688,6 +1723,9 @@ func (s *AgentService) RetryProject(ctx context.Context, userID int64, publicID 
 }
 
 func (s *AgentService) retryProject(ctx context.Context, userID int64, publicID string, modelOverrides map[string]string) error {
+	if err := s.preventProductLegacyRetry(ctx, userID, publicID); err != nil {
+		return err
+	}
 	var projectID int64
 	var status string
 	var estimated float64
@@ -1784,6 +1822,9 @@ func (s *AgentService) retryProject(ctx context.Context, userID int64, publicID 
 }
 
 func (s *AgentService) RetryProjectNode(ctx context.Context, userID int64, publicID, nodeID string, modelOverrides map[string]string) error {
+	if err := s.preventProductLegacyRetry(ctx, userID, publicID); err != nil {
+		return err
+	}
 	nodeID = strings.TrimSpace(nodeID)
 	allowed := map[string]bool{"comic_plan": true, "keyframes": true, "video_segments": true, "narrations": true, "compose": true, "generate": true}
 	if !allowed[nodeID] {
@@ -1808,8 +1849,12 @@ func (s *AgentService) RetryProjectNode(ctx context.Context, userID int64, publi
 	outputs := map[string]interface{}{}
 	_ = json.Unmarshal(raw, &outputs)
 	pruneWorkflowOutputsForRetry(outputs, nodeID)
-	if _, err := s.db.Exec(ctx, `UPDATE workflow_projects SET outputs=$1, updated_at=now() WHERE id=$2`, mustAgentJSON(outputs), projectID); err != nil {
+	tag, err := s.db.Exec(ctx, `UPDATE workflow_projects SET outputs=$1, updated_at=now() WHERE id=$2 AND status='failed' AND outputs=$3::jsonb`, mustAgentJSON(outputs), projectID, raw)
+	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return errors.New("项目状态或素材已变化，请刷新后重试")
 	}
 	return s.retryProject(ctx, userID, publicID, modelOverrides)
 }
@@ -1830,13 +1875,19 @@ func (s *AgentService) ReplaceComicProjectMedia(ctx context.Context, userID int6
 	outputs := map[string]interface{}{}
 	_ = json.Unmarshal(raw, &outputs)
 	items, ok := outputs[kind].([]interface{})
-	if !ok || index >= len(items) {
+	if !ok || index < 0 || index >= len(items) {
 		return errors.New("素材序号不存在")
 	}
 	item, ok := items[index].(map[string]interface{})
 	if !ok {
 		return errors.New("素材数据格式无效")
 	}
+	previous := make(map[string]interface{}, len(item))
+	for key, value := range item {
+		previous[key] = value
+	}
+	history, _ := outputs["media_history"].([]interface{})
+	outputs["media_history"] = append(history, map[string]interface{}{"kind": kind, "reason": "manual_replacement", "item": previous})
 	field := "image_url"
 	if kind == "segments" {
 		field = "video_url"
@@ -1844,11 +1895,13 @@ func (s *AgentService) ReplaceComicProjectMedia(ctx context.Context, userID int6
 	item[field] = strings.TrimSpace(rawURL)
 	item["manual_replacement"] = true
 	item["status"] = "succeeded"
+	delete(item, "error_message")
+	item["scores"] = map[string]interface{}{"checked": false, "status": "not_checked"}
 	items[index] = item
 	outputs[kind] = items
 	if kind == "keyframes" {
 		// 替换关键帧后，旧分段视频与最终成片已经失去来源一致性，必须显式失效。
-		delete(outputs, "segments")
+		invalidateComicShotSegments(outputs, stringValue(item["id"]))
 		delete(outputs, "final_video_url")
 		delete(outputs, "thumbnail")
 		outputs["current_step"] = "video_segments"
@@ -1856,22 +1909,75 @@ func (s *AgentService) ReplaceComicProjectMedia(ctx context.Context, userID int6
 		delete(outputs, "final_video_url")
 		delete(outputs, "thumbnail")
 		outputs["current_step"] = "compose"
+		if comic, ok := outputs["comic_drama"].(map[string]interface{}); ok {
+			delete(comic, "final_video_url")
+			delete(comic, "thumbnail")
+			delete(comic, "compose_status")
+		}
 	}
 	if comic, ok := outputs["comic_drama"].(map[string]interface{}); ok {
 		comic[kind] = items
 		outputs["comic_drama"] = comic
 	}
-	_, err := s.db.Exec(ctx, `UPDATE workflow_projects SET outputs=$1, updated_at=now() WHERE id=$2`, mustAgentJSON(outputs), projectID)
-	return err
+	tag, err := s.db.Exec(ctx, `UPDATE workflow_projects SET outputs=$1, updated_at=now() WHERE id=$2 AND status=$3 AND outputs=$4::jsonb`, mustAgentJSON(outputs), projectID, status, raw)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return errors.New("项目已开始执行或素材已变化，请刷新后重试")
+	}
+	return nil
+}
+
+// A replaced frame invalidates only its own video; keep paid sibling clips.
+func invalidateComicShotSegments(outputs map[string]interface{}, shotID string) {
+	var kept []interface{}
+	items, _ := outputs["segments"].([]interface{})
+	for _, raw := range items {
+		item, _ := raw.(map[string]interface{})
+		if shotID != "" && stringValue(item["id"]) != "" && stringValue(item["id"]) != shotID {
+			kept = append(kept, raw)
+		} else {
+			history, _ := outputs["media_history"].([]interface{})
+			outputs["media_history"] = append(history, map[string]interface{}{"kind": "segments", "reason": "source_frame_changed", "item": raw})
+		}
+	}
+	outputs["segments"] = kept
+	if comic, ok := outputs["comic_drama"].(map[string]interface{}); ok {
+		comic["segments"] = kept
+		delete(comic, "final_video_url")
+		delete(comic, "thumbnail")
+		delete(comic, "compose_status")
+	}
 }
 
 func (s *AgentService) CancelProject(ctx context.Context, userID int64, publicID string) error {
 	var projectID int64
 	var estimated float64
+	var status string
 	if err := s.db.QueryRow(ctx,
-		`SELECT id, estimated_cost FROM workflow_projects WHERE public_id=$1 AND user_id=$2`, publicID, userID).
-		Scan(&projectID, &estimated); err != nil {
+		`SELECT id, estimated_cost, status FROM workflow_projects WHERE public_id=$1 AND user_id=$2`, publicID, userID).
+		Scan(&projectID, &estimated, &status); err != nil {
 		return err
+	}
+	if status == "canceling" || status == "canceled" {
+		return nil
+	}
+	if status == "running" {
+		tag, err := s.db.Exec(ctx, `
+			UPDATE workflow_projects
+			SET status='canceling', error_message='正在停止：当前上游请求完成后不再启动后续步骤', updated_at=now()
+			WHERE id=$1 AND status='running'`, projectID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return errors.New("项目状态已变化，请刷新后重试")
+		}
+		return nil
+	}
+	if status != "pending" && status != "waiting_confirm" {
+		return errors.New("当前项目无法停止")
 	}
 	cumulativeCost, chargeCost, err := s.accruedWorkflowCost(ctx, projectID)
 	if err != nil {
@@ -1971,9 +2077,11 @@ func pruneWorkflowOutputsForRetry(outputs map[string]interface{}, nodeID string)
 		// 保留已经成功的关键帧。worker 会按分镜 ID 复用它们，只补失败或缺失项，
 		// 避免局部失败后重复生成成功内容和产生不必要费用。
 		outputs["keyframes"] = successfulComicStageItems(outputs["keyframes"], "image_url")
-		for _, key := range []string{"segments", "narrations", "final_video_url", "thumbnail", "media_tasks"} {
+		for _, key := range []string{"final_video_url", "thumbnail", "media_tasks"} {
 			delete(outputs, key)
 		}
+		// The worker checks each video's source frame before reusing it. Keep
+		// sibling videos and independent speech; a failed frame is not a full reset.
 		outputs["current_step"] = "keyframes"
 	case "video_segments":
 		// 视频片段同样按分镜 ID 增量补齐。
@@ -2414,7 +2522,7 @@ func (s *AgentService) ConfirmStep(ctx context.Context, userID int64, publicID, 
 	tag, err := s.db.Exec(ctx, `
 		UPDATE workflow_projects
 		SET status='pending',
-		    outputs = COALESCE(outputs,'{}'::jsonb) || jsonb_build_object('confirmed_step', $1::text, 'confirmation_payload', $2::jsonb, 'autopilot', false),
+		    outputs = COALESCE(outputs,'{}'::jsonb) || jsonb_build_object('confirmed_step', CASE WHEN outputs->>'current_step'='keyframes_confirm' THEN 'keyframes_confirm' ELSE $1::text END, 'confirmation_payload', $2::jsonb, 'autopilot', false),
 		    updated_at=now()
 	WHERE public_id=$3 AND user_id=$4 AND status='waiting_confirm'`, step, string(data), publicID, userID)
 	if err != nil {
@@ -2428,6 +2536,71 @@ func (s *AgentService) ConfirmStep(ctx context.Context, userID int64, publicID, 
 		return err
 	}
 	return queue.EnqueueWorkflowTask(s.queue, queue.WorkflowTaskPayload{ProjectID: projectID, UserID: userID})
+}
+
+// AutoCompleteExpiredProductReviews reuses the normal product-accept path so
+// timeout completion creates works, settles billing and remains idempotent.
+func (s *AgentService) AutoCompleteExpiredProductReviews(ctx context.Context, limit int) (int, error) {
+	if limit < 1 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT p.id,p.user_id
+		FROM workflow_projects p
+		JOIN workflow_definitions w ON w.id=p.workflow_id
+		WHERE p.status='waiting_confirm'
+		  AND w.runtime_config->>'agent_mode'='product_refine'
+		  AND p.outputs->>'current_step'='product_review_confirm'
+		  AND p.outputs ? 'review_deadline_at'
+		  AND p.outputs->>'review_deadline_at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+		  AND (p.outputs->>'review_deadline_at')::timestamptz <= now()
+		ORDER BY (p.outputs->>'review_deadline_at')::timestamptz ASC
+		LIMIT $1`, limit)
+	if err != nil {
+		return 0, err
+	}
+	type expiredReview struct{ projectID, userID int64 }
+	items := make([]expiredReview, 0, limit)
+	for rows.Next() {
+		var item expiredReview
+		if err := rows.Scan(&item.projectID, &item.userID); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		items = append(items, item)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	completed := 0
+	for _, item := range items {
+		tag, err := s.db.Exec(ctx, `
+			UPDATE workflow_projects
+			SET status='pending',
+			    outputs=outputs || jsonb_build_object('confirmed_step','product_accept','confirmation_payload','{}'::jsonb,'autopilot',false,'product_auto_completed',true),
+			    updated_at=now()
+			WHERE id=$1 AND status='waiting_confirm'
+			  AND outputs->>'current_step'='product_review_confirm'
+			  AND outputs->>'review_deadline_at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+			  AND (outputs->>'review_deadline_at')::timestamptz <= now()`, item.projectID)
+		if err != nil {
+			return completed, err
+		}
+		if tag.RowsAffected() == 0 {
+			continue
+		}
+		if err := queue.EnqueueWorkflowTask(s.queue, queue.WorkflowTaskPayload{ProjectID: item.projectID, UserID: item.userID}); err != nil {
+			_, _ = s.db.Exec(ctx, `
+				UPDATE workflow_projects
+				SET status='waiting_confirm',outputs=outputs-'confirmed_step'-'confirmation_payload'-'product_auto_completed',updated_at=now()
+				WHERE id=$1 AND status='pending' AND outputs->>'product_auto_completed'='true'`, item.projectID)
+			return completed, err
+		}
+		completed++
+	}
+	return completed, nil
 }
 
 func (s *AgentService) SetAutopilot(ctx context.Context, userID int64, publicID string, enabled bool) error {
@@ -2863,53 +3036,56 @@ func (s *AgentService) refreshMediaTasks(ctx context.Context, userID int64, task
 	if len(tasks) == 0 {
 		return tasks
 	}
-	for i := range tasks {
-		if tasks[i].TaskNo == "" {
-			continue
+	taskNos := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		if task.TaskNo != "" {
+			taskNos = append(taskNos, task.TaskNo)
 		}
-		var status string
+	}
+	if len(taskNos) == 0 {
+		return tasks
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT t.task_no, t.status, t.output, t.error_message, COALESCE(progress.payload->>'progress', '')
+		FROM tasks t
+		LEFT JOIN LATERAL (
+			SELECT e.payload FROM task_events e
+			WHERE e.task_id=t.id AND e.event_type='progress'
+			  AND t.status NOT IN ('succeeded', 'failed')
+			ORDER BY e.created_at DESC, e.id DESC LIMIT 1
+		) progress ON true
+		WHERE t.task_no=ANY($1) AND t.user_id=$2`, taskNos, userID)
+	if err != nil {
+		return tasks
+	}
+	defer rows.Close()
+	latest := make(map[string]AgentMediaTaskDTO, len(tasks))
+	for rows.Next() {
+		var task AgentMediaTaskDTO
+		var progress string
 		var outputRaw []byte
-		var errMsg *string
-		err := s.db.QueryRow(ctx, `
-			SELECT status, output, error_message
-			FROM tasks WHERE task_no=$1 AND user_id=$2`, tasks[i].TaskNo, userID).Scan(&status, &outputRaw, &errMsg)
-		if err != nil {
-			continue
+		if err := rows.Scan(&task.TaskNo, &task.Status, &outputRaw, &task.ErrorMessage, &progress); err != nil {
+			return tasks
 		}
-		tasks[i].Status = status
-		out := map[string]interface{}{}
-		_ = json.Unmarshal(outputRaw, &out)
-		tasks[i].Output = out
-		tasks[i].Progress = s.latestTaskProgress(ctx, tasks[i].TaskNo, status)
-		if errMsg != nil && *errMsg != "" {
-			tasks[i].ErrorMessage = errMsg
+		task.Output = map[string]interface{}{}
+		_ = json.Unmarshal(outputRaw, &task.Output)
+		task.Progress = taskProgress(task.Status, progress, false)
+		latest[task.TaskNo] = task
+	}
+	if rows.Err() != nil {
+		return tasks
+	}
+	for i := range tasks {
+		if task, ok := latest[tasks[i].TaskNo]; ok {
+			tasks[i].Status = task.Status
+			tasks[i].Output = task.Output
+			tasks[i].Progress = task.Progress
+			if task.ErrorMessage != nil && *task.ErrorMessage != "" {
+				tasks[i].ErrorMessage = task.ErrorMessage
+			}
 		}
 	}
 	return tasks
-}
-
-func (s *AgentService) latestTaskProgress(ctx context.Context, taskNo, status string) int {
-	if status == "succeeded" || status == "failed" {
-		return 100
-	}
-	var progress int
-	err := s.db.QueryRow(ctx, `
-		SELECT COALESCE((payload->>'progress')::int, 0)
-		FROM task_events e
-		JOIN tasks t ON t.id=e.task_id
-		WHERE t.task_no=$1 AND e.event_type='progress'
-		ORDER BY e.created_at DESC, e.id DESC
-		LIMIT 1`, taskNo).Scan(&progress)
-	if err == nil && progress > 0 {
-		if progress > 99 {
-			return 99
-		}
-		return progress
-	}
-	if status == "running" || status == "processing" || status == "in_progress" {
-		return 25
-	}
-	return 8
 }
 
 func intFromAgentAny(v interface{}) int {

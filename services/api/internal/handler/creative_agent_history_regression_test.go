@@ -22,7 +22,7 @@ func TestAgentLatestHistoryPromptEditing(t *testing.T) {
 			"slot_evidence": map[string]interface{}{"style": "真人版", "generation_prompt": "提示词"},
 		}, text)
 		if plan["intent"] != "chat" || plan["needs_confirm"] != false {
-			t.Fatalf("prompt editing offered execution: %#v", plan)
+			t.Fatalf("prompt editing must answer directly without media execution: %#v", plan)
 		}
 		if err := mergeCreativeAgentDraft(d, plan, text); err != nil {
 			t.Fatal(err)
@@ -30,8 +30,8 @@ func TestAgentLatestHistoryPromptEditing(t *testing.T) {
 		if d.Slots["character"] != "学生" || d.Slots["script"] != "旧新闻文案" || d.Slots["generation_prompt"] == nil {
 			t.Fatalf("lost or conflated slots: %#v", d.Slots)
 		}
-		if strings.Contains(creativeAgentSlotPrompt(d.Slots), "旧新闻文案") {
-			t.Fatal("old copy overrode generation prompt")
+		if !strings.Contains(creativeAgentSlotPrompt(d.Slots), "0–3秒发现失窃") {
+			t.Fatal("old copy overrode the revised generation prompt")
 		}
 		decision, decided := creativeAgentFastSearchDecision([]runtime.ChatMessage{{Role: "user", Content: text}}, creativeAgentClockAt(nil, time.Now()))
 		if !decided || decision.NeedsSearch {

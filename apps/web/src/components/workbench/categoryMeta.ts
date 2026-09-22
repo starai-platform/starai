@@ -38,8 +38,13 @@ export const AGENT_CATEGORY_TAG: Record<string, { label: string; labelKey: strin
   multi_collab: { label: "\u591a\u6a21\u578b", labelKey: "category.multiCollab", className: "bg-indigo-50 text-indigo-600" },
   api: { label: "API", labelKey: "category.api", className: "bg-sky-50 text-sky-600" },
   tool: { label: "\u5de5\u5177", labelKey: "category.tool", className: "bg-amber-50 text-amber-600" },
-  workflow: { label: "\u901a\u7528", labelKey: "category.workflow", className: "bg-gray-100 text-gray-500" },
 };
+
+export function agentDisplayCategory(code: string, category?: string) {
+  if (["infinite_canvas", "content_image_post", "video_creation", "video_creation_v2"].includes(code)) return "tool";
+  if (!category || !AGENT_CATEGORY_TAG[category]) return "tool";
+  return category;
+}
 
 // Hero gradient themes for the agent workspace banner.
 export const AGENT_THEMES: Record<string, { gradient: string; iconBg: string; pill: string; accent: string }> = {

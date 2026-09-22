@@ -6,20 +6,23 @@ import { adminApi } from "@/lib/api";
 type Policy = {
   version: number; updated_at?: string; instructions: string; intent_guidance: string;
   research_guidance: string; creation_guidance: string; recovery_guidance: string;
-  default_style: string; max_duration_sec: number; recent_messages: number; summary_chars: number; max_retry: number; content_repair_attempts: number;
+  document_guidance: string;
+  default_style: string; max_duration_sec: number; recent_messages: number; summary_chars: number; context_chars: number; max_retry: number; content_repair_attempts: number; plan_repair_attempts: number;
 };
 type PolicyState = { current: Policy; history: Policy[]; defaults: Policy; effective_prompt: string };
 const sections = [
-  ["instructions", "总体业务指导", "品牌语气、业务定位和整体回答要求。", 12000],
-  ["intent_guidance", "意图识别与填槽", "区分研究、文案、生成提示词与媒体制作；说明纠错与增量修改的处理方式。", 6000],
-  ["research_guidance", "联网研究与事实边界", "来源质量、时效、平台榜单、无法获取原视频时的说明方式。", 6000],
-  ["creation_guidance", "提示词、分镜与声音", "提示词结构、真人/动画风格、镜头连贯、旁白长度、结尾和音轨策略。此项也传入成片规划阶段。", 6000],
-  ["recovery_guidance", "记忆、纠错与恢复", "沿用上下文、处理质疑、換模型和说明失败；不授权自动重跑。", 6000],
+  ["instructions", "核心规则", "始终加载：品牌语气、业务定位和整体回答要求。", 12000],
+  ["intent_guidance", "SKILL · 意图与填槽", "媒体创作时按需加载：区分写稿、生成、纠错和增量修改。", 6000],
+  ["research_guidance", "SKILL · 联网研究", "启用联网搜索时按需加载：来源质量、时效、榜单和事实边界。", 6000],
+  ["creation_guidance", "SKILL · 媒体创作", "图片、视频、语音或音乐创作时按需加载；也传入成片规划阶段。", 6000],
+  ["document_guidance", "SKILL · 文档处理", "读取、撰写、连续修改、导出文档或文档转图片时按需加载。", 6000],
+  ["recovery_guidance", "SKILL · 任务恢复", "用户询问已执行任务的失败或异常时按需加载；不授权自动重跑。", 6000],
 ] as const;
 const numericFields = [
   ["max_duration_sec", "成品最大秒数", 1, 600], ["recent_messages", "近期完整消息条数", 4, 40],
-  ["summary_chars", "较早历史摘录字数", 500, 8000], ["max_retry", "媒体阶段重试上限", 0, 3],
+  ["summary_chars", "较早历史摘录字数", 500, 8000], ["context_chars", "送入模型的近期上下文字数", 8000, 80000], ["max_retry", "媒体阶段重试上限", 0, 3],
   ["content_repair_attempts", "不合格提示词自动修复次数", 0, 1],
+  ["plan_repair_attempts", "规划格式自动修复次数", 0, 1],
 ] as const;
 const versionLabel = (version: number) => version === 0 ? "内置策略 · 未发布自定义版本" : `已发布 v${version}`;
 
@@ -57,7 +60,7 @@ export function AgentPolicyEditor() {
       <div><h3 className="text-sm font-semibold">Agent 理解与业务策略</h3><p className="mt-1 text-xs text-gray-500">{state ? versionLabel(state.current.version) : "读取策略中…"}{changed ? " · 有未发布修改" : ""}</p></div>
       <button type="button" disabled={busy} onClick={() => void load(true)} className="text-xs text-gray-500 disabled:opacity-40">刷新策略</button>
     </div>
-    <p className="text-xs leading-5 text-gray-500">LLM 负责理解与内容规划，服务端规则负责验证与执行。这里编辑的是实际注入的业务指导，不是模型训练；版本号表示发布次数，不代表智能等级。</p>
+    <p className="text-xs leading-5 text-gray-500">LLM 负责理解与内容规划，服务端规则负责验证与执行。核心规则始终加载，其余内置 SKILL 仅在相关请求中加载；这里修改的是指导文本，不是模型训练，也不能绕过确认、权限和计费。</p>
     {draft && <fieldset disabled={busy} className="space-y-4">
       <div className="flex flex-wrap gap-2" role="tablist" aria-label="策略分类">{sections.map(([key, title]) => <button type="button" role="tab" aria-selected={active === key} aria-controls={`policy-panel-${key}`} id={`policy-tab-${key}`} key={key} onClick={() => setActive(key)} className={`rounded-lg px-3 py-2 text-xs ${active === key ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-600"}`}>{title}</button>)}</div>
       {sections.filter(([key]) => active === key).map(([key, title, hint, max]) => <div key={key} role="tabpanel" id={`policy-panel-${key}`} aria-labelledby={`policy-tab-${key}`}>
@@ -68,10 +71,10 @@ export function AgentPolicyEditor() {
       <details className="rounded-xl bg-gray-50 p-3"><summary className="cursor-pointer text-xs font-medium">执行与记忆参数（规则直接生效）</summary><div className="mt-3 space-y-3">
         <label className="block text-xs">默认风格（留空交由当前需求决定）<input className="admin-input mt-1" maxLength={200} value={draft.default_style} onChange={(e) => setDraft({ ...draft, default_style: e.target.value })} /></label>
         <div className="grid grid-cols-2 gap-3">{numericFields.map(([key, label, min, max]) => <label key={key} className="text-xs">{label}<input type="number" min={min} max={max} step={1} className="admin-input mt-1" value={draft[key]} onChange={(e) => setDraft({ ...draft, [key]: Number(e.target.value) })} /><span className="text-gray-400">范围 {min}–{max}</span></label>)}</div>
-        <p className="text-xs leading-5 text-gray-500">旧历史摘录不额外调用模型。内容修复设为1时，仅提示词未通过验收才额外调用一次当前文字模型，按该模型计费；仍不合格则停止，不生成媒体。设为0关闭自动修复。合成共享音画余量不调用模型、不改变目标总时长。</p>
+        <p className="text-xs leading-5 text-gray-500">旧历史摘录和上下文压缩不额外调用模型。内容或规划格式修复设为1时，仅在对应验收失败后额外调用一次当前文字模型，按该模型计费；仍不合格则停止，不生成媒体。设为0可关闭对应修复。合成共享音画余量不调用模型、不改变目标总时长。</p>
       </div></details>
       <details className="rounded-xl border border-gray-100 p-3"><summary className="cursor-pointer text-xs font-medium">不可绕过的执行边界</summary><p className="mt-2 text-xs leading-6 text-gray-500">用户确认才执行；槽位白名单与修改依据校验；按模型实际时长规划分段；无效分镜不生成素材；会话归属、权限和计费校验。后台指导不能关闭这些保护。</p></details>
-      <details className="rounded-xl border border-gray-100 p-3"><summary className="cursor-pointer text-xs font-medium">当前生效的业务提示词（服务端实际拼装）</summary><p className="mt-2 text-xs text-gray-500">仅显示已发布/内置业务指导；另有固定输出协议、当前槽位、会话上下文和模型能力，不在这里展示。</p><pre className="mt-3 max-h-80 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-6">{state?.effective_prompt}</pre></details>
+      <details className="rounded-xl border border-gray-100 p-3"><summary className="cursor-pointer text-xs font-medium">当前生效的核心规则与 SKILL 全集</summary><p className="mt-2 text-xs text-gray-500">这里展示可用全集；实际对话只注入核心规则和当前请求命中的 SKILL。固定输出协议、槽位、上下文和模型能力不在这里展示。</p><pre className="mt-3 max-h-80 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-6">{state?.effective_prompt}</pre></details>
       <div className="flex flex-wrap items-center gap-3">
         <button type="button" disabled={busy || invalid || (!changed && state?.current.version !== 0)} onClick={() => void save()} className="rounded-lg bg-gray-900 px-3 py-2 text-xs text-white disabled:opacity-40">{busy ? "处理中…" : "发布策略新版本"}</button>
         <button type="button" onClick={() => { if (state && window.confirm("用当前内置指导替换编辑稿？发布前不会生效。")) setDraft({ ...state.defaults, version: state.current.version, updated_at: state.current.updated_at }); }} className="text-xs text-gray-500">载入内置策略到编辑稿</button>

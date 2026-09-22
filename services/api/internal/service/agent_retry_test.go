@@ -22,7 +22,7 @@ func TestPruneWorkflowOutputsForRetry(t *testing.T) {
 		currentStep string
 	}{
 		{node: "comic_plan", removed: []string{"comic_drama", "keyframes", "segments", "final_video_url", "media_tasks"}, currentStep: "comic_plan"},
-		{node: "keyframes", removed: []string{"segments", "final_video_url", "media_tasks"}, preserved: []string{"comic_drama", "keyframes"}, currentStep: "keyframes"},
+		{node: "keyframes", removed: []string{"final_video_url", "media_tasks"}, preserved: []string{"comic_drama", "keyframes", "segments", "narrations"}, currentStep: "keyframes"},
 		{node: "video_segments", removed: []string{"final_video_url", "media_tasks"}, preserved: []string{"keyframes", "segments"}, currentStep: "video_segments"},
 		{node: "narrations", removed: []string{"final_video_url", "thumbnail", "media_tasks"}, preserved: []string{"segments", "narrations"}, currentStep: "narrations"},
 		{node: "compose", removed: []string{"final_video_url", "thumbnail", "media_tasks"}, preserved: []string{"segments", "narrations"}, currentStep: "compose"},

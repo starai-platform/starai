@@ -103,6 +103,19 @@ func TestCreativeAgentPlanFromStream(t *testing.T) {
 	if bad["intent"] != "clarify" || bad["needs_confirm"] != false {
 		t.Fatalf("invalid streamed plan must fail closed: %#v", bad)
 	}
+	contract := "# 租赁合同\n第三条 租赁期限为3年。\n第四条 押金按原约定支付。"
+	edit := creativeAgentPlanFromStream(contract, "修改合同第三条为3年，其他不变，展示完整合同")
+	if edit["intent"] != "chat" || edit["reply"] != contract {
+		t.Fatal("plain document edit was mistaken for a media plan")
+	}
+	for _, raw := range []string{`{"intent":"chat","reply":"正文`, "PLAN\n" + contract} {
+		if creativeAgentPlanFromStream(raw, "修改合同")["intent"] != "clarify" {
+			t.Fatal("invalid protocol was exposed as document text")
+		}
+	}
+	if creativeAgentPlanFromStream("已改成3秒", "时长改为3秒")["intent"] != "clarify" {
+		t.Fatal("incremental media update bypassed plan validation")
+	}
 }
 
 func TestCreativeAgentRolePromptKeepsPlannerBoundary(t *testing.T) {
@@ -119,7 +132,7 @@ func TestNormalizeCreativeAgentWorkflowPlan(t *testing.T) {
 		"intent": "workflow", "workflow_code": "invented_workflow", "prompt": "角色冒险故事", "params": map[string]interface{}{},
 	}, "根据参考图角色生成40-50秒视频，分段执行后合成成片")
 	params, _ := plan["params"].(map[string]interface{})
-	if plan["workflow_code"] != "ai_comic_drama" || params["storyboard_grid"] != 6 || params["duration_mode"] != "long" || params["target_duration_sec"] != 48 || params["_mode"] != "auto" {
+	if plan["workflow_code"] != "video_creation" || params["storyboard_grid"] != 6 || params["duration_mode"] != "long" || params["target_duration_sec"] != 48 || params["_mode"] != "auto" {
 		t.Fatalf("unexpected workflow plan: %#v", plan)
 	}
 
@@ -142,7 +155,7 @@ func TestNormalizeCreativeAgentWorkflowPlan(t *testing.T) {
 	misclassified := normalizeCreativeAgentWorkflowPlan(map[string]interface{}{
 		"intent": "video", "prompt": "角色短剧", "params": map[string]interface{}{"duration": float64(48)},
 	}, "根据角色参考图生成48秒完整视频")
-	if misclassified["intent"] != "workflow" || misclassified["workflow_code"] != "ai_comic_drama" {
+	if misclassified["intent"] != "workflow" || misclassified["workflow_code"] != "video_creation" {
 		t.Fatalf("long-form video was not promoted to workflow: %#v", misclassified)
 	}
 
@@ -157,7 +170,7 @@ func TestNormalizeCreativeAgentWorkflowPlan(t *testing.T) {
 	for text, expected := range map[string]string{
 		"生成一张图":      "image",
 		"制作一个短视频":    "video",
-		"写一篇微信公众号推文": "workflow",
+		"写一篇微信公众号推文": "chat",
 		"整理一份资料信息":   "chat",
 	} {
 		routed := normalizeCreativeAgentWorkflowPlan(map[string]interface{}{"intent": "chat", "reply": "已理解", "params": map[string]interface{}{}}, text)

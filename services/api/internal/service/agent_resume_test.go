@@ -60,7 +60,7 @@ func TestComicRemainingWork(t *testing.T) {
 		t.Fatal(got)
 	}
 	inputs["audio_strategy"] = "tts_only"
-	if got := remainingComicWork(inputs, nil, runtime); got != (comicRemainingWork{Plan: true, Images: 2, Videos: 2, Narrations: 2}) {
+	if got := remainingComicWork(inputs, nil, runtime); got != (comicRemainingWork{Plan: true, Assets: 6, Images: 2, Videos: 2, Narrations: 2}) {
 		t.Fatal(got)
 	}
 	inputs, outputs = comicResumeFixture()

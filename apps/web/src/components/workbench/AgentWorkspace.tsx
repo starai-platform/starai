@@ -1,9 +1,12 @@
-﻿"use client";
+"use client";
+
+import { pollAsync } from "@/lib/pollAsync";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
+import dynamic from "next/dynamic";
 import { Archive, ArrowUp, Check, Copy, Download, Folder, HelpCircle, History, ImageIcon, Loader2, Mic2, Plus, RefreshCw, Settings2, Star, Trash2, Wand2, X } from "lucide-react";
 import { api, apiForLocale, listAssets, uploadAsset } from "@/lib/api";
 import type { Model } from "@starai/shared-types";
@@ -22,13 +25,24 @@ import { MediaMenuOption, MediaOptionMenu } from "./MediaOptionMenu";
 import { ImageGenerationToolbar, buildImageGenerationParams } from "./ImageGenerationToolbar";
 import { GenerationLanguageMenu, buildLanguageParams, useGenerationLanguages } from "./GenerationLanguageMenu";
 import { useI18n } from "@/i18n/I18nProvider";
-import { VideoUpscaleWorkspace } from "./VideoUpscaleWorkspace";
 import { AgentLanding, type AgentDisplayStep } from "./AgentLanding";
 import { AgentIcon } from "./AgentIcon";
-import { NovelWorkshopLanding } from "./NovelWorkshopLanding";
-import { PhotoStudioLanding, PhotoStudioInputBar, PhotoStudioTopBar } from "./PhotoStudioLanding";
-import { VirtualTryOnInputBar, VirtualTryOnLanding, VirtualTryOnResult } from "./VirtualTryOnLanding";
 import { NovelChapterList } from "./NovelChapterList";
+import { comicAssetProgress } from "./comicProgress";
+
+const WorkspaceLoading = () => {
+  const { ts } = useI18n();
+  return <div className="flex flex-1 items-center justify-center p-8 text-sm text-gray-400">{ts("正在打开工作区...")}</div>;
+};
+const VideoUpscaleWorkspace = dynamic(() => import("./VideoUpscaleWorkspace").then((module) => module.VideoUpscaleWorkspace), { loading: WorkspaceLoading });
+const NovelWorkshopLanding = dynamic(() => import("./NovelWorkshopLanding").then((module) => module.NovelWorkshopLanding), { loading: WorkspaceLoading });
+const ProductRefineWorkspace = dynamic(() => import("./ProductRefineWorkspace").then((module) => module.ProductRefineWorkspace), { loading: WorkspaceLoading });
+const PhotoStudioLanding = dynamic(() => import("./PhotoStudioLanding").then((module) => module.PhotoStudioLanding), { loading: WorkspaceLoading });
+const PhotoStudioInputBar = dynamic(() => import("./PhotoStudioLanding").then((module) => module.PhotoStudioInputBar), { loading: () => null });
+const PhotoStudioTopBar = dynamic(() => import("./PhotoStudioLanding").then((module) => module.PhotoStudioTopBar), { loading: () => null });
+const VirtualTryOnLanding = dynamic(() => import("./VirtualTryOnLanding").then((module) => module.VirtualTryOnLanding), { loading: WorkspaceLoading });
+const VirtualTryOnInputBar = dynamic(() => import("./VirtualTryOnLanding").then((module) => module.VirtualTryOnInputBar), { loading: () => null });
+const VirtualTryOnResult = dynamic(() => import("./VirtualTryOnLanding").then((module) => module.VirtualTryOnResult), { loading: WorkspaceLoading });
 
 type DisplayStep = AgentDisplayStep;
 type DisplayConfig = {
@@ -82,6 +96,8 @@ type Workflow = {
     default_style_strength?: number;
     preserve_motion?: boolean;
     preserve_identity?: boolean;
+    product_pricing?: { workflow_fee?: number; image_unit_fee?: number };
+    default_review_mode?: "standard" | "strict";
     default_subtitle_mode?: string;
     default_subtitle_region?: string;
     protect_watermark?: boolean;
@@ -95,7 +111,10 @@ type MediaTask = { task_no: string; type?: "image" | "video" | "audio"; status: 
 function resolvedAgentMediaTasks(project: Project | null): MediaTask[] {
   const stored = (project?.outputs?.media_tasks || []) as MediaTask[];
   const tasks = project?.media_tasks?.length ? project.media_tasks : stored;
-  if (project?.inputs?.creative_scene !== "detail_image") return tasks;
+  const isDetail = project?.inputs?.creative_scene === "detail_image"
+    || project?.outputs?.analysis?.creative_scene === "detail_image"
+    || project?.outputs?.detail_page?.render_mode === "typeset_modules";
+  if (!isDetail) return tasks;
   const prepared = new Map(stored.map(task => [task.task_no, task]));
   return tasks.map(task => {
     const result = prepared.get(task.task_no);
@@ -104,11 +123,14 @@ function resolvedAgentMediaTasks(project: Project | null): MediaTask[] {
       : task;
   });
 }
+
 type ReferenceImage = { url: string; name: string; public_id?: string };
 type AnalysisCandidate = { id: string; title?: string; reason?: string; prompt: string; negative_prompt?: string; params?: Record<string, unknown> };
 type Project = {
   public_id: string;
   status: string;
+  estimated_cost?: number;
+  actual_cost?: number;
   inputs?: Record<string, any>;
   outputs?: Record<string, any>;
   node_runs?: NodeRun[];
@@ -182,6 +204,7 @@ function comicNarrationLabel(value: string) {
 
 const IMAGE_SCENES = [
   { code: "main_image", label: "\u5546\u54c1\u4e3b\u56fe", kind: "image" },
+  { code: "auto", label: "AI识别出图类型", kind: "image" },
   { code: "detail_image", label: "\u5546\u54c1\u8be6\u60c5\u56fe", kind: "image" },
   { code: "scene_image", label: "\u573a\u666f\u56fe", kind: "image" },
   { code: "marketing_poster", label: "\u8425\u9500\u6d77\u62a5", kind: "image" },
@@ -234,20 +257,21 @@ function mediaTaskType(task: MediaTask, fallback: string): "image" | "video" | "
 
 // 写真馆照片单元：按任务状态展示生成中/失败/成片，图片加载失败时降级为失败态，避免浏览器破图图标
 function PhotoStudioPhotoCell({ task, url, index }: { task: MediaTask; url: string; index: number }) {
+  const { ts } = useI18n();
   const [broken, setBroken] = useState(false);
   if (task.status === "succeeded" && url && !broken) {
     return (
       <div className="group relative overflow-hidden rounded-2xl border border-fuchsia-100 bg-white shadow-sm dark:border-white/10 dark:bg-white/5">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={url} alt={`写真 ${index + 1}`} onError={() => setBroken(true)} className="aspect-[3/4] w-full object-cover" />
-        <a href={url} target="_blank" rel="noreferrer" className="absolute inset-x-2 bottom-2 hidden items-center justify-center rounded-xl bg-black/55 py-1.5 text-xs font-medium text-white group-hover:flex">查看原图</a>
+        <img src={url} alt={`写真 ${index + 1}`} loading="lazy" decoding="async" onError={() => setBroken(true)} className="aspect-[3/4] w-full object-cover" />
+        <a href={url} target="_blank" rel="noreferrer" className="absolute inset-x-2 bottom-2 hidden items-center justify-center rounded-xl bg-black/55 py-1.5 text-xs font-medium text-white group-hover:flex">{ts("查看原图")}</a>
       </div>
     );
   }
   if (task.status === "failed" || broken) {
     return (
       <div className="flex aspect-[3/4] flex-col items-center justify-center gap-1.5 rounded-2xl border border-red-100 bg-red-50/60 px-2 text-center text-xs text-red-400 dark:border-red-400/20 dark:bg-red-500/10 dark:text-red-300">
-        <span>生成失败</span>
+        <span>{ts("生成失败")}</span>
         {task.error_message ? <span className="line-clamp-2 text-[10px] opacity-80">{textOf(task.error_message)}</span> : null}
       </div>
     );
@@ -255,7 +279,7 @@ function PhotoStudioPhotoCell({ task, url, index }: { task: MediaTask; url: stri
   return (
     <div className="flex aspect-[3/4] flex-col items-center justify-center gap-2 rounded-2xl bg-fuchsia-100/60 dark:bg-white/5">
       <Loader2 size={20} className="animate-spin text-fuchsia-400" />
-      <span className="text-xs text-fuchsia-500 dark:text-fuchsia-300">生成中…</span>
+      <span className="text-xs text-fuchsia-500 dark:text-fuchsia-300">{ts("生成中…")}</span>
     </div>
   );
 }
@@ -318,6 +342,7 @@ function normalizeCreativeScenes(items: unknown, generationType: "image" | "vide
 }
 
 function clientScenePrompt(code: string, label: string, generationType: "image" | "video") {
+  if (code === "auto") return "根据用户需求识别商品主图、场景图、详情页或营销海报，再分析商品并优化对应提示词。";
   const rules: Record<string, string> = {
     main_image: "必须生成电商商品主图：商品主体清晰，背景干净或高级简洁，突出材质和卖点，不要做成详情页、场景图或海报。",
     detail_image: "生成有阅读顺序的商品详情页，各模块围绕已确认信息分别展示首屏、设计、可见细节和使用情境；不重复拼图，没有依据时不强凑功能和规格。",
@@ -342,6 +367,7 @@ export function AgentWorkspace({ code }: { code: string }) {
   const [comicImageModels, setComicImageModels] = useState<Model[]>([]);
   const [comicVideoModels, setComicVideoModels] = useState<Model[]>([]);
   const [prompt, setPrompt] = useState("");
+  const [comicSourceMode, setComicSourceMode] = useState(false);
   const [commerceBrief, setCommerceBrief] = useState({ channel: "", audience: "", visual: "" });
   const [count, setCount] = useState(1);
   const [detailSectionCount, setDetailSectionCount] = useState(5);
@@ -364,6 +390,7 @@ export function AgentWorkspace({ code }: { code: string }) {
   });
   const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [promptEnhancing, setPromptEnhancing] = useState(false);
   const [confirmPrompt, setConfirmPrompt] = useState("");
   const [photoInputKey, setPhotoInputKey] = useState(0);
   const [selectedCandidateId, setSelectedCandidateId] = useState("");
@@ -373,7 +400,19 @@ export function AgentWorkspace({ code }: { code: string }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyItems, setHistoryItems] = useState<ProjectListItem[]>([]);
   const [novelModelCode, setNovelModelCode] = useState("");
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollRef = useRef<(() => void) | null>(null);
+  const pollScopeRef = useRef<string | null>(null);
+  const commerceParamsProjectRef = useRef("");
+
+  useEffect(() => {
+    if (code !== "ecommerce_image" || !project || commerceParamsProjectRef.current === project.public_id) return;
+    commerceParamsProjectRef.current = project.public_id;
+    const saved = { ...(project.inputs || {}), ...((project.outputs?.confirmation_payload as { params?: Record<string, unknown> } | undefined)?.params || {}) };
+    setCount(Number(saved.count || saved.n || 1));
+    setImageRatio(String(saved.aspect_ratio || saved.ratio || "1:1"));
+    setImageSize(String(saved.image_size || "1K"));
+    setDetailSectionCount(Number(saved.detail_section_count || 5));
+  }, [code, project]);
 
   useEffect(() => {
     setProject(null);
@@ -423,9 +462,13 @@ export function AgentWorkspace({ code }: { code: string }) {
     };
   }, [code, locale]);
 
-  useEffect(() => () => {
-    if (pollRef.current) clearInterval(pollRef.current);
-  }, []);
+  useEffect(() => {
+    pollScopeRef.current = code;
+    return () => {
+      pollScopeRef.current = null;
+      pollRef.current?.();
+    };
+  }, [code]);
 
   const display = workflow?.display_config || {};
   const isComicDrama = workflow?.runtime_config?.agent_mode === "comic_drama" || workflow?.runtime_config?.preset_code === "ai_comic_drama";
@@ -453,6 +496,7 @@ export function AgentWorkspace({ code }: { code: string }) {
     subtitle: step.subtitle && workflow ? td(`agent.${workflow.code}.step.${idx}.subtitle`, step.subtitle) : step.subtitle,
     tags: workflow ? step.tags?.map((tag) => td(`agent.${workflow.code}.step.${idx}.tag.${tag}`, tag)) : step.tags,
   }));
+  const translatedHeroTags = (display.hero_tags || []).map((tag) => workflow ? td(`agent.${workflow.code}.hero.${tag}`, tag) : ts(tag));
   const translatedTimeline = (display.timeline?.length ? display.timeline : (workflow?.nodes || []).map((node) => node.name))
     .map((item) => workflow ? td(`agent.${workflow.code}.timeline.${item}`, item) : item);
   const enableStepConfirm = flowOptions.enable_step_confirm !== false;
@@ -464,11 +508,13 @@ export function AgentWorkspace({ code }: { code: string }) {
   const supportMultipleReferences = inputCaps.support_multiple_references === true;
   const modeLabels = [t("agent.stepConfirm"), t("agent.autopilot")];
   const outputScenes = useMemo(
-    () => normalizeCreativeScenes(workflow?.runtime_config?.creative_scenes || workflow?.runtime_config?.output_scenes, generationType),
-    [workflow?.runtime_config?.creative_scenes, workflow?.runtime_config?.output_scenes, generationType]
+    () => Array.from(new Set([...(code === "ecommerce_image" && generationType === "image" ? ["auto"] : []), ...normalizeCreativeScenes(workflow?.runtime_config?.creative_scenes || workflow?.runtime_config?.output_scenes, generationType)])),
+    [code, workflow?.runtime_config?.creative_scenes, workflow?.runtime_config?.output_scenes, generationType]
   );
   const selectedSceneMeta = IMAGE_SCENES.find((item) => item.code === selectedScene) || IMAGE_SCENES[0];
   const isDetailPageScene = selectedSceneMeta.code === "detail_image" && generationType === "image";
+  const usesCompactCommerceInput = code === "ecommerce_image" || code === "ecommerce_video";
+  const usesInlineReferenceInput = usesCompactCommerceInput || code === "general_image";
   const videoConfig = parseVideoRuntime(generationModel?.runtime_rule);
 
   useEffect(() => {
@@ -663,7 +709,7 @@ export function AgentWorkspace({ code }: { code: string }) {
 
   useEffect(() => {
     if (!isComicDrama) return;
-    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current?.();
     setActiveComicProject(null);
     setProject(null);
     setComicAssets([]);
@@ -681,7 +727,7 @@ export function AgentWorkspace({ code }: { code: string }) {
     if (!isComicDrama) return;
     const featureCount = Math.max(1, translatedSteps.length);
     const timer = window.setInterval(() => {
-      setActiveComicFeature((prev) => (prev + 1) % featureCount);
+      if (!document.hidden) setActiveComicFeature((prev) => (prev + 1) % featureCount);
     }, 3600);
     return () => window.clearInterval(timer);
   }, [isComicDrama, translatedSteps.length]);
@@ -690,7 +736,7 @@ export function AgentWorkspace({ code }: { code: string }) {
     if (isComicDrama || project) return;
     const total = Math.max(1, Math.min(4, translatedSteps.length));
     const timer = window.setInterval(() => {
-      setActiveAgentFeature((prev) => (prev + 1) % total);
+      if (!document.hidden) setActiveAgentFeature((prev) => (prev + 1) % total);
     }, 3600);
     return () => window.clearInterval(timer);
   }, [isComicDrama, project, translatedSteps.length]);
@@ -701,7 +747,7 @@ export function AgentWorkspace({ code }: { code: string }) {
   };
 
   const selectComicProject = (item: ComicProject) => {
-    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current?.();
     setProject(null);
     setError("");
     setActiveComicProject(item);
@@ -714,14 +760,18 @@ export function AgentWorkspace({ code }: { code: string }) {
     }
   }, [generationType, outputScenes, selectedScene]);
 
+
   const startPolling = (publicId: string) => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(async () => {
+    if (pollScopeRef.current !== code) return;
+    pollRef.current?.();
+    pollRef.current = pollAsync(async (signal) => {
       try {
-        const p = await api<Project>(`/api/agent-projects/${publicId}`);
+        const p = await api<Project>(`/api/agent-projects/${publicId}`, { signal });
+        if (signal.aborted) return;
         setProject(p);
         if (p.status === "succeeded" || p.status === "failed" || p.status === "waiting_confirm" || p.status === "canceled") {
-          if (pollRef.current) clearInterval(pollRef.current);
+          pollRef.current?.();
+          window.dispatchEvent(new Event("starai:wallet-changed"));
           if (isComicDrama) void loadComicAssets();
         }
       } catch {
@@ -785,11 +835,12 @@ export function AgentWorkspace({ code }: { code: string }) {
             scene_prompt: scenePrompt,
             creative_scene: selectedSceneMeta.code,
             creative_scene_label: selectedSceneMeta.label,
-            detail_section_count: isDetailPageScene ? detailSectionCount : undefined,
+            detail_section_count: isDetailPageScene || selectedScene === "auto" ? detailSectionCount : undefined,
             generation_language: languageParams.language,
             generation_language_label: languageParams.language_label,
             ...(isComicDrama ? {
               ...comicSettings,
+              source_script: comicSourceMode ? prompt : undefined,
               comic_project_id: activeComicProject?.public_id,
               comic_project_name: activeComicProject?.name,
               comic_project_description: activeComicProject?.description,
@@ -812,9 +863,37 @@ export function AgentWorkspace({ code }: { code: string }) {
       if (isComicDrama) loadComicProjects();
       startPolling(p.public_id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "启动失败");
+      setError(err instanceof Error ? err.message : ts("启动失败"));
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const enhanceCommercePrompt = async () => {
+    const original = prompt.trim();
+    if (!original || promptEnhancing) return;
+    setPromptEnhancing(true);
+    setError("");
+    try {
+      const workflowContext = [
+        `当前创作场景硬性要求：\n${clientScenePrompt(selectedSceneMeta.code, selectedSceneMeta.label, generationType)}`,
+        (isDetailPageScene || selectedScene === "auto") ? `详情页模块数：${detailSectionCount}` : "",
+        commerceBrief.channel ? `发布渠道：${commerceBrief.channel}` : "",
+        commerceBrief.audience ? `目标受众：${commerceBrief.audience}` : "",
+        commerceBrief.visual ? `视觉风格：${commerceBrief.visual}` : "",
+        currentComicReferences().length ? `已上传 ${currentComicReferences().length} 张商品参考图；首图为主体视觉真值。` : "",
+        "增强时补齐构图、信息层级、卡片/图标/渐变/装饰及全页统一性要求；不得虚构商品功效、参数、材质、品牌或参考图中不可见的结构。品牌、型号、规格等信息互相冲突时，必须在增强结果中标记需确认，不得擅自选择。",
+      ].filter(Boolean).join("\n");
+      const result = await api<{ content: string }>("/api/canvases/enhance-prompt", {
+        method: "POST",
+        body: JSON.stringify({ prompt: original, workflow_code: code, target_kind: selectedSceneMeta.code, workflow_context: workflowContext }),
+      });
+      const enhanced = textOf(result.content).trim();
+      if (enhanced) setPrompt((current) => current.trim() === original ? enhanced : current);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : ts("提示词增强失败"));
+    } finally {
+      setPromptEnhancing(false);
     }
   };
 
@@ -832,7 +911,7 @@ export function AgentWorkspace({ code }: { code: string }) {
       if (typeof p.inputs?.model_code === "string") setNovelModelCode(p.inputs.model_code);
       startPolling(p.public_id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "启动失败");
+      setError(err instanceof Error ? err.message : ts("启动失败"));
     } finally {
       setSubmitting(false);
     }
@@ -850,7 +929,7 @@ export function AgentWorkspace({ code }: { code: string }) {
       setProject(p);
       startPolling(p.public_id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "启动失败");
+      setError(err instanceof Error ? err.message : ts("启动失败"));
     } finally {
       setSubmitting(false);
     }
@@ -868,7 +947,7 @@ export function AgentWorkspace({ code }: { code: string }) {
       setProject(updated);
       startPolling(project.public_id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "拍摄方案确认失败");
+      setError(err instanceof Error ? err.message : ts("拍摄方案确认失败"));
     }
   };
 
@@ -899,7 +978,7 @@ export function AgentWorkspace({ code }: { code: string }) {
       setProject(updated);
       startPolling(project.public_id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "大纲确认失败");
+      setError(err instanceof Error ? err.message : ts("大纲确认失败"));
     }
   };
 
@@ -915,23 +994,40 @@ export function AgentWorkspace({ code }: { code: string }) {
       setProject(updated);
       startPolling(project.public_id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "继续创作失败");
+      setError(err instanceof Error ? err.message : ts("继续创作失败"));
     }
   };
 
   const confirmStep = async () => {
     if (!project) return;
-    await api(`/api/agent-projects/${project.public_id}/steps/confirm/confirm`, {
-      method: "POST",
-      body: JSON.stringify({ payload: { prompt: confirmPrompt, candidate_id: selectedCandidateId } }),
-    });
-    const p = await api<Project>(`/api/agent-projects/${project.public_id}`);
-    setProject(p);
-    startPolling(project.public_id);
+    setError("");
+    try {
+      await api(`/api/agent-projects/${project.public_id}/steps/confirm/confirm`, {
+        method: "POST",
+        body: JSON.stringify({ payload: {
+          prompt: confirmPrompt, candidate_id: selectedCandidateId,
+          ...(code === "ecommerce_image" ? { params: {
+            ...buildImageGenerationParams({ count, ratio: imageRatio, imageSize }),
+            detail_section_count: detailSectionCount,
+          } } : {}),
+        } }),
+      });
+      const p = await api<Project>(`/api/agent-projects/${project.public_id}`);
+      setProject(p);
+      startPolling(project.public_id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : ts("方案确认失败，请重试"));
+    }
   };
 
   const enableAutopilot = async () => {
     if (!project) return;
+    // The commerce pipeline has just one confirmation step. Commit edits before
+    // continuing instead of enabling autopilot with the old recommended prompt.
+    if (code === "ecommerce_image" && project.status === "waiting_confirm") {
+      await confirmStep();
+      return;
+    }
     await api(`/api/agent-projects/${project.public_id}/autopilot`, { method: "POST", body: JSON.stringify({ enabled: true }) });
     startPolling(project.public_id);
   };
@@ -956,7 +1052,7 @@ export function AgentWorkspace({ code }: { code: string }) {
       }
       startPolling(project.public_id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "重试失败");
+      setError(err instanceof Error ? err.message : ts("重试失败"));
     }
   };
 
@@ -969,7 +1065,7 @@ export function AgentWorkspace({ code }: { code: string }) {
   };
 
   const resetTask = () => {
-    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current?.();
     setProject(null);
     setError("");
     if (isComicDrama) {
@@ -995,7 +1091,7 @@ export function AgentWorkspace({ code }: { code: string }) {
       setHistoryOpen(false);
       if (p.status === "pending" || p.status === "running" || p.status === "waiting_confirm") startPolling(p.public_id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "历史任务加载失败");
+      setError(err instanceof Error ? err.message : ts("历史任务加载失败"));
     }
   };
 
@@ -1011,7 +1107,7 @@ export function AgentWorkspace({ code }: { code: string }) {
         setStyleDraft((prev) => ({ ...prev, cover_url: asset.url }));
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "上传失败");
+      setError(err instanceof Error ? err.message : ts("上传失败"));
     } finally {
       setComicUploading(false);
     }
@@ -1033,7 +1129,7 @@ export function AgentWorkspace({ code }: { code: string }) {
       const result = await listAssets({ kind: "image", page: 1, page_size: 100 });
       setComicLibraryItems((result.items || []).filter((item) => item.url));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "资产库加载失败");
+      setError(err instanceof Error ? err.message : ts("资产库加载失败"));
       setComicLibraryItems([]);
     } finally {
       setComicLibraryLoading(false);
@@ -1050,7 +1146,7 @@ export function AgentWorkspace({ code }: { code: string }) {
 
   const createComicProject = async () => {
     if (!projectDraft.name.trim()) {
-      setError("请输入项目名称");
+      setError(ts("请输入项目名称"));
       return;
     }
     setSubmitting(true);
@@ -1065,7 +1161,7 @@ export function AgentWorkspace({ code }: { code: string }) {
       setProjectModalOpen(false);
       setProjectDraft((prev) => ({ ...prev, name: "", description: "", cover_url: "" }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "创建项目失败");
+      setError(err instanceof Error ? err.message : ts("创建项目失败"));
     } finally {
       setSubmitting(false);
     }
@@ -1106,7 +1202,7 @@ export function AgentWorkspace({ code }: { code: string }) {
 
   const createComicStyle = async () => {
     if (!styleDraft.name.trim()) {
-      setError("请输入风格名称");
+      setError(ts("请输入风格名称"));
       return;
     }
     setSubmitting(true);
@@ -1123,7 +1219,7 @@ export function AgentWorkspace({ code }: { code: string }) {
       setStyleAddOpen(null);
       setStyleModalOpen(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "保存风格失败");
+      setError(err instanceof Error ? err.message : ts("保存风格失败"));
     } finally {
       setSubmitting(false);
     }
@@ -1195,6 +1291,7 @@ export function AgentWorkspace({ code }: { code: string }) {
       for (const file of Array.from(files).slice(0, remaining)) {
         const asset = await uploadAsset(file, { name: file.name, kind: "image", asset_type: "role" });
         uploaded.push({ url: asset.url, name: asset.name || file.name, public_id: asset.public_id });
+        setComicReferences([...currentComicReferences(), ...uploaded]);
       }
       setComicReferences([...currentComicReferences(), ...uploaded]);
     } catch (err) {
@@ -1206,6 +1303,31 @@ export function AgentWorkspace({ code }: { code: string }) {
   };
 
   if (!workflow) return <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">{ts("加载中...")}</div>;
+
+  if (workflow?.runtime_config?.agent_mode === "product_refine") {
+    return <ProductRefineWorkspace key={`${photoInputKey}:${project?.public_id || "new"}`} workflowCode={workflow.code} workflowName={workflowName} pricing={workflow.runtime_config?.product_pricing} imageModel={generationModel} defaultReviewMode={workflow.runtime_config?.default_review_mode === "strict" ? "strict" : "standard"} project={project ? { ...project, inputs: project.inputs || {}, outputs: project.outputs || {}, estimated_cost: project.estimated_cost || 0, actual_cost: project.actual_cost || 0 } : null} submitting={submitting} error={error} onSubmit={runPhoto} onNewTask={() => { resetTask(); setPhotoInputKey(key => key + 1); }} onLoadHistory={loadHistory} onStop={async () => { if (!project) return; try { await api(`/api/agent-projects/${project.public_id}/cancel`, { method: "POST" }); setProject(await api<Project>(`/api/agent-projects/${project.public_id}`)); } catch (e) { setError(e instanceof Error ? e.message : ts("停止失败")); } }} onRefresh={async () => {
+      if (!project) return;
+      try {
+        const updated = await api<Project>(`/api/agent-projects/${project.public_id}`);
+        setProject(updated);
+        if (updated.status === "pending" || updated.status === "running") startPolling(updated.public_id);
+      } catch {
+        /* 到期状态刷新失败时由下一次轻量轮询重试 */
+      }
+    }} onReview={async action => {
+      if (!project) return;
+      setError("");
+      try {
+        const step = action === "review" ? "product_review" : "product_accept";
+        await api(`/api/agent-projects/${project.public_id}/steps/${step}/confirm`, { method: "POST", body: JSON.stringify({ payload: {} }) });
+        setProject(await api<Project>(`/api/agent-projects/${project.public_id}`));
+        startPolling(project.public_id);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : action === "review" ? ts("启动验收失败") : ts("完成任务失败"));
+        throw e;
+      }
+    }} />;
+  }
 
   if (isVirtualTryOn) {
     const tryOnInputBar = <VirtualTryOnInputBar key={`${photoInputKey}:${project?.public_id || "new"}`} defaultModelCode={workflow.runtime_config?.generation_model_code} initialInputs={project?.inputs} error={error} featureTags={display.feature_tags} onSubmit={runPhoto} />;
@@ -1256,27 +1378,27 @@ export function AgentWorkspace({ code }: { code: string }) {
           </div>
           {project.status === "waiting_confirm" && allMediaTasks.length === 0 ? (
             <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6">
-              <h1 className="text-2xl font-bold text-gray-900 dark:text-white">造型设计完成，等待确认</h1>
-              <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">确认或修改拍摄方案后，摄影师将按方案开拍。转智能托管则直接开拍。</p>
+              <h1 className="text-2xl font-bold text-gray-900 dark:text-white">{ts("造型设计完成，等待确认")}</h1>
+              <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">{ts("确认或修改拍摄方案后，摄影师将按方案开拍。转智能托管则直接开拍。")}</p>
               <div className="mt-5 rounded-2xl border border-fuchsia-100 bg-white/80 p-5 shadow-sm dark:border-fuchsia-400/20 dark:bg-white/5">
-                <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-fuchsia-600 dark:text-fuchsia-300">💄 拍摄方案</div>
-                <textarea value={confirmPrompt} readOnly={!allowPromptEdit} onChange={(event) => setConfirmPrompt(event.target.value)} className="h-40 w-full resize-none rounded-xl border border-gray-100 bg-white px-3 py-2 text-sm leading-6 text-gray-700 outline-none dark:border-white/10 dark:bg-gray-950 dark:text-gray-100" />
+                <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-fuchsia-600 dark:text-fuchsia-300">{ts("💄 拍摄方案")}</div>
+                <textarea hidden={isComicDrama && project?.outputs?.current_step === "keyframes_confirm"} value={confirmPrompt} readOnly={!allowPromptEdit} onChange={(event) => setConfirmPrompt(event.target.value)} className="h-40 w-full resize-none rounded-xl border border-gray-100 bg-white px-3 py-2 text-sm leading-6 text-gray-700 outline-none dark:border-white/10 dark:bg-gray-950 dark:text-gray-100" />
               </div>
               <div className="mt-4 flex flex-wrap items-center gap-3">
-                <button type="button" onClick={() => void confirmPhotoPlan()} className="rounded-xl bg-fuchsia-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-fuchsia-400">确认方案并开拍</button>
-                <button type="button" onClick={() => void enableAutopilot()} className="rounded-xl border border-gray-200 px-5 py-2.5 text-sm text-gray-600 hover:bg-white dark:border-white/15 dark:text-gray-300 dark:hover:bg-white/5">转智能托管，直接开拍</button>
+                <button type="button" onClick={() => void confirmPhotoPlan()} className="rounded-xl bg-fuchsia-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-fuchsia-400">{ts("确认方案并开拍")}</button>
+                <button type="button" onClick={() => void enableAutopilot()} className="rounded-xl border border-gray-200 px-5 py-2.5 text-sm text-gray-600 hover:bg-white dark:border-white/15 dark:text-gray-300 dark:hover:bg-white/5">{ts("转智能托管，直接开拍")}</button>
               </div>
             </div>
           ) : (
             <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6">
-              <button type="button" onClick={resetTask} className="mb-4 text-sm text-fuchsia-500 hover:text-fuchsia-600 dark:text-fuchsia-300">← 再拍一套</button>
+              <button type="button" onClick={resetTask} className="mb-4 text-sm text-fuchsia-500 hover:text-fuchsia-600 dark:text-fuchsia-300">{ts("← 再拍一套")}</button>
               <div className="mb-5 flex items-center justify-between gap-4">
-                <div><h1 className="text-2xl font-bold text-gray-900 dark:text-white">{workflowName}</h1><p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{project.status === "succeeded" ? "写真拍摄完成" : project.status === "failed" ? "拍摄失败" : project.status === "canceled" ? "已取消，已生成内容已保留" : "AI 摄影团队正在拍摄"}</p></div>
-                <span className="rounded-full border border-fuchsia-200 px-3 py-1 text-xs text-fuchsia-600 dark:border-fuchsia-400/30 dark:text-fuchsia-300">{project.status === "succeeded" ? "已完成" : project.status === "failed" ? "失败" : project.status === "canceled" ? "已取消" : `${totalProgress}%`}</span>
+                <div><h1 className="text-2xl font-bold text-gray-900 dark:text-white">{workflowName}</h1><p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{project.status === "succeeded" ? ts("写真拍摄完成") : project.status === "failed" ? ts("拍摄失败") : project.status === "canceled" ? ts("已取消，已生成内容已保留") : ts("AI 摄影团队正在拍摄")}</p></div>
+                <span className="rounded-full border border-fuchsia-200 px-3 py-1 text-xs text-fuchsia-600 dark:border-fuchsia-400/30 dark:text-fuchsia-300">{project.status === "succeeded" ? ts("已完成") : project.status === "failed" ? ts("失败") : project.status === "canceled" ? ts("已取消") : `${totalProgress}%`}</span>
               </div>
               {styling.summary ? (
                 <div className="mb-4 rounded-2xl border border-fuchsia-100 bg-white/80 px-4 py-3 text-sm leading-6 text-gray-600 shadow-sm dark:border-fuchsia-400/20 dark:bg-white/5 dark:text-gray-300">
-                  <span className="mr-2 font-semibold text-fuchsia-600 dark:text-fuchsia-300">💄 拍摄方案</span>{textOf(styling.summary)}
+                  <span className="mr-2 font-semibold text-fuchsia-600 dark:text-fuchsia-300">{ts("💄 拍摄方案")}</span>{textOf(styling.summary)}
                 </div>
               ) : null}
               {project.error_message && <div className="mb-3 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-300">{project.error_message}</div>}
@@ -1294,13 +1416,13 @@ export function AgentWorkspace({ code }: { code: string }) {
                   {Array.from({ length: extraPhotoCells }).map((_, index) => (
                     <div key={`extra-${index}`} className="flex aspect-[3/4] flex-col items-center justify-center gap-2 rounded-2xl bg-fuchsia-100/60 dark:bg-white/5">
                       <Loader2 size={20} className="animate-spin text-fuchsia-400" />
-                      <span className="text-xs text-fuchsia-500 dark:text-fuchsia-300">生成中…</span>
+                      <span className="text-xs text-fuchsia-500 dark:text-fuchsia-300">{ts("生成中…")}</span>
                     </div>
                   ))}
                 </div>
               )}
-              {failedCount > 0 && <p className="mt-3 text-xs text-red-500">{failedCount} 张生成失败，可重试补拍</p>}
-              {project.status === "failed" && <button type="button" onClick={() => void retry()} className="mt-4 rounded-xl bg-fuchsia-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-fuchsia-400">重试</button>}
+              {failedCount > 0 && <p className="mt-3 text-xs text-red-500">{failedCount}  {ts("张生成失败，可重试补拍")}</p>}
+              {project.status === "failed" && <button type="button" onClick={() => void retry()} className="mt-4 rounded-xl bg-fuchsia-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-fuchsia-400">{ts("重试")}</button>}
             </div>
           )}
         </div>
@@ -1320,7 +1442,7 @@ export function AgentWorkspace({ code }: { code: string }) {
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[#eaf7fb] text-gray-900 dark:bg-[#05080f] dark:text-white">
         <div className="pointer-events-none absolute inset-0 opacity-80 [background-image:linear-gradient(rgba(15,23,42,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,.08)_1px,transparent_1px)] [background-size:40px_40px] dark:opacity-60 dark:[background-image:linear-gradient(rgba(34,211,238,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,.08)_1px,transparent_1px)]" />
         <div className="relative z-10 flex min-h-0 flex-1 flex-col">
-          <div className="shrink-0 px-3 py-1.5 sm:px-5 sm:py-2 lg:px-8"><PhotoStudioTopBar workflowCode={workflow.code} historyFallbackTitle="小说任务" onNewTask={resetTask} onLoadHistory={loadHistory} /></div>
+          <div className="shrink-0 px-3 py-1.5 sm:px-5 sm:py-2 lg:px-8"><PhotoStudioTopBar workflowCode={workflow.code} historyFallbackTitle={ts("小说任务")} onNewTask={resetTask} onLoadHistory={loadHistory} /></div>
           <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 pt-3 sm:px-8 sm:pt-5">
             <div className="mx-auto w-full max-w-5xl">{content}</div>
           </div>
@@ -1332,20 +1454,20 @@ export function AgentWorkspace({ code }: { code: string }) {
       if (stage === "batch_confirm") {
         const done = chapters.length;
         const total = Number(outputs.total_chapters || 0);
-        return novelShell(<><div className="mb-6"><h1 className="text-2xl font-bold">已完成 {done}{total > 0 ? ` / ${total}` : ""} 章，等待确认</h1><p className="mt-2 text-sm text-gray-500 dark:text-gray-400">逐步确认模式下，每完成一批章节都会在这里等你。确认后会继续创作后面的章节。</p></div><NovelChapterList chapters={chapters} currentChapter={done} totalChapters={total} onRequestRevision={reviseNovel} /><div className="mt-5 flex flex-wrap items-center gap-3"><button type="button" onClick={() => void confirmNovelBatch()} className="rounded-xl bg-indigo-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-400">确认并继续创作</button><button type="button" onClick={() => void enableAutopilot()} className="rounded-xl border border-gray-200 px-5 py-2.5 text-sm text-gray-600 hover:bg-white dark:border-white/15 dark:text-gray-300 dark:hover:bg-white/5">转智能托管，不再逐步确认</button></div>{error && <p className="mt-3 text-sm text-red-500 dark:text-red-400">{error}</p>}</>);
+        return novelShell(<><div className="mb-6"><h1 className="text-2xl font-bold">{ts("已完成")} {done}{total > 0 ? ` / ${total}` : ""}  {ts("章，等待确认")}</h1><p className="mt-2 text-sm text-gray-500 dark:text-gray-400">{ts("逐步确认模式下，每完成一批章节都会在这里等你。确认后会继续创作后面的章节。")}</p></div><NovelChapterList chapters={chapters} currentChapter={done} totalChapters={total} onRequestRevision={reviseNovel} /><div className="mt-5 flex flex-wrap items-center gap-3"><button type="button" onClick={() => void confirmNovelBatch()} className="rounded-xl bg-indigo-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-400">{ts("确认并继续创作")}</button><button type="button" onClick={() => void enableAutopilot()} className="rounded-xl border border-gray-200 px-5 py-2.5 text-sm text-gray-600 hover:bg-white dark:border-white/15 dark:text-gray-300 dark:hover:bg-white/5">{ts("转智能托管，不再逐步确认")}</button></div>{error && <p className="mt-3 text-sm text-red-500 dark:text-red-400">{error}</p>}</>);
       }
       if (outputs.planning) {
         const planning = outputs.planning as any;
         const outline = planning.outline || {};
         const volumes = Array.isArray(outline.volumes) ? outline.volumes : [];
-        return novelShell(<><div className="mb-6"><h1 className="text-2xl font-bold">故事策划完成，等待确认</h1><p className="mt-2 text-sm text-gray-500 dark:text-gray-400">确认大纲后，AI 编辑部会按章节逐步创作正文。</p></div><div className="mb-5 rounded-2xl border border-indigo-200 bg-white/70 p-5 dark:border-indigo-400/20 dark:bg-white/[0.04]"><h2 className="text-lg font-semibold">{planning.title || "未命名小说"}</h2><p className="mt-2 text-sm leading-6 text-gray-500 dark:text-gray-400">{planning.core_concept || planning.world_setting || "已完成世界观和故事规划"}</p><div className="mt-4 space-y-2">{volumes.flatMap((volume: any) => Array.isArray(volume.chapters) ? volume.chapters : []).map((chapter: any) => <div key={chapter.chapter_number} className="rounded-xl bg-indigo-50 px-3 py-2 dark:bg-white/[0.04]"><span className="mr-2 text-xs text-indigo-600 dark:text-indigo-300">第 {chapter.chapter_number} 章</span><span className="text-sm text-gray-700 dark:text-gray-200">{chapter.title}</span><p className="mt-1 text-xs text-gray-500">{chapter.summary}</p></div>)}</div></div><div className="flex flex-wrap items-center gap-3"><button type="button" onClick={() => void confirmNovelOutline()} className="rounded-xl bg-indigo-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-400">确认大纲并开始创作</button><button type="button" onClick={() => void enableAutopilot()} className="rounded-xl border border-gray-200 px-5 py-2.5 text-sm text-gray-600 hover:bg-white dark:border-white/15 dark:text-gray-300 dark:hover:bg-white/5">转智能托管，后续不再确认</button></div>{error && <p className="mt-3 text-sm text-red-500 dark:text-red-400">{error}</p>}</>);
+        return novelShell(<><div className="mb-6"><h1 className="text-2xl font-bold">{ts("故事策划完成，等待确认")}</h1><p className="mt-2 text-sm text-gray-500 dark:text-gray-400">{ts("确认大纲后，AI 编辑部会按章节逐步创作正文。")}</p></div><div className="mb-5 rounded-2xl border border-indigo-200 bg-white/70 p-5 dark:border-indigo-400/20 dark:bg-white/[0.04]"><h2 className="text-lg font-semibold">{planning.title || "未命名小说"}</h2><p className="mt-2 text-sm leading-6 text-gray-500 dark:text-gray-400">{planning.core_concept || planning.world_setting || "已完成世界观和故事规划"}</p><div className="mt-4 space-y-2">{volumes.flatMap((volume: any) => Array.isArray(volume.chapters) ? volume.chapters : []).map((chapter: any) => <div key={chapter.chapter_number} className="rounded-xl bg-indigo-50 px-3 py-2 dark:bg-white/[0.04]"><span className="mr-2 text-xs text-indigo-600 dark:text-indigo-300">{ts("第")} {chapter.chapter_number}  {ts("章")}</span><span className="text-sm text-gray-700 dark:text-gray-200">{chapter.title}</span><p className="mt-1 text-xs text-gray-500">{chapter.summary}</p></div>)}</div></div><div className="flex flex-wrap items-center gap-3"><button type="button" onClick={() => void confirmNovelOutline()} className="rounded-xl bg-indigo-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-400">{ts("确认大纲并开始创作")}</button><button type="button" onClick={() => void enableAutopilot()} className="rounded-xl border border-gray-200 px-5 py-2.5 text-sm text-gray-600 hover:bg-white dark:border-white/15 dark:text-gray-300 dark:hover:bg-white/5">{ts("转智能托管，后续不再确认")}</button></div>{error && <p className="mt-3 text-sm text-red-500 dark:text-red-400">{error}</p>}</>);
       }
     }
     return novelShell(
       <>
           <div className="mb-6 flex items-center justify-between gap-4">
-            <div><h1 className="text-2xl font-bold">{workflowName}</h1><p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{project.status === "waiting_confirm" ? "等待你的确认" : project.status === "succeeded" ? "全书创作完成" : project.status === "canceled" ? "已取消，已生成内容已保留" : project.status === "failed" ? "创作中断，已生成内容已保留" : "AI 编辑部正在协作创作"}</p></div>
-            <span className="rounded-full border border-indigo-300 px-3 py-1 text-xs text-indigo-600 dark:border-indigo-400/30 dark:text-indigo-300">{project.status === "succeeded" ? "已完成" : project.status === "canceled" ? "已取消" : project.status === "failed" ? "已中断" : project.status === "waiting_confirm" ? "待确认" : project.status}</span>
+            <div><h1 className="text-2xl font-bold">{workflowName}</h1><p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{project.status === "waiting_confirm" ? ts("等待你的确认") : project.status === "succeeded" ? ts("全书创作完成") : project.status === "canceled" ? ts("已取消，已生成内容已保留") : project.status === "failed" ? ts("创作中断，已生成内容已保留") : ts("AI 编辑部正在协作创作")}</p></div>
+            <span className="rounded-full border border-indigo-300 px-3 py-1 text-xs text-indigo-600 dark:border-indigo-400/30 dark:text-indigo-300">{project.status === "succeeded" ? ts("已完成") : project.status === "canceled" ? ts("已取消") : project.status === "failed" ? ts("已中断") : project.status === "waiting_confirm" ? ts("待确认") : project.status}</span>
           </div>
           {/* 未开始章节创作（或项目被取消/中断）时，展示已完成的故事策划大纲，避免“啥也看不到” */}
           {chapters.length === 0 && outputs.planning ? (() => {
@@ -1356,7 +1478,7 @@ export function AgentWorkspace({ code }: { code: string }) {
               <div className="mb-5 rounded-2xl border border-indigo-200 bg-white/70 p-5 dark:border-indigo-400/20 dark:bg-white/[0.04]">
                 <h2 className="text-lg font-semibold">{planning.title || "未命名小说"}</h2>
                 <p className="mt-2 text-sm leading-6 text-gray-500 dark:text-gray-400">{planning.core_concept || planning.world_setting || "已完成世界观和故事规划"}</p>
-                <div className="mt-4 space-y-2">{volumes.flatMap((volume: any) => Array.isArray(volume.chapters) ? volume.chapters : []).map((chapter: any) => <div key={chapter.chapter_number} className="rounded-xl bg-indigo-50 px-3 py-2 dark:bg-white/[0.04]"><span className="mr-2 text-xs text-indigo-600 dark:text-indigo-300">第 {chapter.chapter_number} 章</span><span className="text-sm text-gray-700 dark:text-gray-200">{chapter.title}</span><p className="mt-1 text-xs text-gray-500">{chapter.summary}</p></div>)}</div>
+                <div className="mt-4 space-y-2">{volumes.flatMap((volume: any) => Array.isArray(volume.chapters) ? volume.chapters : []).map((chapter: any) => <div key={chapter.chapter_number} className="rounded-xl bg-indigo-50 px-3 py-2 dark:bg-white/[0.04]"><span className="mr-2 text-xs text-indigo-600 dark:text-indigo-300">{ts("第")} {chapter.chapter_number}  {ts("章")}</span><span className="text-sm text-gray-700 dark:text-gray-200">{chapter.title}</span><p className="mt-1 text-xs text-gray-500">{chapter.summary}</p></div>)}</div>
               </div>
             );
           })() : null}
@@ -1387,7 +1509,7 @@ export function AgentWorkspace({ code }: { code: string }) {
             type="button"
             onClick={() => setComicDrawerCollapsed(!projectDrawerCollapsed)}
             className="absolute -right-4 top-6 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-500 shadow dark:border-white/10 dark:bg-gray-900 dark:text-gray-300"
-            title={projectDrawerCollapsed ? "展开项目" : "收起项目"}
+            title={projectDrawerCollapsed ? ts("展开项目") : ts("收起项目")}
           >
             {projectDrawerCollapsed ? ">" : "<"}
           </button>
@@ -1510,8 +1632,8 @@ export function AgentWorkspace({ code }: { code: string }) {
                 )}
                 {project?.status === "waiting_confirm" && (
                   <div className="mb-2 rounded-2xl border border-amber-200 bg-amber-50/95 p-3 shadow-sm dark:border-amber-400/20 dark:bg-amber-500/10">
-                    <div className="mb-2 text-sm font-semibold text-amber-800 dark:text-amber-200">{t("agent.confirmPlan")}</div>
-                    <textarea value={confirmPrompt} readOnly={!allowPromptEdit} onChange={(event) => setConfirmPrompt(event.target.value)} className="h-24 w-full resize-none rounded-xl border border-amber-100 bg-white px-3 py-2 text-sm text-gray-700 outline-none dark:border-amber-400/20 dark:bg-gray-950 dark:text-gray-100" />
+                    <div className="mb-2 text-sm font-semibold text-amber-800 dark:text-amber-200">{project.outputs?.current_step === "keyframes_confirm" ? ts("请检查下方关键帧的人物与服装，确认后生成视频") : t("agent.confirmPlan")}</div>
+                    <textarea hidden={isComicDrama && project?.outputs?.current_step === "keyframes_confirm"} value={confirmPrompt} readOnly={!allowPromptEdit} onChange={(event) => setConfirmPrompt(event.target.value)} className="h-24 w-full resize-none rounded-xl border border-amber-100 bg-white px-3 py-2 text-sm text-gray-700 outline-none dark:border-amber-400/20 dark:bg-gray-950 dark:text-gray-100" />
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button type="button" onClick={() => void confirmStep()} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-cyan-500 px-4 text-sm font-semibold text-white"><Check size={15} />{t("agent.confirmGenerate")}</button>
                       {canUseAutopilot && <button type="button" onClick={() => void enableAutopilot()} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-gray-900 px-4 text-sm font-semibold text-white dark:bg-white dark:text-gray-900"><Wand2 size={15} />{t("agent.autopilot")}</button>}
@@ -1519,15 +1641,19 @@ export function AgentWorkspace({ code }: { code: string }) {
                   </div>
                 )}
                 {finalVideoURL ? <div className="mb-2"><FinalComicVideo url={finalVideoURL} /></div> : null}
-                {project && (project.status === "succeeded" || project.status === "failed") ? <ComicProjectPanel project={project} /> : null}
+                {project ? <ComicProjectPanel project={project} /> : null}
                 {!project && <section className="soft-input overflow-hidden">
                   <div className="border-b border-gray-50 px-3 py-2 dark:border-white/10 sm:px-4">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <button type="button" onClick={() => void openComicImageLibrary("references")} className="flex h-9 items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 px-3 text-xs font-medium text-gray-600 transition hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10">
+                    <div className="scroll-x-only grid grid-cols-[1fr_auto_1fr] items-center gap-2 overflow-x-auto">
+                      <button type="button" onClick={() => void openComicImageLibrary("references")} className="flex h-9 shrink-0 items-center gap-2 justify-self-start rounded-xl border border-gray-100 bg-gray-50 px-3 text-xs font-medium text-gray-600 transition hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10">
                         <Folder size={15} />{t("asset.library")}
                         {currentComicReferences().length > 0 ? <span className="rounded-full bg-cyan-500/10 px-1.5 py-0.5 text-[10px] text-cyan-600 dark:text-cyan-200">{currentComicReferences().length}</span> : null}
                       </button>
-                      <button type="button" onClick={() => setHelpOpen(true)} className="flex h-9 items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 px-3 text-xs font-medium text-gray-600 transition hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10">
+                      <label title={ts("输入是已有剧本／原文：按原文定位分镜，保留来源供核对")} className={"flex h-9 shrink-0 cursor-pointer items-center gap-2 justify-self-center rounded-xl border px-3 text-xs font-medium transition " + (comicSourceMode ? "border-cyan-300 bg-cyan-50 text-cyan-700 dark:border-cyan-400/30 dark:bg-cyan-400/10 dark:text-cyan-200" : "border-gray-100 bg-gray-50 text-gray-600 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10")}>
+                        <input aria-label={ts("输入是已有剧本／原文：按原文定位分镜，保留来源供核对")} type="checkbox" checked={comicSourceMode} onChange={(e) => setComicSourceMode(e.target.checked)} className="h-3.5 w-3.5 accent-cyan-500" />
+                        <span className="whitespace-nowrap">{ts("输入是已有剧本／原文：按原文定位分镜，保留来源供核对")}</span>
+                      </label>
+                      <button type="button" onClick={() => setHelpOpen(true)} className="flex h-9 shrink-0 items-center gap-2 justify-self-end rounded-xl border border-gray-100 bg-gray-50 px-3 text-xs font-medium text-gray-600 transition hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10">
                         <HelpCircle size={15} />{t("agent.help")}
                       </button>
                     </div>
@@ -1546,7 +1672,7 @@ export function AgentWorkspace({ code }: { code: string }) {
                   </div>
                   <div className="flex flex-wrap items-center gap-2 border-t border-gray-100 px-3 py-3 dark:border-white/10 sm:px-4">
                     <button type="button" onClick={() => setStyleModalOpen(true)} className="flex h-9 items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 px-3 text-xs font-semibold text-gray-700 dark:border-white/10 dark:bg-white/5 dark:text-gray-200">
-					<Star size={14} className="text-cyan-500" /> {activeComicProject?.style?.name || activeStyle?.name || t("comic.selectStyle")}
+					<Star size={14} className="text-cyan-500" /> {activeComicProject?.style?.name ? ts(activeComicProject.style.name) : activeStyle?.name ? ts(activeStyle.name) : t("comic.selectStyle")}
                     </button>
                     <button type="button" onClick={() => setProjectModalOpen(true)} className="flex h-9 items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 px-3 text-xs font-semibold text-gray-700 dark:border-white/10 dark:bg-white/5 dark:text-gray-200">
 					<Folder size={14} /> {activeComicProject?.name || t("comic.selectProject")}
@@ -1556,12 +1682,12 @@ export function AgentWorkspace({ code }: { code: string }) {
                     </button>
                     <MediaOptionMenu
                       icon={<Mic2 size={14} />}
-                      activeLabel={comicNarrationLabel(comicSettings.narration_perspective)}
+                      activeLabel={ts(comicNarrationLabel(comicSettings.narration_perspective))}
                       title={ts("配音叙事模式")}
                       subtitle={ts("控制剧本中的旁白视角与角色对白结构")}
                       menuWidth={300}
                     >
-                      {(close) => <div className="space-y-1.5">{COMIC_NARRATION_MODES.map((option) => <MediaMenuOption key={option.value} multiline selected={comicSettings.narration_perspective === option.value} onClick={() => { setComicSettings((prev) => ({ ...prev, narration_perspective: option.value })); close(); }}><div><div className="leading-5">{option.label}</div><div className="mt-0.5 whitespace-normal text-[11px] font-normal leading-4 opacity-65">{option.description}</div></div></MediaMenuOption>)}</div>}
+                      {(close) => <div className="space-y-1.5">{COMIC_NARRATION_MODES.map((option) => <MediaMenuOption key={option.value} multiline selected={comicSettings.narration_perspective === option.value} onClick={() => { setComicSettings((prev) => ({ ...prev, narration_perspective: option.value })); close(); }}><div><div className="leading-5">{ts(option.label)}</div><div className="mt-0.5 whitespace-normal text-[11px] font-normal leading-4 opacity-65">{ts(option.description)}</div></div></MediaMenuOption>)}</div>}
                     </MediaOptionMenu>
                     {selectedComicVideoModel && !comicVideoSupportsReference ? <button type="button" onClick={() => setSettingsOpen(true)} className="h-9 rounded-xl border border-amber-300 bg-amber-50 px-3 text-xs font-semibold text-amber-700 dark:border-amber-400/30 dark:bg-amber-400/10 dark:text-amber-200">{ts("当前视频模型不支持参考图")}</button> : null}
                     <MediaOptionMenu
@@ -1750,7 +1876,7 @@ export function AgentWorkspace({ code }: { code: string }) {
               workflowIcon={workflow.icon || "\u{1F916}"}
               workflowName={workflowName}
               workflowDescription={workflowDescription}
-              heroTags={display.hero_tags || ["AI Agent", "Step confirm", "Autopilot"]}
+              heroTags={translatedHeroTags.length ? translatedHeroTags : ["AI Agent", "Step confirm", "Autopilot"]}
               features={translatedSteps}
               activeIndex={activeAgentFeature}
               onSelect={setActiveAgentFeature}
@@ -1759,30 +1885,25 @@ export function AgentWorkspace({ code }: { code: string }) {
             />
           )}
           {project && (
-          <div className="grid gap-4">
-            <div className="soft-card p-5 sm:p-6 min-h-[320px]">
-                <div className="space-y-5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-sm font-semibold text-gray-900 dark:text-white">{projectStage(project, allMediaTasks, generationType, isComicDrama, ts)}</div>
-                      <div className="mt-0.5 text-xs text-gray-400">{t("workspace.generationProgress")} {totalProgress}%</div>
+          <div className="space-y-3">
+                <div className="rounded-2xl border border-gray-100 bg-white/80 px-4 py-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <span className={"flex h-8 w-8 shrink-0 items-center justify-center rounded-full " + (project.status === "succeeded" ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300" : project.status === "failed" ? "bg-red-500/10 text-red-500" : "bg-primary/10 text-primary")}>
+                        {project.status === "succeeded" ? <Check size={16} /> : project.status === "failed" ? <X size={16} /> : <Loader2 size={16} className="animate-spin" />}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold text-gray-900 dark:text-white">{projectStage(project, allMediaTasks, generationType, isComicDrama, ts)}</div>
+                        <div className="mt-0.5 text-xs text-gray-400">{project.status === "succeeded" ? ts("成品已就绪，可继续核对或下载") : `${t("workspace.generationProgress")} ${totalProgress}%`}</div>
+                      </div>
                     </div>
-                    {project.status === "running" || project.status === "pending" ? <Loader2 size={18} className="animate-spin text-primary" /> : null}
+                    {project.status !== "succeeded" && project.status !== "failed" ? <span className="shrink-0 text-xs font-semibold text-gray-500 dark:text-gray-300">{totalProgress}%</span> : null}
                   </div>
-                  <div className="grid grid-cols-4 gap-2">
-                    {([
-                      t("workspace.stepStart"),
-                      t("workspace.stepAnalysis"),
-                      generationType === "video" ? t("workspace.stepVideoGenerating") : t("workspace.stepImageGenerating"),
-                      t("workspace.stepDone"),
-                    ]).map((s, i) => {
-                      const activeIdx = project.status === "succeeded" ? 3 : (mediaTasks.length || project.outputs?.current_step === "generate") ? 2 : analysis && Object.keys(analysis).length ? 1 : 0;
-                      return <div key={s} className={"h-8 rounded-xl flex items-center justify-center text-[11px] border " + (i <= activeIdx ? "bg-primary/10 border-primary/30 text-gray-900 dark:text-gray-100" : "bg-gray-50 border-gray-100 text-gray-400 dark:bg-white/5 dark:border-white/10")}>{s}</div>;
-                    })}
-                  </div>
-                  <div className="h-2 rounded-full bg-gray-100 dark:bg-white/10 overflow-hidden"><div className="h-full bg-primary transition-all" style={{ width: totalProgress + "%" }} /></div>
+                  {project.status !== "succeeded" && project.status !== "failed" ? <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-gray-100 dark:bg-white/10"><div className="h-full rounded-full bg-primary transition-all duration-500" style={{ width: totalProgress + "%" }} /></div> : null}
+                </div>
+                <div className="space-y-3">
                   {isComicDrama && <ComicProjectPanel project={project} />}
-                  {code === "ecommerce_image" && Array.isArray(analysis.missing_information) && analysis.missing_information.length > 0 && <div className="rounded-xl bg-amber-500/10 p-3 text-xs leading-6 text-amber-800 dark:text-amber-200"><p className="font-semibold">{ts("尚未确认的信息（不会作为商品事实使用）")}</p>{analysis.missing_information.map((item: unknown, i: number) => <p key={i}>{textOf(item)}</p>)}</div>}
+                  {code === "ecommerce_image" && Array.isArray(analysis.missing_information) && analysis.missing_information.length > 0 && <details className="group rounded-xl border border-amber-200/70 bg-amber-50/70 text-xs text-amber-900 dark:border-amber-400/20 dark:bg-amber-500/10 dark:text-amber-100"><summary className="cursor-pointer list-none px-3 py-2.5 font-semibold">{ts("尚未确认的信息（不会作为商品事实使用）")} · {analysis.missing_information.length}</summary><div className="border-t border-amber-200/60 px-3 py-2 leading-6 dark:border-amber-400/15">{analysis.missing_information.map((item: unknown, i: number) => <p key={i}>{textOf(item)}</p>)}</div></details>}
 
                   {project.status === "waiting_confirm" && (
                     <div className="rounded-2xl border border-amber-100 bg-amber-50 p-4 space-y-3 dark:bg-amber-500/10 dark:border-amber-400/20">
@@ -1839,21 +1960,21 @@ export function AgentWorkspace({ code }: { code: string }) {
 
                   {finalVideoURL && <FinalComicVideo url={finalVideoURL} />}
                   {detailPage && <DetailPagePanel detailPage={detailPage} />}
-                  {mediaTasks.length > 0 && <MediaTaskGrid tasks={mediaTasks} generationType={generationType} onMore={() => router.push("/app/works")} />}
+                  {mediaTasks.length > 0 && !(detailPage && textOf(detailPage.long_image_url)) && <MediaTaskGrid tasks={mediaTasks} generationType={generationType} onMore={() => router.push("/app/works")} />}
                   {project.status === "failed" && (
                     <div className="rounded-2xl bg-red-50 border border-red-100 p-4 dark:bg-red-500/10 dark:border-red-400/20">
                       <p className="text-sm text-red-600 dark:text-red-300 mb-3">{project.error_message || t("workspace.generationFailed")}</p>
-                      <button onClick={retry} className="h-9 px-4 rounded-xl bg-gray-900 text-white text-sm flex items-center gap-1.5"><RefreshCw size={15} />{t("common.retry")}</button>
+                      {code === "ecommerce_image" && detailPage?.status === "partial" && <p className="mb-3 text-xs leading-5 text-red-500 dark:text-red-200">{ts("已成功的详情模块会保留；重试只补生成失败或因参数变化而失效的模块。")}</p>}
+                      <button onClick={retry} className="h-9 px-4 rounded-xl bg-gray-900 text-white text-sm flex items-center gap-1.5"><RefreshCw size={15} />{code === "ecommerce_image" && detailPage?.status === "partial" ? ts("仅重试未完成模块") : t("common.retry")}</button>
                     </div>
                   )}
                 </div>
-            </div>
           </div>
           )}
         </div>
       </div>
 
-      <div className="relative z-10 shrink-0 px-3 sm:px-6 pb-4 sm:pb-5 pt-2">
+      <div className="relative z-10 shrink-0 px-3 pb-2 pt-1 sm:px-6 sm:pb-3">
         <div className="mx-auto w-full max-w-[1040px]">
           {error && <p className="text-sm text-red-500 mb-2 px-1">{error}</p>}
           <div className="soft-input overflow-hidden">
@@ -1905,6 +2026,7 @@ export function AgentWorkspace({ code }: { code: string }) {
                     </div>
                   )}
                 </div>
+                {selectedScene === "auto" && <p className="hidden min-w-0 flex-1 px-3 text-center text-xs text-gray-500 lg:block">{ts("AI按描述识别出图类型；详情页按模块数生成，其余按图片数量生成。")}</p>}
                 <div className="flex items-center gap-2">
                   {isComicDrama && (
                     <button onClick={() => setSettingsOpen(true)} className="h-9 px-3 rounded-xl bg-gray-50 border border-gray-100 text-gray-600 text-sm flex items-center gap-1.5 hover:bg-white transition dark:bg-white/5 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/10">
@@ -1915,16 +2037,10 @@ export function AgentWorkspace({ code }: { code: string }) {
                 </div>
               </div>
             </div>
-            <div className="px-3 sm:px-4 pt-3">
-              {code === "ecommerce_image" && supportReferenceImage ? (
-                <div className="flex items-center gap-2 overflow-x-auto pb-1">
-                  {currentComicReferences().map((item,index) => <div key={item.url} className="relative h-16 w-16 shrink-0 overflow-hidden rounded-xl border border-gray-200 dark:border-white/10"><Image src={item.url} alt={item.name || `商品参考 ${index+1}`} width={128} height={128} className="h-full w-full object-cover" /><span className="absolute bottom-0 inset-x-0 bg-black/60 text-center text-[9px] text-white">{index === 0 ? ts("主体参考") : `${ts("补充参考")} ${index}`}</span><button type="button" aria-label={`${ts("移除参考图")} ${index+1}`} onClick={() => setComicReferences(currentComicReferences().filter(x => x.url !== item.url))} className="absolute right-0 top-0 rounded-bl bg-black/70 p-0.5 text-white"><X size={12}/></button></div>)}
-                  {currentComicReferences().length < 8 && <label className="flex h-16 w-20 shrink-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-gray-300 text-gray-500 dark:border-white/20 dark:text-gray-400">{uploading ? <Loader2 size={18} className="animate-spin"/> : <Plus size={18}/>}<span className="text-[10px]">{ts("参考图")} {currentComicReferences().length}/8</span><input type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" disabled={uploading} onChange={e => {void handleComicUploads(e.target.files);e.target.value="";}}/></label>}
-                  <span className="max-w-52 shrink-0 text-[11px] leading-5 text-gray-400">{ts("首图为商品主体，可补充背面、细节、包装；不同款式请分开生成。")}</span>
-                </div>
-              ) : supportReferenceImage && isVideoGeneration && generationModel ? (
+            {!usesInlineReferenceInput && supportReferenceImage && <div className="px-3 pt-3 sm:px-4">
+              {isVideoGeneration && generationModel ? (
                 <VideoUploadArea config={videoConfig} media={videoMedia} onChange={setVideoMedia} />
-              ) : supportReferenceImage ? (
+              ) : (
                 <div className="scroll-x-only flex flex-nowrap items-center gap-2 h-16 min-w-0">
                   {productImage ? (
                     <div className="group/img relative w-16 h-16 rounded-2xl overflow-hidden border-2 border-white shadow-lg bg-gray-100 shrink-0">
@@ -1945,18 +2061,48 @@ export function AgentWorkspace({ code }: { code: string }) {
                     </label>
                   )}
                 </div>
-              ) : null}
+              )}
+            </div>}
+
+            <div className="relative flex min-w-0 items-start">
+              {code === "ecommerce_image" && supportReferenceImage && <div className="scroll-x-only flex max-w-[52%] shrink-0 items-center gap-2 overflow-x-auto py-3 pl-3 pr-1">
+                {currentComicReferences().map((item,index) => <div key={item.url} title={item.name || `${ts("商品参考")} ${index+1}`} className="group/img relative h-16 w-16 shrink-0 overflow-hidden rounded-xl border border-gray-200 bg-gray-100 shadow-sm dark:border-white/10 dark:bg-white/5"><Image src={item.url} alt={item.name || `商品参考 ${index+1}`} width={128} height={128} sizes="64px" className="h-full w-full object-cover" /><span className="absolute inset-x-0 bottom-0 bg-black/65 py-0.5 text-center text-[9px] leading-4 text-white">{index === 0 ? ts("主体") : index+1}</span><button type="button" aria-label={`${ts("移除参考图")} ${index+1}`} onClick={() => setComicReferences(currentComicReferences().filter(x => x.url !== item.url))} className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/70 text-white opacity-90 transition sm:opacity-0 sm:group-hover/img:opacity-100"><X size={11}/></button></div>)}
+                {currentComicReferences().length < 8 && <label title={ts("上传商品参考图，首图作为主体参考")} className="flex h-16 w-20 shrink-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-gray-200 bg-gray-50 text-gray-500 shadow-sm transition hover:border-primary/50 hover:bg-primary/5 dark:border-white/15 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-primary/10">{uploading ? <Loader2 size={18} className="animate-spin text-primary"/> : <Plus size={18}/>}<span className="text-[10px] leading-none">{ts("参考图")} {currentComicReferences().length}/8</span><input aria-label={ts("上传商品参考图")} type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" disabled={uploading} onChange={e => {void handleComicUploads(e.target.files);e.target.value="";}}/></label>}
+              </div>}
+              {code === "general_image" && supportReferenceImage && <div className="flex shrink-0 items-center py-3 pl-3 pr-1">
+                {productImage ? <div className="group/img relative h-16 w-16 shrink-0 overflow-hidden rounded-xl border border-gray-200 bg-gray-100 shadow-sm dark:border-white/10 dark:bg-white/5"><Image src={productImage.url} alt={productImage.name} width={128} height={128} sizes="64px" className="h-full w-full object-cover" /><button type="button" aria-label={t("common.remove")} onClick={() => setProductImage(null)} className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/70 text-white opacity-90 transition sm:opacity-0 sm:group-hover/img:opacity-100"><X size={11}/></button></div> : <label title={t("asset.uploadImage")} className="flex h-16 w-20 shrink-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-gray-200 bg-gray-50 text-gray-500 shadow-sm transition hover:border-primary/50 hover:bg-primary/5 dark:border-white/15 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-primary/10">{uploading ? <Loader2 size={18} className="animate-spin text-primary"/> : <Plus size={18}/>}<span className="px-1 text-center text-[10px] leading-none">{t("asset.uploadImage")}</span><input aria-label={t("asset.uploadImage")} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" disabled={uploading} onChange={e => {handleUpload(e.target.files?.[0]);e.target.value="";}}/></label>}
+              </div>}
+              {code === "ecommerce_video" && supportReferenceImage && isVideoGeneration && generationModel && <div className="scroll-x-only max-h-[88px] max-w-[52%] shrink-0 overflow-auto py-3 pl-3 pr-1"><VideoUploadArea config={videoConfig} media={videoMedia} onChange={setVideoMedia} /></div>}
+              <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder={code === "ecommerce_image" ? ts("描述商品、真实卖点和出图需求；左侧可上传主体、背面、细节或包装参考图，首图作为主体，不同款式请分开生成。") : code === "ecommerce_video" ? ts("描述商品、真实卖点、目标平台和视频意图；左侧可按当前模型上传商品参考图、首尾帧、参考视频或音频。") : code === "general_image" ? ts("描述想生成的画面；左侧可上传参考图，并补充主体、构图、风格和光线要求。") : workflow ? td(`agent.${workflow.code}.input.placeholder`, display.input?.placeholder || t("agent.inputPlaceholder")) : (display.input?.placeholder || t("agent.inputPlaceholder"))} rows={3} className="min-h-[88px] min-w-0 flex-1 resize-none bg-transparent px-4 pb-10 pt-3 pr-14 text-sm text-gray-700 focus:outline-none placeholder:text-gray-400 leading-relaxed dark:text-gray-100 dark:placeholder:text-gray-500" />
+              {usesCompactCommerceInput && <button type="button" onClick={() => void enhanceCommercePrompt()} disabled={!prompt.trim() || promptEnhancing} aria-label={ts("增强提示词")} title={ts(`按当前${selectedSceneMeta.label}场景增强提示词`)} className="absolute bottom-2 right-3 flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-500 shadow-sm transition hover:border-primary/50 hover:bg-primary/10 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-not-allowed disabled:opacity-35 dark:border-white/15 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-primary/15 dark:hover:text-white">
+                {promptEnhancing ? <Loader2 size={15} className="animate-spin" /> : <Wand2 size={15} />}
+              </button>}
             </div>
-            <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder={code === "ecommerce_image" ? ts("描述商品、真实卖点和出图需求；可补充尺寸、材质、品牌色及需要保留的细节。") : workflow ? td(`agent.${workflow.code}.input.placeholder`, display.input?.placeholder || t("agent.inputPlaceholder")) : (display.input?.placeholder || t("agent.inputPlaceholder"))} rows={3} className="w-full min-h-[88px] resize-none bg-transparent px-4 py-3 text-sm text-gray-700 focus:outline-none placeholder:text-gray-400 leading-relaxed dark:text-gray-100 dark:placeholder:text-gray-500" />
             <div className="px-3 sm:px-4 py-3 border-t border-gray-50 dark:border-white/10 flex items-center gap-2">
               <div className="scroll-x-only flex min-w-0 flex-1 flex-nowrap items-center gap-2 overflow-x-auto pb-1">
-                {code === "ecommerce_image" && ([
-                  {key:"channel", label:"渠道", options:["淘宝 / 天猫","京东","拼多多","抖音电商","小红书","亚马逊","Shopify / 独立站"]},
-                  {key:"audience", label:"受众", options:["大众日常","学生青年","都市通勤","家庭生活","亲子家庭","户外运动","品质消费","礼赠人群"]},
-                  {key:"visual", label:"视觉", options:["简约白底","自然生活","高级质感","清新柔和","科技未来","国风雅致","复古胶片","活力撞色"]},
-                ] as const).map(setting => <MediaOptionMenu key={setting.key} icon={<Settings2 size={14}/>} title={ts(setting.label)} subtitle={ts("选择常用选项，其他要求可写在输入框中")} activeLabel={commerceBrief[setting.key] || ts(setting.label + " · 自动")} compactOnMobile>
-                  {close => <div className="space-y-1"><MediaMenuOption selected={!commerceBrief[setting.key]} onClick={() => {setCommerceBrief(v => ({...v,[setting.key]:""}));close();}}>{ts("自动 · 按输入内容")}</MediaMenuOption>{setting.options.map(option => <MediaMenuOption key={option} selected={commerceBrief[setting.key] === option} onClick={() => {setCommerceBrief(v => ({...v,[setting.key]:option}));close();}}>{ts(option)}</MediaMenuOption>)}<p className="px-2 pt-2 text-[11px] text-gray-400">{ts("其他要求可直接写在输入框中")}</p></div>}
-                </MediaOptionMenu>)}
+                {code === "ecommerce_image" && <MediaOptionMenu icon={<Settings2 size={14}/>} title={ts("电商设置")} subtitle={ts("设置发布渠道、目标受众和视觉风格")} activeLabel={ts("设置")} menuWidth={320} compactOnMobile>
+                  {close => <div className="space-y-3">
+                    {([
+                      {key:"channel", label:"渠道", options:["淘宝 / 天猫","京东","拼多多","抖音电商","小红书","亚马逊","Shopify / 独立站"]},
+                      {key:"audience", label:"受众", options:["大众日常","学生青年","都市通勤","家庭生活","亲子家庭","户外运动","品质消费","礼赠人群"]},
+                      {key:"visual", label:"视觉风格", options:["简约白底","自然生活","高级质感","清新柔和","科技未来","国风雅致","复古胶片","活力撞色"]},
+                    ] as const).map(setting => <div key={setting.key} className="grid grid-cols-[64px_minmax(0,1fr)] items-center gap-2">
+                      <span className="mb-1.5 block px-1 text-xs font-medium text-gray-500 dark:text-gray-400">{ts(setting.label)}</span>
+                      <div className="min-w-0 [&>button]:w-full [&>button]:justify-between">
+                        <MediaOptionMenu icon={<Settings2 size={14}/>} title={ts(setting.label)} subtitle={ts("选择常用选项，其他要求可写在输入框中")} activeLabel={commerceBrief[setting.key] || ts("自动 · 按输入内容")} menuWidth={280}>
+                          {closeSetting => <div className="space-y-1">
+                            <MediaMenuOption selected={!commerceBrief[setting.key]} onClick={() => {setCommerceBrief(v => ({...v,[setting.key]:""}));closeSetting();}}>{ts("自动 · 按输入内容")}</MediaMenuOption>
+                            {setting.options.map(option => <MediaMenuOption key={option} selected={commerceBrief[setting.key] === option} onClick={() => {setCommerceBrief(v => ({...v,[setting.key]:option}));closeSetting();}}>{ts(option)}</MediaMenuOption>)}
+                          </div>}
+                        </MediaOptionMenu>
+                      </div>
+                    </div>)}
+                    <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-1 pt-3 dark:border-white/10">
+                      <span className="text-[11px] text-gray-400">{ts("其他要求可直接写在输入框中")}</span>
+                      <button type="button" onClick={close} className="h-8 shrink-0 rounded-lg bg-primary px-4 text-xs font-semibold text-gray-950">{ts("完成")}</button>
+                    </div>
+                  </div>}
+                </MediaOptionMenu>}
                 {isComicDrama ? (
                   <ComicSettingsSummary settings={comicSettings} onOpen={() => setSettingsOpen(true)} />
                 ) : (
@@ -1969,7 +2115,7 @@ export function AgentWorkspace({ code }: { code: string }) {
                   </>
                 ) : (
                   <>
-                    {isDetailPageScene && <MediaOptionMenu icon={<Settings2 size={14}/>} title={ts("详情页模块数")} activeLabel={`${detailSectionCount} ${ts("个模块")}`} subtitle={ts("默认5个：首屏、购买理由、细节、场景、收尾")} compactOnMobile>
+                    {(isDetailPageScene || selectedScene === "auto") && <MediaOptionMenu icon={<Settings2 size={14}/>} title={ts("详情页模块数")} activeLabel={`${detailSectionCount} ${ts("个模块")}`} subtitle={ts("默认5个：首屏、购买理由、细节、场景、收尾")} compactOnMobile>
                       {close => <div className="space-y-1">{[4,5,6,7,8].map(n => <MediaMenuOption key={n} selected={detailSectionCount === n} onClick={() => {setDetailSectionCount(n);close();}}>{n} {ts("个模块")}{n === 5 ? ` · ${ts("推荐")}` : ""}</MediaMenuOption>)}<p className="px-2 pt-2 text-[11px] leading-5 text-gray-400">{ts("生成前先确认五个模块；规格、多色与包装仅在参考资料明确提供时使用。每个模块自动排版短文案并拼成长图。")}</p></div>}
                     </MediaOptionMenu>}
                     <ImageGenerationToolbar
@@ -2360,9 +2506,9 @@ function ComicProjectModal({
               {selectedStyle ? selectedStyle.name : ts("点击选择画面风格")}
             </button>
             <div>
-              <div className="mb-2 text-sm text-gray-600 dark:text-gray-300">屏幕方向</div>
+              <div className="mb-2 text-sm text-gray-600 dark:text-gray-300">{ts("屏幕方向")}</div>
               <div className="grid grid-cols-2 gap-3">
-                {[["landscape", "横屏"], ["portrait", "竖屏"]].map(([value, label]) => (
+                {[["landscape", ts("横屏")], ["portrait", ts("竖屏")]].map(([value, label]) => (
                   <button key={value} type="button" onClick={() => update({ orientation: value })} className={"rounded-xl border p-4 text-sm font-semibold " + (draft.orientation === value ? "border-cyan-300 bg-cyan-50 text-cyan-700 dark:border-cyan-400/40 dark:bg-cyan-400/10 dark:text-cyan-200" : "border-gray-200 text-gray-500 dark:border-white/10 dark:text-gray-300")}>{label}</button>
                 ))}
               </div>
@@ -2383,6 +2529,12 @@ function ComicProjectModal({
 
 function ComicStyleModal({ styles, selectedId, filter, onFilter, onSelect, onClose, onConfirm, onAdd, onDelete }: { styles: ComicStyle[]; selectedId: string; filter: "all" | "system" | "mine"; onFilter: (v: "all" | "system" | "mine") => void; onSelect: (id: string) => void; onClose: () => void; onConfirm: () => void; onAdd: (mode: "smart" | "manual") => void; onDelete: (style: ComicStyle) => void }) {
 	const { t, ts } = useI18n();
+  const [query, setQuery] = useState("");
+  const originalStyleCategories: Record<string, string> = {
+    cds_kr_comic: "动漫", cds_jp_anime: "动漫", cds_cn_ancient: "国风",
+    cds_cyber: "幻想", cds_chibi_3d: "三维", cds_sketch: "动漫",
+  };
+  const visibleStyles = styles.filter(style => `${style.name} ${style.prompt}`.toLowerCase().includes(query.trim().toLowerCase()));
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/35 p-4 backdrop-blur-sm" onClick={onClose}>
       <div className="w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-2xl dark:border dark:border-white/10 dark:bg-gray-900" onClick={(e) => e.stopPropagation()}>
@@ -2394,8 +2546,10 @@ function ComicStyleModal({ styles, selectedId, filter, onFilter, onSelect, onClo
           {([["all", ts("全部")], ["system", ts("系统风格")], ["mine", ts("我的风格")] ] as const).map(([value, label]) => <button key={value} onClick={() => onFilter(value)} className={"rounded-full px-4 py-2 text-sm " + (filter === value ? "bg-orange-50 text-orange-600 ring-1 ring-orange-200 dark:bg-orange-400/10 dark:text-orange-200" : "border border-gray-200 text-gray-500 dark:border-white/10 dark:text-gray-300")}>{label}</button>)}
           <div className="ml-auto flex gap-2"><button onClick={() => onAdd("smart")} className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-600 dark:border-violet-400/20 dark:bg-violet-400/10 dark:text-violet-200">{ts("新增风格 - 智能识别")}</button><button onClick={() => onAdd("manual")} className="rounded-xl border border-orange-200 bg-orange-50 px-4 py-2 text-sm font-semibold text-orange-600 dark:border-orange-400/20 dark:bg-orange-400/10 dark:text-orange-200">{ts("新增风格 - 手动添加")}</button></div>
         </div>
+        <div className="px-5 pt-4"><input aria-label={ts("搜索风格")} placeholder={ts("搜索风格、类别或画面特征")} value={query} onChange={event => setQuery(event.target.value)} className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-none focus:border-orange-400 dark:border-white/10 dark:bg-white/5 dark:text-white" /></div>
         <div className="grid max-h-[56vh] gap-4 overflow-y-auto p-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-			{styles.map((style) => <div key={style.public_id} className="relative"><button onClick={() => onSelect(style.public_id)} className={"w-full overflow-hidden rounded-2xl border bg-white text-left shadow-sm transition dark:bg-white/5 " + (selectedId === style.public_id ? "border-orange-300 ring-2 ring-orange-200 dark:border-orange-400/50" : "border-gray-200 hover:border-orange-200 dark:border-white/10")}><div className="aspect-[1.55] bg-gray-100 dark:bg-white/10">{style.cover_url ? <Image src={style.cover_url} alt="" width={480} height={310} sizes="(max-width: 640px) 50vw, 25vw" className="h-full w-full object-cover" /> : null}</div><div className="p-3"><div className="truncate text-sm font-semibold text-gray-900 dark:text-white">{style.name}</div><div className="mt-1 text-[11px] text-gray-400">{style.source === "system" ? "系统" : "我的"}</div></div></button>{style.source !== "system" ? <button type="button" title={t("comic.deleteStyle")} onClick={() => onDelete(style)} className="absolute right-2 top-2 rounded-lg bg-black/60 p-1.5 text-white hover:bg-red-500"><Trash2 size={13} /></button> : null}</div>)}
+			{visibleStyles.length === 0 && <p className="col-span-full py-8 text-center text-sm text-gray-400">{ts("没有匹配的风格，请尝试其他关键词")}</p>}
+            {visibleStyles.map((style) => <div key={style.public_id} className="relative"><button onClick={() => onSelect(style.public_id)} className={"w-full overflow-hidden rounded-2xl border bg-white text-left shadow-sm transition dark:bg-white/5 " + (selectedId === style.public_id ? "border-orange-300 ring-2 ring-orange-200 dark:border-orange-400/50" : "border-gray-200 hover:border-orange-200 dark:border-white/10")}><div className="aspect-[1.55] bg-gray-100 dark:bg-white/10">{style.source !== "system" && style.cover_url ? <Image src={style.cover_url} alt="" width={480} height={310} sizes="(max-width: 640px) 50vw, 25vw" className="h-full w-full object-cover" /> : <div className="flex h-full flex-col justify-center gap-2 bg-gradient-to-br from-slate-800 to-slate-950 p-4 text-white"><span className="text-[10px] tracking-widest text-orange-200">{ts(style.prompt.match(/^【(.+?)】/)?.[1] || originalStyleCategories[style.public_id] || (style.source === "system" ? "系统风格" : "自定义"))}</span><span className="text-lg font-semibold">{style.source === "system" ? ts(style.name) : style.name}</span><span className="line-clamp-3 text-[11px] leading-5 text-slate-300">{style.prompt.replace(/^【.+?】/, "").split("。")[0]}</span></div>}</div><div className="p-3"><div className="truncate text-sm font-semibold text-gray-900 dark:text-white">{style.source === "system" ? ts(style.name) : style.name}</div><p title={style.prompt} className="mt-1 line-clamp-2 text-[11px] leading-5 text-gray-500 dark:text-gray-400">{style.prompt}</p><div className="mt-1 text-[11px] text-gray-400">{style.source === "system" ? ts("系统") : ts("我的")}</div></div></button>{style.source !== "system" ? <button type="button" title={t("comic.deleteStyle")} onClick={() => onDelete(style)} className="absolute right-2 top-2 rounded-lg bg-black/60 p-1.5 text-white hover:bg-red-500"><Trash2 size={13} /></button> : null}</div>)}
         </div>
         <div className="flex justify-between border-t border-gray-100 p-5 dark:border-white/10"><span className="text-sm text-gray-400">{selectedId ? ts("已选择风格") : ts("尚未选择风格")}</span><div className="flex gap-2"><button onClick={onClose} className="rounded-xl border border-gray-200 px-5 py-2 text-sm text-gray-600 dark:border-white/10 dark:text-gray-300">{ts("取消")}</button><button onClick={onConfirm} className="rounded-xl bg-orange-400 px-5 py-2 text-sm font-semibold text-white">{ts("确认选择")}</button></div></div>
       </div>
@@ -2440,7 +2594,7 @@ function ComicImageLibraryModal({ target, items, selected, loading, onSelected, 
       <div className="w-full max-w-4xl overflow-hidden rounded-3xl bg-white shadow-2xl dark:border dark:border-white/10 dark:bg-gray-900" onClick={(event) => event.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-gray-100 p-5 dark:border-white/10"><div><div className="text-lg font-bold text-gray-900 dark:text-white">{ts("从资产库选择图片")}</div><div className="mt-1 text-xs text-gray-400">{multiple ? td("comic.library.maxSelection", "可选择最多 {max} 张角色、道具或场景参考图", { max }) : ts("选择一张图片作为项目封面或风格参考")}</div></div><button type="button" onClick={onClose} className="rounded-xl bg-gray-100 p-2 text-gray-500 dark:bg-white/10 dark:text-gray-300"><X size={18} /></button></div>
         <div className="max-h-[62vh] min-h-[320px] overflow-y-auto p-5">
-          {loading ? <div className="flex h-72 items-center justify-center text-cyan-500"><Loader2 className="animate-spin" /></div> : items.length === 0 ? <div className="flex h-72 flex-col items-center justify-center gap-3 text-gray-400"><ImageIcon size={36} /><span>{ts("资产库暂无图片")}</span></div> : <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">{items.map((asset) => { const active = selected.some((entry) => entry.url === asset.url); return <button key={asset.public_id} type="button" onClick={() => toggle(asset)} className={`overflow-hidden rounded-2xl border text-left transition ${active ? "border-cyan-400 ring-2 ring-cyan-300/40" : "border-gray-100 hover:border-cyan-200 dark:border-white/10"}`}><div className="relative aspect-square bg-gray-100 dark:bg-white/5"><img src={asset.url} alt={asset.name || ""} className="h-full w-full object-cover" />{active ? <span className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-cyan-500 text-white"><Check size={14} /></span> : null}</div><div className="truncate px-3 py-2 text-xs font-medium text-gray-700 dark:text-gray-200">{asset.name || asset.public_id}</div></button>; })}</div>}
+          {loading ? <div className="flex h-72 items-center justify-center text-cyan-500"><Loader2 className="animate-spin" /></div> : items.length === 0 ? <div className="flex h-72 flex-col items-center justify-center gap-3 text-gray-400"><ImageIcon size={36} /><span>{ts("资产库暂无图片")}</span></div> : <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">{items.map((asset) => { const active = selected.some((entry) => entry.url === asset.url); return <button key={asset.public_id} type="button" onClick={() => toggle(asset)} className={`overflow-hidden rounded-2xl border text-left transition ${active ? "border-cyan-400 ring-2 ring-cyan-300/40" : "border-gray-100 hover:border-cyan-200 dark:border-white/10"}`}><div className="relative aspect-square bg-gray-100 dark:bg-white/5"><img loading="lazy" decoding="async" src={asset.url} alt={asset.name || ""} className="h-full w-full object-cover" />{active ? <span className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-cyan-500 text-white"><Check size={14} /></span> : null}</div><div className="truncate px-3 py-2 text-xs font-medium text-gray-700 dark:text-gray-200">{asset.name || asset.public_id}</div></button>; })}</div>}
         </div>
         <div className="flex items-center justify-between border-t border-gray-100 p-5 dark:border-white/10"><span className="text-sm text-gray-400">{td("comic.library.selectedCount", "已选择 {count}/{max}", { count: selected.length, max })}</span><div className="flex gap-2"><button type="button" onClick={onClose} className="rounded-xl border border-gray-200 px-5 py-2 text-sm text-gray-600 dark:border-white/10 dark:text-gray-300">{ts("取消")}</button><button type="button" disabled={selected.length === 0} onClick={onConfirm} className="rounded-xl bg-cyan-500 px-5 py-2 text-sm font-semibold text-white disabled:opacity-40">{ts("确认选择")}</button></div></div>
       </div>
@@ -2449,7 +2603,7 @@ function ComicImageLibraryModal({ target, items, selected, loading, onSelected, 
 }
 
 function ComicAssetModal({ projectId, items, onClose, onChanged }: { projectId: string; items: ComicAsset[]; onClose: () => void; onChanged: () => Promise<void> | void }) {
-  const { t } = useI18n();
+  const { t, ts } = useI18n();
   const [draft, setDraft] = useState({ asset_type: "character", asset_code: "", name: "", description: "", visual_prompt: "", reference_asset_ids: [] as string[], metadata: { reference_urls: [] as string[], reference_names: [] as string[] }, status: "locked" });
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -2471,7 +2625,7 @@ function ComicAssetModal({ projectId, items, onClose, onChanged }: { projectId: 
       }
       setReferences([...assetReferences, ...added]);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "参考图上传失败");
+      setMessage(error instanceof Error ? error.message : t("参考图上传失败"));
     } finally {
       setUploading(false);
     }
@@ -2482,7 +2636,7 @@ function ComicAssetModal({ projectId, items, onClose, onChanged }: { projectId: 
       const result = await listAssets({ kind: "image", page: 1, page_size: 100 });
       setLibraryItems((result.items || []).filter((item) => item.url));
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "资产库加载失败");
+      setMessage(error instanceof Error ? error.message : t("资产库加载失败"));
     }
   };
   const save = async () => {
@@ -2513,7 +2667,7 @@ function ComicAssetModal({ projectId, items, onClose, onChanged }: { projectId: 
           <div className="space-y-3">
             {["character", "prop", "location"].map((type) => {
               const grouped = items.filter((item) => item.asset_type === type);
-              return <section key={type}><div className="mb-1.5 text-xs font-semibold text-gray-500">{labels[type]} · {grouped.length}</div><div className="grid gap-2 sm:grid-cols-2">{grouped.map((item) => { const cover = Array.isArray(item.metadata?.reference_urls) ? item.metadata.reference_urls[0] : ""; return <div key={item.public_id} className="rounded-xl border border-gray-100 p-3 dark:border-white/10"><div className="flex items-start gap-2">{cover ? <img src={cover} alt="" className="h-12 w-12 shrink-0 rounded-lg object-cover" /> : <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-400 dark:bg-white/5"><ImageIcon size={17} /></div>}<div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold text-gray-900 dark:text-white">{item.name}</div><div className="text-[10px] text-gray-400">{item.asset_code} · v{item.version} · {item.reference_asset_ids?.length || 0} 张参考图</div></div><button type="button" onClick={() => void remove(item)} className="text-gray-300 hover:text-red-500"><Trash2 size={14} /></button></div><p className="mt-1 line-clamp-2 text-xs leading-5 text-gray-500 dark:text-gray-300">{item.visual_prompt || item.description}</p></div>; })}</div></section>;
+              return <section key={type}><div className="mb-1.5 text-xs font-semibold text-gray-500">{labels[type]} · {grouped.length}</div><div className="grid gap-2 sm:grid-cols-2">{grouped.map((item) => { const cover = Array.isArray(item.metadata?.reference_urls) ? item.metadata.reference_urls[0] : ""; return <div key={item.public_id} className="rounded-xl border border-gray-100 p-3 dark:border-white/10"><div className="flex items-start gap-2">{cover ? <img loading="lazy" decoding="async" src={cover} alt="" className="h-12 w-12 shrink-0 rounded-lg object-cover" /> : <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-400 dark:bg-white/5"><ImageIcon size={17} /></div>}<div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold text-gray-900 dark:text-white">{item.name}</div><div className="text-[10px] text-gray-400">{item.asset_code} · v{item.version} · {item.reference_asset_ids?.length || 0}  {ts("张参考图")}</div></div><button type="button" onClick={() => void remove(item)} className="text-gray-300 hover:text-red-500"><Trash2 size={14} /></button></div><p className="mt-1 line-clamp-2 text-xs leading-5 text-gray-500 dark:text-gray-300">{item.visual_prompt || item.description}</p></div>; })}</div></section>;
             })}
           </div>
         </div>
@@ -2526,16 +2680,16 @@ function ComicAssetModal({ projectId, items, onClose, onChanged }: { projectId: 
             <textarea value={draft.description} onChange={(event) => setDraft((prev) => ({ ...prev, description: event.target.value }))} placeholder={t("comic.assetDescription")} className="h-20 w-full resize-none rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-gray-950 dark:text-white" />
             <textarea value={draft.visual_prompt} onChange={(event) => setDraft((prev) => ({ ...prev, visual_prompt: event.target.value }))} placeholder={t("comic.assetVisualPrompt")} className="h-28 w-full resize-none rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-gray-950 dark:text-white" />
             <div className="rounded-xl border border-gray-200 bg-white p-3 dark:border-white/10 dark:bg-gray-950">
-              <div className="mb-2 flex items-center justify-between"><div><div className="text-sm font-semibold text-gray-800 dark:text-gray-100">角色 / 道具 / 场景参考图</div><div className="text-[11px] text-gray-400">最多 8 张，将用于关键帧一致性生成</div></div><span className="text-xs text-gray-400">{assetReferences.length}/8</span></div>
-              {assetReferences.length ? <div className="mb-3 grid grid-cols-4 gap-2">{assetReferences.map((item) => <div key={item.url} className="group relative aspect-square overflow-hidden rounded-lg bg-gray-100"><img src={item.url} alt={item.name} className="h-full w-full object-cover" /><button type="button" onClick={() => setReferences(assetReferences.filter((entry) => entry.url !== item.url))} className="absolute right-1 top-1 hidden h-6 w-6 items-center justify-center rounded-full bg-black/70 text-white group-hover:flex"><X size={12} /></button></div>)}</div> : null}
-              <div className="grid grid-cols-2 gap-2"><label className="flex h-9 cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-cyan-200 text-xs font-semibold text-cyan-700 dark:border-cyan-400/30 dark:text-cyan-200">{uploading ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}上传图片<input type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" disabled={uploading} onChange={(event) => { void uploadReferences(event.target.files); event.currentTarget.value = ""; }} /></label><button type="button" onClick={() => void openLibrary()} className="flex h-9 items-center justify-center gap-2 rounded-lg border border-violet-200 text-xs font-semibold text-violet-700 dark:border-violet-400/30 dark:text-violet-200"><Folder size={14} />资产库</button></div>
+              <div className="mb-2 flex items-center justify-between"><div><div className="text-sm font-semibold text-gray-800 dark:text-gray-100">{ts("角色 / 道具 / 场景参考图")}</div><div className="text-[11px] text-gray-400">{ts("最多 8 张，将用于关键帧一致性生成")}</div></div><span className="text-xs text-gray-400">{assetReferences.length}/8</span></div>
+              {assetReferences.length ? <div className="mb-3 grid grid-cols-4 gap-2">{assetReferences.map((item) => <div key={item.url} className="group relative aspect-square overflow-hidden rounded-lg bg-gray-100"><img loading="lazy" decoding="async" src={item.url} alt={item.name} className="h-full w-full object-cover" /><button type="button" onClick={() => setReferences(assetReferences.filter((entry) => entry.url !== item.url))} className="absolute right-1 top-1 hidden h-6 w-6 items-center justify-center rounded-full bg-black/70 text-white group-hover:flex"><X size={12} /></button></div>)}</div> : null}
+              <div className="grid grid-cols-2 gap-2"><label className="flex h-9 cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-cyan-200 text-xs font-semibold text-cyan-700 dark:border-cyan-400/30 dark:text-cyan-200">{uploading ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}{ts("上传图片")}<input type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" disabled={uploading} onChange={(event) => { void uploadReferences(event.target.files); event.currentTarget.value = ""; }} /></label><button type="button" onClick={() => void openLibrary()} className="flex h-9 items-center justify-center gap-2 rounded-lg border border-violet-200 text-xs font-semibold text-violet-700 dark:border-violet-400/30 dark:text-violet-200"><Folder size={14} />{ts("资产库")}</button></div>
             </div>
             {message && <p className="text-xs text-red-500">{message}</p>}
             <button type="button" disabled={saving || !draft.name.trim()} onClick={() => void save()} className="h-10 w-full rounded-xl bg-cyan-500 text-sm font-semibold text-white disabled:opacity-40">{saving ? t("common.saving") : t("common.save")}</button>
           </div>
         </div>
       </div>
-      {libraryOpen ? <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/55 p-4" onClick={() => setLibraryOpen(false)}><div className="w-full max-w-3xl rounded-3xl bg-white p-5 shadow-2xl dark:border dark:border-white/10 dark:bg-gray-900" onClick={(event) => event.stopPropagation()}><div className="mb-4 flex items-center justify-between"><div><div className="font-bold text-gray-900 dark:text-white">选择资产参考图</div><div className="text-xs text-gray-400">可多选，最多 8 张</div></div><button type="button" onClick={() => setLibraryOpen(false)} className="rounded-lg bg-gray-100 p-2 dark:bg-white/10"><X size={16} /></button></div><div className="grid max-h-[58vh] grid-cols-2 gap-3 overflow-y-auto sm:grid-cols-3 md:grid-cols-4">{libraryItems.map((asset) => { const active = assetReferences.some((item) => item.url === asset.url); return <button key={asset.public_id} type="button" onClick={() => setReferences(active ? assetReferences.filter((item) => item.url !== asset.url) : [...assetReferences, { url: asset.url, name: asset.name || asset.public_id, public_id: asset.public_id }].slice(0, 8))} className={`overflow-hidden rounded-xl border ${active ? "border-cyan-400 ring-2 ring-cyan-300/30" : "border-gray-100 dark:border-white/10"}`}><div className="relative aspect-square"><img src={asset.url} alt="" className="h-full w-full object-cover" />{active ? <Check className="absolute right-2 top-2 rounded-full bg-cyan-500 p-1 text-white" size={22} /> : null}</div><div className="truncate p-2 text-left text-xs text-gray-700 dark:text-gray-200">{asset.name || asset.public_id}</div></button>; })}</div><button type="button" onClick={() => setLibraryOpen(false)} className="mt-4 h-10 w-full rounded-xl bg-cyan-500 text-sm font-semibold text-white">完成选择</button></div></div> : null}
+      {libraryOpen ? <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/55 p-4" onClick={() => setLibraryOpen(false)}><div className="w-full max-w-3xl rounded-3xl bg-white p-5 shadow-2xl dark:border dark:border-white/10 dark:bg-gray-900" onClick={(event) => event.stopPropagation()}><div className="mb-4 flex items-center justify-between"><div><div className="font-bold text-gray-900 dark:text-white">{ts("选择资产参考图")}</div><div className="text-xs text-gray-400">{ts("可多选，最多 8 张")}</div></div><button type="button" onClick={() => setLibraryOpen(false)} className="rounded-lg bg-gray-100 p-2 dark:bg-white/10"><X size={16} /></button></div><div className="grid max-h-[58vh] grid-cols-2 gap-3 overflow-y-auto sm:grid-cols-3 md:grid-cols-4">{libraryItems.map((asset) => { const active = assetReferences.some((item) => item.url === asset.url); return <button key={asset.public_id} type="button" onClick={() => setReferences(active ? assetReferences.filter((item) => item.url !== asset.url) : [...assetReferences, { url: asset.url, name: asset.name || asset.public_id, public_id: asset.public_id }].slice(0, 8))} className={`overflow-hidden rounded-xl border ${active ? "border-cyan-400 ring-2 ring-cyan-300/30" : "border-gray-100 dark:border-white/10"}`}><div className="relative aspect-square"><img loading="lazy" decoding="async" src={asset.url} alt="" className="h-full w-full object-cover" />{active ? <Check className="absolute right-2 top-2 rounded-full bg-cyan-500 p-1 text-white" size={22} /> : null}</div><div className="truncate p-2 text-left text-xs text-gray-700 dark:text-gray-200">{asset.name || asset.public_id}</div></button>; })}</div><button type="button" onClick={() => setLibraryOpen(false)} className="mt-4 h-10 w-full rounded-xl bg-cyan-500 text-sm font-semibold text-white">{ts("完成选择")}</button></div></div> : null}
     </div>
   );
 }
@@ -2564,7 +2718,7 @@ function ComicPreferenceModal({
         <div className="grid max-h-[68vh] gap-3 overflow-y-auto md:grid-cols-2">
           <ComicSettingCard title={ts("资产图风格参考")}><Segmented value={settings.style_reference_mode} options={[["image_reference", ts("附带风格参考图")], ["text_only", ts("仅文字描述")]]} onChange={(v) => set({ style_reference_mode: v })} /></ComicSettingCard>
           <ComicSettingCard title={ts("分镜时长模式")}><Segmented value={settings.duration_mode} options={[["compact", ts("紧凑")], ["standard", ts("常规")], ["long", ts("超长")]]} onChange={(v) => set({ duration_mode: v })} /></ComicSettingCard>
-          <ComicSettingCard title={ts("配音叙事模式")}><Segmented value={settings.narration_perspective || "smart"} options={COMIC_NARRATION_MODES.map((item) => [item.value, ts(item.label)])} onChange={(v) => set({ narration_perspective: v })} /><div className="mt-2 text-[11px] leading-5 text-gray-400">{COMIC_NARRATION_MODES.find((item) => item.value === settings.narration_perspective)?.description || COMIC_NARRATION_MODES[0].description}</div></ComicSettingCard>
+          <ComicSettingCard title={ts("配音叙事模式")}><Segmented value={settings.narration_perspective || "smart"} options={COMIC_NARRATION_MODES.map((item) => [item.value, ts(item.label)])} onChange={(v) => set({ narration_perspective: v })} /><div className="mt-2 text-[11px] leading-5 text-gray-400">{ts(COMIC_NARRATION_MODES.find((item) => item.value === settings.narration_perspective)?.description || COMIC_NARRATION_MODES[0].description)}</div></ComicSettingCard>
           <ComicSettingCard title={ts("分镜画宫格数")}><Segmented value={String(settings.storyboard_grid)} options={[["2", ts("2宫格")], ["4", ts("4宫格")], ["6", ts("6宫格")], ["9", ts("9宫格")]]} onChange={(v) => set({ storyboard_grid: Number(v) })} /></ComicSettingCard>
           <ComicSettingCard title={ts("自动重试")}><NumberRow label={ts("最大重试次数")} value={settings.max_retry} min={0} max={5} onChange={(v) => set({ max_retry: v })} /><NumberRow label={ts("资产一致性合格分")} value={settings.asset_consistency_score} min={0} max={100} onChange={(v) => set({ asset_consistency_score: v })} /><NumberRow label={ts("画面逻辑合格分")} value={settings.logic_score} min={0} max={100} onChange={(v) => set({ logic_score: v })} /></ComicSettingCard>
           <ComicSettingCard title={ts("图片模型")}><ComicModelSelect models={imageModels} value={settings.image_model_code} onChange={(value) => set({ image_model_code: value })} emptyLabel={ts("请选择图片模型")} /></ComicSettingCard>
@@ -2590,6 +2744,7 @@ function ComicModelSelect({
   onChange: (value: string) => void;
   emptyLabel: string;
 }) {
+  const { ts } = useI18n();
   const currentExists = models.some((item) => item.code === value);
   return (
     <select
@@ -2598,7 +2753,7 @@ function ComicModelSelect({
       className="w-full rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-sm outline-none focus:border-primary dark:border-white/10 dark:bg-gray-950 dark:text-white"
     >
       <option value="">{emptyLabel}</option>
-      {value && !currentExists && <option value={value}>{value}（当前配置）</option>}
+      {value && !currentExists && <option value={value}>{value}{ts("（当前配置）")}</option>}
       {models.map((model) => (
         <option key={model.code} value={model.code}>
           {model.display_name || model.code}
@@ -2609,6 +2764,7 @@ function ComicModelSelect({
 }
 
 function ComicSettingsSummary({ settings, onOpen }: { settings: { duration_mode: string; storyboard_grid: number; max_retry: number; style_reference_mode: string }; onOpen: () => void }) {
+  const { ts } = useI18n();
   const durationLabel: Record<string, string> = { compact: "紧凑", standard: "常规", long: "超长" };
   const styleLabel = settings.style_reference_mode === "text_only" ? "文字风格" : "参考图风格";
   return (
@@ -2620,17 +2776,17 @@ function ComicSettingsSummary({ settings, onOpen }: { settings: { duration_mode:
       <Settings2 size={15} className="text-gray-400" />
       <span>{styleLabel}</span>
       <span className="h-3 w-px bg-gray-200 dark:bg-white/10" />
-      <span>{settings.storyboard_grid}宫格</span>
+      <span>{settings.storyboard_grid}{ts("宫格")}</span>
       <span className="h-3 w-px bg-gray-200 dark:bg-white/10" />
       <span>{durationLabel[settings.duration_mode] || "常规"}</span>
       <span className="h-3 w-px bg-gray-200 dark:bg-white/10" />
-      <span>重试 {settings.max_retry}</span>
+      <span>{ts("重试")} {settings.max_retry}</span>
     </button>
   );
 }
 
 function ComicProjectPanel({ project }: { project: Project }) {
-  const { t } = useI18n();
+  const { t, ts } = useI18n();
   const [showAllStoryboards, setShowAllStoryboards] = useState(false);
   const [showAllKeyframes, setShowAllKeyframes] = useState(false);
   const [showAllSegments, setShowAllSegments] = useState(false);
@@ -2642,11 +2798,14 @@ function ComicProjectPanel({ project }: { project: Project }) {
   const keyframes = Array.isArray(project.outputs?.keyframes) ? project.outputs?.keyframes : Array.isArray(comic.keyframes) ? comic.keyframes : [];
   const segments = Array.isArray(project.outputs?.segments) ? project.outputs?.segments : Array.isArray(comic.segments) ? comic.segments : [];
   const total = Math.max(storyboards.length, keyframes.length, segments.length);
-  const completedKeyframes = keyframes.filter((item: any) => textOf(item.image_url)).length;
-  const completedSegments = segments.filter((item: any) => textOf(item.video_url)).length;
-  const failedItems = [...keyframes, ...segments].filter((item: any) => item.status === "failed" || textOf(item.error_message));
-  const currentStep = textOf(project.outputs?.current_step || project.status);
+  const assetProgress = comicAssetProgress(project.outputs || {}, textOf(project.error_message));
+  const completedKeyframes = keyframes.filter((item: any) => item.status !== "failed" && textOf(item.image_url)).length;
+  const completedSegments = segments.filter((item: any) => item.status !== "failed" && textOf(item.video_url)).length;
+  const failedItems = [...assetProgress.failed, ...keyframes, ...segments].filter((item: any) => item.status === "failed" || textOf(item.error_message));
+  const currentStep = assetProgress.step || project.status;
   const stepLabels: Record<string, string> = {
+    consistency_assets: "角色与场景定稿",
+    keyframes_confirm: "关键帧待确认",
     storyboard_confirm: t("comic.stepStoryboard"),
     keyframes: t("comic.stepKeyframes"),
     video_segments: t("comic.stepSegments"),
@@ -2668,9 +2827,10 @@ function ComicProjectPanel({ project }: { project: Project }) {
         </div>
         <span className="rounded-full bg-cyan-500/10 px-2.5 py-1 text-[11px] font-semibold text-cyan-700 dark:text-cyan-200">{stepLabels[currentStep] || currentStep}</span>
       </div>
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {[
           [t("comic.storyboards"), storyboards.length, total],
+          [t("资产定稿"), assetProgress.completed, assetProgress.total],
           [t("comic.keyframes"), completedKeyframes, total],
           [t("comic.videoSegments"), completedSegments, total],
         ].map(([label, value, maximum]) => (
@@ -2680,6 +2840,10 @@ function ComicProjectPanel({ project }: { project: Project }) {
           </div>
         ))}
       </div>
+      {currentStep === "consistency_assets" && <p className="text-xs leading-5 text-gray-500 dark:text-gray-300">{project.status === "failed" ? t("角色、道具或场景的定稿图生成失败，关键帧和视频片段尚未开始。分镜数量表示脚本已规划，并非图片已生成。") : t("正在生成角色、道具和场景的定稿图，完成后才开始生成关键帧与视频；当前无需确认分镜。")}</p>}
+      {project.status === "failed" && <p className="text-xs leading-5 text-amber-700 dark:text-amber-200">{ts("重试将复用输入仍匹配的成功素材，仅补齐失败、缺失或因修改而失效的镜头。已完成素材可在下方预览。")}</p>}
+      {Array.isArray(project.outputs?.media_history) && project.outputs.media_history.length > 0 && <details className="text-xs text-gray-500 dark:text-gray-300"><summary className="cursor-pointer">{ts("历史素材 ·")} {project.outputs.media_history.length}{ts("（保留供对比，不参与当前合成）")}</summary><div className="mt-2 flex flex-wrap gap-2">{project.outputs.media_history.map((entry: any, index: number) => { const url = textOf(entry.item?.image_url || entry.item?.video_url); return url ? <a key={index} href={url} target="_blank" rel="noreferrer" className="rounded-lg border px-2 py-1 text-cyan-600">{textOf(entry.item?.id)} · {entry.kind === "keyframes" ? t("关键帧") : t("视频")}  {ts("· 版本")} {index + 1}</a> : null; })}</div></details>}
+      {(project.status === "running" || project.status === "pending") && <p role="status" className="text-xs leading-5 text-gray-500 dark:text-gray-300">{ts("正在执行：")}{stepLabels[currentStep] || currentStep}{ts("。已完成")} {completedKeyframes}  {ts("张关键帧、")}{completedSegments}  {ts("段视频，可边生成边预览。")}</p>}
       {failedItems.length > 0 && (
         <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600 dark:border-red-400/20 dark:bg-red-500/10 dark:text-red-200">
           <div className="font-semibold">{t("comic.partialFailure", { count: failedItems.length })}</div>
@@ -2709,6 +2873,7 @@ function ComicProjectPanel({ project }: { project: Project }) {
                 <span className="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">{textOf(item.title || `${t("comic.storyboard")} ${idx + 1}`)}</span>
               </div>
               <p className="line-clamp-2 text-xs leading-5 text-gray-500 dark:text-gray-300">{textOf(item.scene || item.video_prompt || item.keyframe_prompt)}</p>
+              {item.source?.verified && textOf(item.source.text) ? <details className="mt-2 text-xs text-gray-500 dark:text-gray-300"><summary className="cursor-pointer">{ts("查看来源 ·")} {item.source.kind === "user_script" ? t("用户原文") : t("本次生成剧本")}</summary><p className="mt-2 whitespace-pre-wrap break-words leading-5">{textOf(item.source.text)}</p><p className="mt-1 text-[10px]">{ts("来源版本")} {textOf(item.source.hash).slice(0, 12)}  {ts("· 仅表示原文定位已校验，不代表画面已通过验收")}</p></details> : <p className="mt-2 text-[10px] text-gray-400">{ts("来源未校验（旧项目或无原文定位）")}</p>}
             </div>
           ))}
           </div>
@@ -2731,7 +2896,7 @@ function ComicProjectPanel({ project }: { project: Project }) {
                 )}
               </div>
               <div className="flex items-center justify-between gap-2 px-3 py-2">
-                <span className="truncate text-xs font-medium text-gray-700 dark:text-gray-200">{textOf(item.title || item.id || `${t("comic.keyframe")} ${idx + 1}`)}</span>
+                <span className="truncate text-xs font-medium text-gray-700 dark:text-gray-200">{textOf(item.title || item.id || `${t("comic.keyframe")} ${idx + 1}`)}</span><span className="text-[10px] text-gray-500">{item.scores?.status === "passed" ? t("视觉检查通过") : item.scores?.checked ? t("需检查") : t("视觉未检查")}</span>
                 {Number(item.retry_count || 0) > 0 && <span className="shrink-0 text-[10px] text-amber-600">{t("comic.retryCount", { count: Number(item.retry_count) })}</span>}
               </div>
             </div>
@@ -2816,49 +2981,53 @@ function DetailPagePanel({ detailPage }: { detailPage: DetailPageOutput }) {
   const { t, ts } = useI18n();
   const sections = Array.isArray(detailPage.sections) ? detailPage.sections : [];
   const longURL = textOf(detailPage.long_image_url);
+  const isReady = detailPage.compose_status === "succeeded" && Boolean(longURL);
   return (
-    <div className="space-y-3 rounded-2xl border border-amber-100 bg-amber-50/50 p-4 dark:border-amber-400/15 dark:bg-amber-400/5">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <div className="text-sm font-semibold text-gray-900 dark:text-white">{t("agent.detailPage.title")}</div>
-          <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-300">
-            {detailPage.status === "planning" ? `${sections.length} ${t("agent.detailPage.modules")}` : <>{t("agent.detailPage.completed")} {Number(detailPage.completed_count ?? sections.length)}/{Number(detailPage.section_count ?? sections.length)} {t("agent.detailPage.modules")}</>}
+    <section className="overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm dark:border-white/10 dark:bg-white/5">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-4 py-3 dark:border-white/10">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className={"flex h-8 w-8 shrink-0 items-center justify-center rounded-full " + (isReady ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300" : "bg-primary/10 text-primary")}>
+            {isReady ? <Check size={16} /> : <Wand2 size={15} />}
+          </span>
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold text-gray-900 dark:text-white">{isReady ? ts("AI 已完成商品详情页") : t("agent.detailPage.title")}</div>
+            <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-300">
+              {detailPage.status === "planning" ? `${sections.length} ${t("agent.detailPage.modules")}` : <>{t("agent.detailPage.completed")} {Number(detailPage.completed_count ?? sections.length)}/{Number(detailPage.section_count ?? sections.length)} {t("agent.detailPage.modules")}</>}
+            </div>
           </div>
         </div>
-        <span className="rounded-full bg-amber-500/10 px-2.5 py-1 text-[11px] font-semibold text-amber-700 dark:text-amber-200">
-          {detailPage.status === "planning" ? ts("待确认 · 按模块生成") : detailPage.status === "partial" ? ts("部分模块未完成") : detailPage.compose_status === "succeeded" ? (detailPage.render_mode === "typeset_modules" ? ts("详情长图已排版 · 请核对商品细节") : detailPage.render_mode === "designed_modules" ? ts("模型排版试稿 · 请核对文字") : ts("底图长图已就绪 · 待排版文案")) : t("agent.detailPage.modulesReady")}
-        </span>
+        <div className="flex items-center gap-2">
+          {!isReady ? <span className="rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-semibold text-gray-700 dark:text-gray-200">{detailPage.status === "planning" ? ts("待确认 · 按模块生成") : detailPage.status === "partial" ? ts("部分模块未完成") : t("agent.detailPage.modulesReady")}</span> : null}
+          {longURL ? <a href={longURL} target="_blank" rel="noreferrer" download className="flex h-8 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-200 dark:hover:bg-white/10"><Download size={14} />{t("agent.detailPage.downloadLong")}</a> : null}
+        </div>
       </div>
       {longURL && (
-        <div className="overflow-hidden rounded-xl border border-white bg-white dark:border-white/10 dark:bg-gray-950">
-          <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2 dark:border-white/10">
-            <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">{t("agent.detailPage.finalLong")}</span>
-            <a href={longURL} target="_blank" rel="noreferrer" download className="flex items-center gap-1 text-xs font-medium text-amber-700 dark:text-amber-200"><Download size={14} />{t("agent.detailPage.downloadLong")}</a>
-          </div>
-          <div className="max-h-[620px] overflow-y-auto bg-gray-50 p-2 dark:bg-gray-950">
-            <Image src={longURL} alt="商品详情长图" width={1200} height={6000} sizes="(max-width: 768px) 100vw, 900px" className="mx-auto h-auto w-full max-w-3xl" />
-          </div>
+        <div className="bg-gray-50 p-2 sm:p-4 dark:bg-gray-950/60">
+          <Image unoptimized src={longURL} alt={ts("商品详情长图")} width={1200} height={6000} sizes="(max-width: 768px) 100vw, 900px" className="mx-auto h-auto w-full max-w-3xl rounded-xl bg-white shadow-sm" />
         </div>
       )}
       {sections.length > 0 && (
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {sections.map((section, index) => (
-            <div key={textOf(section.id || index)} className="rounded-xl border border-white bg-white/80 p-3 dark:border-white/10 dark:bg-white/5">
-              <div className="flex items-center gap-2">
-                <span className="rounded-lg bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-200">{index + 1}</span>
-                <span className="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">{textOf(section.title || section.copy_title || `详情模块 ${index + 1}`)}</span>
+        <details open={!longURL} className="group border-t border-gray-100 dark:border-white/10">
+          <summary className="cursor-pointer list-none px-4 py-3 text-xs font-semibold text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-white/5">{longURL ? ts("查看模块规划与文案") : ts("模块正在依次生成")} · {sections.length}</summary>
+          <div className="grid gap-2 border-t border-gray-100 bg-gray-50/70 p-3 sm:grid-cols-2 lg:grid-cols-3 dark:border-white/10 dark:bg-black/10">
+            {sections.map((section, index) => (
+              <div key={textOf(section.id || index)} className="rounded-xl border border-gray-100 bg-white p-3 dark:border-white/10 dark:bg-white/5">
+                <div className="flex items-center gap-2">
+                  <span className="rounded-lg bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-gray-700 dark:text-gray-200">{index + 1}</span>
+                  <span className="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">{textOf(section.title || section.copy_title || `详情模块 ${index + 1}`)}</span>
+                </div>
+                {section.objective && <p className="mt-1 line-clamp-2 text-xs leading-5 text-gray-500 dark:text-gray-300">{section.objective}</p>}
+                {section.copy_title && <p className="mt-2 text-sm font-medium">{section.copy_title}</p>}
+                {Array.isArray(section.copy_points) && section.copy_points.map((point, i) => <p key={i} className="mt-1 select-text text-xs leading-5 text-gray-600 dark:text-gray-300">{point}</p>)}
               </div>
-              {section.objective && <p className="mt-1 line-clamp-2 text-xs leading-5 text-gray-500 dark:text-gray-300">{section.objective}</p>}
-              {section.copy_title && <p className="mt-2 text-sm font-medium">{section.copy_title}</p>}
-              {Array.isArray(section.copy_points) && section.copy_points.map((point, i) => <p key={i} className="mt-1 select-text text-xs leading-5 text-gray-600 dark:text-gray-300">{point}</p>)}
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        </details>
       )}
       {detailPage.compose_status === "skipped" && detailPage.compose_error && (
-        <p className="text-xs text-amber-700 dark:text-amber-200">{t("agent.detailPage.composeSkipped")} {detailPage.compose_error}</p>
+        <p className="border-t border-amber-100 bg-amber-50 px-4 py-3 text-xs text-amber-700 dark:border-amber-400/15 dark:bg-amber-500/10 dark:text-amber-200">{t("agent.detailPage.composeSkipped")} {detailPage.compose_error}</p>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -2938,7 +3107,7 @@ function MediaTaskGrid({ tasks, generationType, onMore }: { tasks: MediaTask[]; 
                   {t("common.download")}
                 </a>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <Image src={preview.url} alt="" width={1600} height={900} sizes="(max-width: 768px) 100vw, 896px" className="h-auto max-h-[82dvh] w-auto max-w-full object-contain" />
+                <Image unoptimized src={preview.url} alt="" width={1600} height={900} sizes="(max-width: 768px) 100vw, 896px" className="h-auto max-h-[82dvh] w-auto max-w-full object-contain" />
               </div>
             )}
           </div>
@@ -3000,7 +3169,7 @@ function MediaResultCard({
           <div className="relative h-full w-full">
             <button type="button" onClick={() => onPreview(url, "image")} className="h-full w-full">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <Image src={url} alt="" width={1280} height={720} sizes="(max-width: 768px) 100vw, 50vw" onError={() => setImageFailed(true)} className="w-full h-full object-contain" />
+              <Image unoptimized src={url} alt="" width={1280} height={720} sizes="(max-width: 768px) 100vw, 50vw" onError={() => setImageFailed(true)} className="w-full h-full object-contain" />
             </button>
             <a
               href={url}

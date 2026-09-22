@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { X, Search } from "lucide-react";
 import { clsx } from "clsx";
 import type { Model } from "@starai/shared-types";
-import { api } from "@/lib/api";
+import { apiCached } from "@/lib/api";
 import { CATEGORY_TAG, MODEL_ICONS } from "./categoryMeta";
 import { useI18n } from "@/i18n/I18nProvider";
 
@@ -57,7 +57,7 @@ export function PricingModal({
     setErr("");
     setLoading(true);
     setActiveCode(currentModelCode);
-    api<Model[]>("/api/models")
+    apiCached<Model[]>("/api/models")
       .then((items) => {
         setModels(items || []);
         setActiveCode((prev) => currentModelCode || prev || items?.[0]?.code);
@@ -231,7 +231,7 @@ export function PricingModal({
                         <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-gray-100 bg-white dark:border-white/10 dark:bg-white/10">
                           {m.icon_url ? (
                             // eslint-disable-next-line @next/next/no-img-element
-                            <img src={m.icon_url} alt="" className="h-full w-full object-cover" />
+                            <img src={m.icon_url} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
                           ) : (
                             <span className="text-lg">{MODEL_ICONS[viewCat] || "AI"}</span>
                           )}
@@ -261,7 +261,7 @@ export function PricingModal({
                     <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-gray-100 bg-white dark:border-white/10 dark:bg-white/10">
                       {active.icon_url ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={active.icon_url} alt="" className="h-full w-full object-cover" />
+                        <img src={active.icon_url} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
                       ) : (
                         <span className="text-2xl">{MODEL_ICONS[active.category === "multi_collab" ? "chat" : active.category] || "AI"}</span>
                       )}
@@ -387,7 +387,7 @@ export function PricingModal({
                         <div className="mt-1 text-2xl font-bold text-gray-900 dark:text-gray-100">{unitPrice === null ? "--" : unitPrice.toFixed(4)}</div>
                         <div className="mt-1 text-xs text-gray-400">
                           算力
-                          {billingType === "per_second" ? " / 秒" : billingType === "per_image" ? " / 张" : " / 次"}
+                          {billingType === "per_second" ? ts(" / 秒") : billingType === "per_image" ? ts(" / 张") : ts(" / 次")}
                         </div>
                       </div>
                     </div>

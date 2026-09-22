@@ -55,7 +55,7 @@ func TestComicExistingMaterialReplay(t *testing.T) {
 	old := objectStore
 	objectStore = local
 	t.Cleanup(func() { objectStore = old })
-	final, message := composeComicDramaVideo(ctx, pool, project, shots, segments, voices, inputs, nil)
+	final, message := composeComicDramaVideo(ctx, pool, project, shots, segments, voices, inputs, nil, "", "", WorkflowTaskPayload{})
 	if message != "" {
 		t.Fatal(message)
 	}

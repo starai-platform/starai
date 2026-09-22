@@ -1,5 +1,7 @@
 "use client";
 
+import { pollAsync } from "@/lib/pollAsync";
+
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { api, apiForLocale } from "@/lib/api";
@@ -48,6 +50,7 @@ const STATUS_KEY: Record<string, string> = {
 
 // 写真馆照片单元：按任务状态展示生成中/失败/成片，图片加载失败时降级为失败态，避免破图图标
 function PhotoStudioCell({ item, index }: { item: any; index: number }) {
+  const { ts } = useI18n();
   const [broken, setBroken] = useState(false);
   const out = item.output || {};
   const url = String(out.image_url || (Array.isArray(out.images) && out.images[0]?.url) || "");
@@ -55,17 +58,17 @@ function PhotoStudioCell({ item, index }: { item: any; index: number }) {
     return (
       <a href={url} target="_blank" rel="noreferrer" className="overflow-hidden rounded-2xl border border-fuchsia-100 bg-white shadow-sm dark:border-white/10 dark:bg-white/5">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={url} alt={`写真 ${index + 1}`} onError={() => setBroken(true)} className="aspect-[3/4] w-full object-cover" />
+        <img loading="lazy" decoding="async" src={url} alt={`写真 ${index + 1}`} onError={() => setBroken(true)} className="aspect-[3/4] w-full object-cover" />
       </a>
     );
   }
   if (item.status === "failed" || broken) {
-    return <div className="flex aspect-[3/4] items-center justify-center rounded-2xl border border-red-100 bg-red-50/60 text-xs text-red-400 dark:border-red-400/20 dark:bg-red-500/10 dark:text-red-300">生成失败</div>;
+    return <div className="flex aspect-[3/4] items-center justify-center rounded-2xl border border-red-100 bg-red-50/60 text-xs text-red-400 dark:border-red-400/20 dark:bg-red-500/10 dark:text-red-300">{ts("生成失败")}</div>;
   }
   return (
     <div className="flex aspect-[3/4] flex-col items-center justify-center gap-2 rounded-2xl bg-fuchsia-100/60 dark:bg-white/5">
       <Loader2 size={20} className="animate-spin text-fuchsia-400" />
-      <span className="text-xs text-fuchsia-500 dark:text-fuchsia-300">生成中…</span>
+      <span className="text-xs text-fuchsia-500 dark:text-fuchsia-300">{ts("生成中…")}</span>
     </div>
   );
 }
@@ -73,7 +76,7 @@ function PhotoStudioCell({ item, index }: { item: any; index: number }) {
 export default function AgentWorkspacePage() {
   const params = useParams();
   const router = useRouter();
-  const { t, locale } = useI18n();
+  const { t, ts, locale } = useI18n();
   const code = params?.code as string;
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [form, setForm] = useState<Record<string, unknown>>({});
@@ -81,7 +84,8 @@ export default function AgentWorkspacePage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [photoInputKey, setPhotoInputKey] = useState(0);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollRef = useRef<(() => void) | null>(null);
+  const pollScopeRef = useRef<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -101,18 +105,24 @@ export default function AgentWorkspacePage() {
     };
   }, [code, locale]);
 
-  useEffect(() => () => {
-    if (pollRef.current) clearInterval(pollRef.current);
-  }, []);
+  useEffect(() => {
+    pollScopeRef.current = code;
+    return () => {
+      pollScopeRef.current = null;
+      pollRef.current?.();
+    };
+  }, [code]);
 
   const startPolling = (publicId: string) => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(async () => {
+    if (pollScopeRef.current !== code) return;
+    pollRef.current?.();
+    pollRef.current = pollAsync(async (signal) => {
       try {
-        const p = await api<Project>(`/api/agent-projects/${publicId}`);
+        const p = await api<Project>(`/api/agent-projects/${publicId}`, { signal });
+        if (signal.aborted) return;
         setProject(p);
         if (p.status === "succeeded" || p.status === "failed") {
-          if (pollRef.current) clearInterval(pollRef.current);
+          pollRef.current?.();
         }
       } catch {
         /* ignore */
@@ -151,7 +161,7 @@ export default function AgentWorkspacePage() {
       setProject(p);
       if (p.status === "pending" || p.status === "running" || p.status === "waiting_confirm") startPolling(p.public_id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "历史记录加载失败");
+      setError(err instanceof Error ? err.message : t("历史记录加载失败"));
     }
   };
 
@@ -188,9 +198,9 @@ export default function AgentWorkspacePage() {
       <div className="relative flex min-h-[100dvh] flex-col overflow-hidden bg-[#fff1f3] text-gray-900 dark:bg-[#12070a] dark:text-white">
         <div className="pointer-events-none absolute inset-0 opacity-70 [background-image:linear-gradient(rgba(190,24,93,.05)_1px,transparent_1px),linear-gradient(90deg,rgba(190,24,93,.05)_1px,transparent_1px)] [background-size:40px_40px]" />
         {project ? (
-          <div className="relative z-10 flex min-h-0 flex-1 flex-col"><VirtualTryOnResult workflowCode={workflow.code} workflowName={workflow.name} project={project as any} onNewTask={() => { setProject(null); setPhotoInputKey((key) => key + 1); }} onLoadHistory={loadHistory} /></div>
+          <div className="relative z-10 flex min-h-0 flex-1 flex-col"><VirtualTryOnResult workflowCode={workflow.code} workflowName={ts(workflow.name)} project={project as any} onNewTask={() => { setProject(null); setPhotoInputKey((key) => key + 1); }} onLoadHistory={loadHistory} /></div>
         ) : (
-          <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-y-auto"><VirtualTryOnLanding workflowCode={workflow.code} workflowName={workflow.name} workflowDescription={workflow.description || ""} roles={roles} onNewTask={() => setPhotoInputKey((key) => key + 1)} onLoadHistory={loadHistory} /></div>
+          <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-y-auto"><VirtualTryOnLanding workflowCode={workflow.code} workflowName={ts(workflow.name)} workflowDescription={ts(workflow.description || "")} roles={roles} onNewTask={() => setPhotoInputKey((key) => key + 1)} onLoadHistory={loadHistory} /></div>
         )}
         {tryOnBar}
       </div>
@@ -207,8 +217,8 @@ export default function AgentWorkspacePage() {
           <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-y-auto">
             <PhotoStudioLanding
               workflowCode={workflow.code}
-              workflowName={workflow.name}
-              workflowDescription={workflow.description || ""}
+              workflowName={ts(workflow.name)}
+              workflowDescription={ts(workflow.description || "")}
               roles={roles}
               onNewTask={() => { setProject(null); setPhotoInputKey((k) => k + 1); }}
             />
@@ -236,34 +246,34 @@ export default function AgentWorkspacePage() {
               const plan = String(styling.generation_prompt || styling.summary || styling.base_prompt || "");
               return (
                 <div className="mx-auto w-full max-w-4xl">
-                  <h1 className="text-2xl font-bold text-gray-900 dark:text-white">造型设计完成，等待确认</h1>
-                  <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">确认拍摄方案后，摄影师将按方案开拍。</p>
+                  <h1 className="text-2xl font-bold text-gray-900 dark:text-white">{ts("造型设计完成，等待确认")}</h1>
+                  <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">{ts("确认拍摄方案后，摄影师将按方案开拍。")}</p>
                   <div className="mt-5 rounded-2xl border border-fuchsia-100 bg-white/80 p-5 dark:border-fuchsia-400/20 dark:bg-white/5">
-                    <div className="mb-2 text-sm font-semibold text-fuchsia-600 dark:text-fuchsia-300">💄 拍摄方案</div>
+                    <div className="mb-2 text-sm font-semibold text-fuchsia-600 dark:text-fuchsia-300">{ts("💄 拍摄方案")}</div>
                     <p className="whitespace-pre-wrap text-sm leading-6 text-gray-700 dark:text-gray-200">{plan}</p>
                   </div>
                   <div className="mt-4 flex flex-wrap gap-3">
-                    <button onClick={() => void confirmPhotoPlan(plan)} className="rounded-xl bg-fuchsia-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-fuchsia-400">确认方案并开拍</button>
-                    <button onClick={() => setProject(null)} className="rounded-xl border border-gray-200 px-5 py-2.5 text-sm text-gray-600 dark:border-white/15 dark:text-gray-300">返回重新配置</button>
+                    <button onClick={() => void confirmPhotoPlan(plan)} className="rounded-xl bg-fuchsia-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-fuchsia-400">{ts("确认方案并开拍")}</button>
+                    <button onClick={() => setProject(null)} className="rounded-xl border border-gray-200 px-5 py-2.5 text-sm text-gray-600 dark:border-white/15 dark:text-gray-300">{ts("返回重新配置")}</button>
                   </div>
                 </div>
               );
             })()
           ) : (
             <div className="mx-auto w-full max-w-5xl">
-              <button onClick={() => setProject(null)} className="mb-5 text-sm text-fuchsia-500 hover:text-fuchsia-600 dark:text-fuchsia-300">← 再拍一套</button>
+              <button onClick={() => setProject(null)} className="mb-5 text-sm text-fuchsia-500 hover:text-fuchsia-600 dark:text-fuchsia-300">{ts("← 再拍一套")}</button>
               <div className="mb-6 flex items-center justify-between gap-4">
-                <div><h1 className="text-2xl font-bold text-gray-900 dark:text-white">{workflow.name}</h1><p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{project.status === "succeeded" ? "写真拍摄完成" : project.status === "failed" ? "拍摄失败" : "AI 摄影团队正在拍摄"}</p></div>
+                <div><h1 className="text-2xl font-bold text-gray-900 dark:text-white">{ts(workflow.name)}</h1><p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{project.status === "succeeded" ? t("写真拍摄完成") : project.status === "failed" ? t("拍摄失败") : t("AI 摄影团队正在拍摄")}</p></div>
                 <span className="rounded-full border border-fuchsia-200 px-3 py-1 text-xs text-fuchsia-600 dark:border-fuchsia-400/30 dark:text-fuchsia-300">{STATUS_KEY[project.status] ? t(STATUS_KEY[project.status]) : project.status}</span>
               </div>
-              {styling.summary ? <div className="mb-4 rounded-2xl border border-fuchsia-100 bg-white/80 px-4 py-3 text-sm text-gray-600 dark:border-fuchsia-400/20 dark:bg-white/5 dark:text-gray-300"><span className="mr-2 font-semibold text-fuchsia-600 dark:text-fuchsia-300">💄 拍摄方案</span>{String(styling.summary)}</div> : null}
+              {styling.summary ? <div className="mb-4 rounded-2xl border border-fuchsia-100 bg-white/80 px-4 py-3 text-sm text-gray-600 dark:border-fuchsia-400/20 dark:bg-white/5 dark:text-gray-300"><span className="mr-2 font-semibold text-fuchsia-600 dark:text-fuchsia-300">{ts("💄 拍摄方案")}</span>{String(styling.summary)}</div> : null}
               {(mediaItems.length > 0 || extraPhotoCells > 0) && (
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
                   {mediaItems.map((item, index) => <PhotoStudioCell key={String(item.task_no || index)} item={item} index={index} />)}
                   {Array.from({ length: extraPhotoCells }).map((_, index) => (
                     <div key={`extra-${index}`} className="flex aspect-[3/4] flex-col items-center justify-center gap-2 rounded-2xl bg-fuchsia-100/60 dark:bg-white/5">
                       <Loader2 size={20} className="animate-spin text-fuchsia-400" />
-                      <span className="text-xs text-fuchsia-500 dark:text-fuchsia-300">生成中…</span>
+                      <span className="text-xs text-fuchsia-500 dark:text-fuchsia-300">{ts("生成中…")}</span>
                     </div>
                   ))}
                 </div>
@@ -289,8 +299,8 @@ export default function AgentWorkspacePage() {
       <div className="h-screen flex flex-col">
         <NovelWorkshopLanding
           workflowCode={workflow.code}
-          workflowName={workflow.name}
-          workflowDescription={workflow.description || ""}
+          workflowName={ts(workflow.name)}
+          workflowDescription={ts(workflow.description || "")}
           roles={roles}
           onSubmit={run}
           onLoadHistory={loadHistory}
@@ -306,11 +316,11 @@ export default function AgentWorkspacePage() {
       <div className="relative flex min-h-[100dvh] flex-col overflow-hidden bg-[#eaf7fb] text-gray-900 dark:bg-[#05080f] dark:text-white">
         <div className="pointer-events-none absolute inset-0 opacity-80 [background-image:linear-gradient(rgba(15,23,42,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,.08)_1px,transparent_1px)] [background-size:40px_40px] dark:opacity-60 dark:[background-image:linear-gradient(rgba(34,211,238,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,.08)_1px,transparent_1px)]" />
         <div className="relative z-10 flex min-h-0 flex-1 flex-col">
-          <div className="shrink-0 px-3 py-1.5 sm:px-5 sm:py-2 lg:px-8"><PhotoStudioTopBar workflowCode={workflow.code} historyFallbackTitle="小说任务" onNewTask={() => setProject(null)} onLoadHistory={loadHistory} /></div>
+          <div className="shrink-0 px-3 py-1.5 sm:px-5 sm:py-2 lg:px-8"><PhotoStudioTopBar workflowCode={workflow.code} historyFallbackTitle={t("小说任务")} onNewTask={() => setProject(null)} onLoadHistory={loadHistory} /></div>
           <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 pt-3 sm:px-8 sm:pt-5">
             <div className="mx-auto max-w-5xl">
           <div className="mb-6 flex items-center justify-between gap-4">
-            <div><h1 className="text-2xl font-bold">{workflow.name}</h1><p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{project.status === "waiting_confirm" ? "等待你的确认" : project.status === "succeeded" ? "全书创作完成" : "AI 编辑部正在协作创作"}</p></div>
+            <div><h1 className="text-2xl font-bold">{ts(workflow.name)}</h1><p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{project.status === "waiting_confirm" ? t("等待你的确认") : project.status === "succeeded" ? t("全书创作完成") : t("AI 编辑部正在协作创作")}</p></div>
             <span className="rounded-full border border-indigo-300 px-3 py-1 text-xs text-indigo-600 dark:border-indigo-400/30 dark:text-indigo-300">{project.status}</span>
           </div>
           <NovelChapterList chapters={chapters} currentChapter={Number(outputs.current_chapter || chapters.length)} totalChapters={Number(outputs.total_chapters || 0)} />
@@ -331,11 +341,11 @@ export default function AgentWorkspacePage() {
 
         <div className="flex items-center gap-3 mb-6">
           <div className="w-12 h-12 rounded-2xl bg-gray-900 text-white flex items-center justify-center text-2xl overflow-hidden">
-            <AgentIcon value={workflow.icon} alt={workflow.name} />
+            <AgentIcon value={workflow.icon} alt={ts(workflow.name)} />
           </div>
           <div>
-            <h1 className="text-xl font-bold">{workflow.name}</h1>
-            <p className="text-sm text-gray-500">{workflow.description}</p>
+            <h1 className="text-xl font-bold">{ts(workflow.name)}</h1>
+            <p className="text-sm text-gray-500">{ts(workflow.description || "")}</p>
           </div>
         </div>
 
@@ -382,7 +392,7 @@ export default function AgentWorkspacePage() {
                   )}
                   {n.output?.image_url != null && (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={String(n.output.image_url)} alt="" className="mt-2 rounded-xl max-w-xs" />
+                    <img loading="lazy" decoding="async" src={String(n.output.image_url)} alt="" className="mt-2 rounded-xl max-w-xs" />
                   )}
                   {n.output?.video_url != null && (
                     <video src={String(n.output.video_url)} controls className="mt-2 rounded-xl max-w-sm w-full" />

@@ -20,6 +20,7 @@ type WebSearchConfig struct {
 	Enabled       bool
 	Provider      string
 	APIKey        string
+	ExaAPIKey     string
 	BaseURL       string
 	RedFoxAPIKey  string
 	RedFoxBaseURL string
@@ -49,8 +50,10 @@ type WebSearchRequest struct {
 }
 
 var tavilySearchURL = "https://api.tavily.com/search"
+var exaSearchURL = "https://api.exa.ai/search"
 
 var ErrWebSearchNoResults = errors.New("搜索服务未返回有效结果")
+var ErrWebSearchUnavailable = errors.New("搜索上游引擎不可用")
 
 const defaultRedFoxBaseURL = "https://redfox.hk"
 
@@ -59,6 +62,7 @@ func ParseWebSearchConfig(values map[string]interface{}) WebSearchConfig {
 		Enabled:       boolConfigValue(values["web_search_enabled"]),
 		Provider:      strings.ToLower(strings.TrimSpace(stringConfigValue(values["web_search_provider"]))),
 		APIKey:        strings.TrimSpace(stringConfigValue(values["web_search_api_key"])),
+		ExaAPIKey:     strings.TrimSpace(stringConfigValue(values["web_search_exa_api_key"])),
 		BaseURL:       strings.TrimSpace(stringConfigValue(values["web_search_base_url"])),
 		RedFoxAPIKey:  strings.TrimSpace(stringConfigValue(values["web_search_redfox_api_key"])),
 		RedFoxBaseURL: strings.TrimSpace(stringConfigValue(values["web_search_redfox_base_url"])),
@@ -105,6 +109,10 @@ func ValidateWebSearchConfig(cfg WebSearchConfig) error {
 		return errors.New("智能搜索单次费用必须是大于或等于 0 的有效数字")
 	}
 	switch cfg.Provider {
+	case "exa":
+		if cfg.Enabled && cfg.ExaAPIKey == "" {
+			return errors.New("启用 Exa 前请填写 Exa API Key")
+		}
 	case "tavily", "brave":
 		if cfg.Enabled && cfg.APIKey == "" {
 			return errors.New("启用联网搜索前请填写搜索服务 API Key")
@@ -161,6 +169,8 @@ func SearchWebWithOptions(ctx context.Context, cfg WebSearchConfig, input WebSea
 	var results []WebSearchResult
 	var err error
 	switch cfg.Provider {
+	case "exa":
+		results, err = searchExa(ctx, client, cfg, input)
 	case "tavily":
 		results, err = searchTavily(ctx, client, cfg, input)
 	case "brave":
@@ -205,6 +215,58 @@ func SearchWebWithOptions(ctx context.Context, cfg WebSearchConfig, input WebSea
 	results = cleanWebSearchResults(results, cfg.MaxResults, input)
 	if len(results) == 0 {
 		return nil, ErrWebSearchNoResults
+	}
+	return results, nil
+}
+
+func searchExa(ctx context.Context, client *http.Client, cfg WebSearchConfig, input WebSearchRequest) ([]WebSearchResult, error) {
+	payloadBody := map[string]interface{}{
+		"query": input.Query, "type": "auto", "numResults": cfg.MaxResults,
+		"moderation": true,
+		"contents":   map[string]interface{}{"highlights": map[string]interface{}{"maxCharacters": 1200}},
+	}
+	if input.Topic == "news" {
+		payloadBody["category"] = "news"
+	}
+	// Finance questions include prices and exchange rates, not just reports;
+	// leave category unrestricted instead of forcing "financial report".
+	if days := map[string]int{"day": 1, "week": 7, "month": 30, "year": 365}[input.TimeRange]; days > 0 {
+		payloadBody["startPublishedDate"] = time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+	}
+	if len(input.IncludeDomains) > 0 {
+		payloadBody["includeDomains"] = input.IncludeDomains
+	}
+	body, err := json.Marshal(payloadBody)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, exaSearchURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("x-api-key", cfg.ExaAPIKey)
+	var payload struct {
+		Results []struct {
+			Title         string   `json:"title"`
+			URL           string   `json:"url"`
+			Text          string   `json:"text"`
+			Highlights    []string `json:"highlights"`
+			PublishedDate string   `json:"publishedDate"`
+			Score         float64  `json:"score"`
+		} `json:"results"`
+	}
+	if err := doSearchRequest(client, req, &payload); err != nil {
+		return nil, fmt.Errorf("Exa: %w", err)
+	}
+	results := make([]WebSearchResult, 0, len(payload.Results))
+	for _, item := range payload.Results {
+		results = append(results, WebSearchResult{
+			Title: item.Title, URL: item.URL,
+			Snippet:       firstNonEmptyWebSearchString(strings.Join(item.Highlights, "\n"), item.Text),
+			PublishedDate: item.PublishedDate, Score: item.Score, Provider: "exa",
+		})
 	}
 	return results, nil
 }
@@ -491,7 +553,8 @@ func searchSearXNG(ctx context.Context, client *http.Client, cfg WebSearchConfig
 		return nil, err
 	}
 	type searXNGPayload struct {
-		Results []struct {
+		UnresponsiveEngines [][]string `json:"unresponsive_engines"`
+		Results             []struct {
 			Title         string  `json:"title"`
 			URL           string  `json:"url"`
 			Content       string  `json:"content"`
@@ -506,6 +569,8 @@ func searchSearXNG(ctx context.Context, client *http.Client, cfg WebSearchConfig
 		params.Set("format", "json")
 		params.Set("language", searchLanguage(input.Query))
 		params.Set("safesearch", "1")
+		params.Del("categories")
+		params.Del("time_range")
 		if category != "" {
 			params.Set("categories", category)
 		}
@@ -524,16 +589,12 @@ func searchSearXNG(ctx context.Context, client *http.Client, cfg WebSearchConfig
 		err = doSearchRequest(client, req, &payload)
 		return payload, err
 	}
-	hasUsableResults := func(payload searXNGPayload) bool {
-		if len(input.IncludeDomains) == 0 {
-			return len(payload.Results) > 0
-		}
+	usableResults := func(payload searXNGPayload) []WebSearchResult {
+		results := make([]WebSearchResult, 0, len(payload.Results))
 		for _, item := range payload.Results {
-			if searchResultMatchesDomains(item.URL, input.IncludeDomains) {
-				return true
-			}
+			results = append(results, WebSearchResult{Title: item.Title, URL: item.URL, Snippet: item.Content, PublishedDate: item.PublishedDate, Score: item.Score, Provider: "searxng"})
 		}
-		return false
+		return cleanWebSearchResults(results, cfg.MaxResults, input)
 	}
 
 	category := ""
@@ -544,18 +605,24 @@ func searchSearXNG(ctx context.Context, client *http.Client, cfg WebSearchConfig
 	if err != nil {
 		return nil, err
 	}
-	if !hasUsableResults(payload) && input.TimeRange != "" {
+	if len(usableResults(payload)) == 0 && input.TimeRange != "" {
 		payload, err = search(category, "")
 	}
-	if err == nil && !hasUsableResults(payload) && category != "" {
+	if err == nil && len(usableResults(payload)) == 0 && category != "" {
 		payload, err = search("", "")
 	}
 	if err != nil {
 		return nil, err
 	}
-	results := make([]WebSearchResult, 0, len(payload.Results))
-	for _, item := range payload.Results {
-		results = append(results, WebSearchResult{Title: item.Title, URL: item.URL, Snippet: item.Content, PublishedDate: item.PublishedDate, Score: item.Score, Provider: "searxng"})
+	results := usableResults(payload)
+	if len(results) == 0 && len(payload.UnresponsiveEngines) > 0 {
+		failures := make([]string, 0, len(payload.UnresponsiveEngines))
+		for _, engine := range payload.UnresponsiveEngines {
+			if len(engine) >= 2 {
+				failures = append(failures, engine[0]+": "+engine[1])
+			}
+		}
+		return nil, fmt.Errorf("%w: SearXNG 未获得可用结果（%s）；请检查引擎限流、验证码及容器出站网络", ErrWebSearchUnavailable, strings.Join(failures, "; "))
 	}
 	return results, nil
 }
@@ -567,6 +634,11 @@ func searchEndpoint(baseURL, path string) (*url.URL, error) {
 	}
 	if endpoint.Path == "" || endpoint.Path == "/" {
 		endpoint.Path = path
+	} else if strings.HasSuffix(endpoint.Path, "/") {
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/")
+		if !strings.HasSuffix(endpoint.Path, path) {
+			endpoint.Path += path
+		}
 	}
 	return endpoint, nil
 }

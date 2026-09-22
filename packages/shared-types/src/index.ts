@@ -65,6 +65,7 @@ export interface ReferralChild {
   email: string;
   recharge_amount: number;
   created_at: string;
+  note: string;
 }
 
 export interface Model {

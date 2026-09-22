@@ -1,9 +1,25 @@
 package main
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestDetailPackagingExclusionPreservesModuleAndRepeatedCleaning(t *testing.T) {
+	for _, exclusion := range []string{"不生成包装盒", "禁止添加包装盒", "避免虚构包装", "无需包装盒"} {
+		section := map[string]interface{}{"type": "material", "title": "领口特写", "objective": "展示领口结构", "image_prompt": "领口微距；" + exclusion, "copy_title": "圆领设计"}
+		inputs := map[string]interface{}{"user_prompt": "根据参考图生成详情"}
+		clean := groundedDetailAnalysis(map[string]interface{}{"detail_sections": []interface{}{section}}, inputs)
+		got := clean["detail_sections"].([]interface{})[0].(map[string]interface{})
+		if got["image_prompt"] != section["image_prompt"] || got["type"] != "material" || got["copy_title"] != "圆领设计" {
+			t.Fatalf("negative packaging instruction destroyed the plan: %#v", got)
+		}
+		if again := groundedDetailAnalysis(clean, inputs); !reflect.DeepEqual(clean, again) {
+			t.Fatalf("cleaning changed an already cleaned plan: %#v", again)
+		}
+	}
+}
 
 func TestDetailCopyDropsUnsupportedClaimsAndEmptySpecifications(t *testing.T) {
 	analysis := map[string]interface{}{"detail_sections": []interface{}{
@@ -53,5 +69,38 @@ func TestDetailCopyKeepsAppearanceAndDropsInferredPerformance(t *testing.T) {
 	points := stringSlice(section["copy_points"])
 	if stringAny(section["copy_title"]) != "儿童长款透明雨衣" || len(points) != 1 || points[0] != "白色按扣清晰可见" {
 		t.Fatalf("visual facts and inferred claims were not separated: %#v", section)
+	}
+}
+
+func TestDetailCopyDoesNotTurnAudienceIntoAProductClaim(t *testing.T) {
+	analysis := map[string]interface{}{"detail_sections": []interface{}{
+		map[string]interface{}{"type": "benefit", "copy_points": []interface{}{"学生青年航拍入门首选"}},
+	}}
+	clean := groundedDetailAnalysis(analysis, map[string]interface{}{"user_prompt": "目标受众：学生青年"})
+	section := clean["detail_sections"].([]interface{})[0].(map[string]interface{})
+	if len(stringSlice(section["copy_points"])) != 0 {
+		t.Fatalf("target audience became an unsupported selling claim: %#v", section)
+	}
+}
+
+func TestDetailCopyKeepsSupportedKeywordsWithoutRequiringExactSentence(t *testing.T) {
+	analysis := map[string]interface{}{"detail_sections": []interface{}{
+		map[string]interface{}{"type": "benefit", "title": "设计特点", "copy_title": "透气设计", "copy_points": []interface{}{"透气网眼", "尺码36–42"}},
+	}}
+	clean := groundedDetailAnalysis(analysis, map[string]interface{}{"user_prompt": "舒爽透气，36-42码都有"})
+	section := clean["detail_sections"].([]interface{})[0].(map[string]interface{})
+	if stringAny(section["copy_title"]) != "透气设计" || len(stringSlice(section["copy_points"])) != 2 {
+		t.Fatalf("supported paraphrase was removed: %#v", section)
+	}
+}
+
+func TestDetailCopyDropsInventedTechnologyAndUsesSafeSectionLabel(t *testing.T) {
+	analysis := map[string]interface{}{"detail_sections": []interface{}{
+		map[string]interface{}{"type": "material", "title": "可见细节", "copy_title": "Hyperlite鞋底技术"},
+	}}
+	clean := groundedDetailAnalysis(analysis, map[string]interface{}{"user_prompt": "运动鞋，舒爽透气"})
+	section := clean["detail_sections"].([]interface{})[0].(map[string]interface{})
+	if stringAny(section["copy_title"]) != "可见细节" {
+		t.Fatalf("invented technology was retained or safe fallback was lost: %#v", section)
 	}
 }

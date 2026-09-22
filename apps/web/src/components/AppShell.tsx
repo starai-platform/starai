@@ -23,11 +23,16 @@ function WorkspaceLoading() {
   return <div role="status" className="flex flex-1 items-center justify-center p-8 text-sm text-gray-400">{t("common.loading")}</div>;
 }
 
-const ModelWorkspace = dynamic(() => import("./workbench/ModelWorkspace").then(module => module.ModelWorkspace), { loading: WorkspaceLoading });
-const AgentWorkspace = dynamic(() => import("./workbench/AgentWorkspace").then(module => module.AgentWorkspace), { loading: WorkspaceLoading });
+const loadModelWorkspace = () => import("./workbench/ModelWorkspace");
+const loadAgentWorkspace = () => import("./workbench/AgentWorkspace");
+const loadInfiniteCanvasWorkspace = () => import("./workbench/InfiniteCanvasWorkspace");
+const loadCreativeAgentWorkspace = () => import("./workbench/CreativeAgentWorkspace");
+
+const ModelWorkspace = dynamic(() => loadModelWorkspace().then(module => module.ModelWorkspace), { loading: WorkspaceLoading });
+const AgentWorkspace = dynamic(() => loadAgentWorkspace().then(module => module.AgentWorkspace), { loading: WorkspaceLoading });
 const GalleryPanel = dynamic(() => import("./workbench/GalleryPanel").then(module => module.GalleryPanel), { loading: WorkspaceLoading });
-const InfiniteCanvasWorkspace = dynamic(() => import("./workbench/InfiniteCanvasWorkspace").then(module => module.InfiniteCanvasWorkspace), { loading: WorkspaceLoading });
-const CreativeAgentWorkspace = dynamic(() => import("./workbench/CreativeAgentWorkspace").then(module => module.CreativeAgentWorkspace), { loading: WorkspaceLoading });
+const InfiniteCanvasWorkspace = dynamic(() => loadInfiniteCanvasWorkspace().then(module => module.InfiniteCanvasWorkspace), { loading: WorkspaceLoading });
+const CreativeAgentWorkspace = dynamic(() => loadCreativeAgentWorkspace().then(module => module.CreativeAgentWorkspace), { loading: WorkspaceLoading });
 
 const PRIMARY_NAV = [
   { id: "models", label: "大模型", icon: LayoutGrid },
@@ -54,6 +59,15 @@ const CONTENT_IMAGE_POST_CODE = "content_image_post";
 const VIDEO_CREATION_CODE = "video_creation";
 const VIDEO_CREATION_V2_CODE = "video_creation_v2";
 const GENERAL_CREATIVE_AGENT_CODE = "general_creative_agent";
+const CANVAS_WORKFLOW_CODES = new Set([
+  INFINITE_CANVAS_CODE,
+  VIRAL_REMAKE_CODE,
+  ONE_CLICK_VIRAL_REMAKE_CODE,
+  VIDEO_REMAKE_CODE,
+  CONTENT_IMAGE_POST_CODE,
+  VIDEO_CREATION_CODE,
+  VIDEO_CREATION_V2_CODE,
+]);
 
 const MOBILE_SUBPAGE_LINKS = [
   { href: "/app", label: "工作台", icon: Home },
@@ -179,6 +193,18 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode, initi
   const apiDocsVisible = api_docs_enabled !== false && (!api_docs_operations || Object.keys(api_docs_operations).length === 0 || Object.values(api_docs_operations).some((value) => value !== false));
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+
+  const preloadAgentWorkspace = useCallback((code: string) => {
+    void apiForLocaleCached(`/api/agents/${encodeURIComponent(code)}`, locale).catch(() => {});
+    if (CANVAS_WORKFLOW_CODES.has(code)) {
+      void loadInfiniteCanvasWorkspace();
+      void apiForLocaleCached("/api/models", locale).catch(() => {});
+    } else if (code === GENERAL_CREATIVE_AGENT_CODE) {
+      void loadCreativeAgentWorkspace();
+    } else {
+      void loadAgentWorkspace();
+    }
+  }, [locale]);
 
   useEffect(() => {
     if (storedUser && bootstrapUser) setBootstrapUser(null);
@@ -458,6 +484,12 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode, initi
           return (
             <button
               key={item.id}
+              onPointerEnter={() => {
+                if (item.id === "agents") preloadAgentWorkspace(activeAgentCode || INFINITE_CANVAS_CODE);
+              }}
+              onFocus={() => {
+                if (item.id === "agents") preloadAgentWorkspace(activeAgentCode || INFINITE_CANVAS_CODE);
+              }}
               onClick={() => {
                 setSection(item.id as Section);
                 if (item.id === "models") {
@@ -474,6 +506,7 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode, initi
                       ? agents.find((agent) => agent.code !== GENERAL_CREATIVE_AGENT_CODE)?.code
                       : INFINITE_CANVAS_CODE;
                   setActiveAgentCode(code);
+                  preloadAgentWorkspace(code || INFINITE_CANVAS_CODE);
                   router.push(`/app/agents/${encodeURIComponent(code || INFINITE_CANVAS_CODE)}`);
                 }
                 if (item.id === "gallery") {
@@ -702,7 +735,10 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode, initi
                 <button
                   key={a.code}
                   data-active={selected ? "true" : "false"}
+                  onPointerEnter={() => preloadAgentWorkspace(a.code)}
+                  onFocus={() => preloadAgentWorkspace(a.code)}
                   onClick={() => {
+                    preloadAgentWorkspace(a.code);
                     setActiveAgentCode(a.code);
                     setSection("agents");
                     router.push(`/app/agents/${encodeURIComponent(a.code)}`);

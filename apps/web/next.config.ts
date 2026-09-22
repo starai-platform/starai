@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  output: "standalone",
+  ...(process.env.NEXT_DISABLE_STANDALONE === "1" ? {} : { output: "standalone" as const }),
   transpilePackages: ["@starai/shared-types"],
   images: {
     remotePatterns: [
@@ -21,7 +21,6 @@ const nextConfig: NextConfig = {
     ];
 
     return [
-      { source: "/", headers: noStoreHeaders },
       { source: "/app/:path*", headers: noStoreHeaders },
       { source: "/auth/:path*", headers: noStoreHeaders },
     ];

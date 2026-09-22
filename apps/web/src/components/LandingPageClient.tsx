@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 import { type CSSProperties, type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Bot, Boxes, Check, Clock3, Code2, Compass, Copy, Download, Headphones, ImageIcon, KeyRound, MessageCircle, Phone, Play, Sparkles, UserRound, Wand2, X } from "lucide-react";
 import { siAlibabacloud, siAnthropic, siDeepseek, siFlux, siGooglegemini, siHuggingface, siKuaishou, type SimpleIcon } from "simple-icons";
@@ -9,7 +10,7 @@ import { LoginModal } from "@/components/LoginModal";
 import { SiteBrand, useSiteBranding } from "@/components/SiteBrand";
 import { UILanguageSelector } from "@/components/UILanguageSelector";
 import { useI18n } from "@/i18n/I18nProvider";
-import { api, clearUserSession, hasUserSession } from "@/lib/api";
+import { hasUserSession } from "@/lib/api";
 import { useAuthStore } from "@/store/auth";
 import { loadReferenceGalleryManifest, randomReferenceCases, referenceImageURL, referenceTagEntries, referenceTaxonomyLabel, type ReferenceGalleryItem } from "@/components/workbench/galleryReference";
 
@@ -693,6 +694,7 @@ function GalleryPreview({ item }: { item: ReferenceGalleryItem }) {
 }
 
 export default function LandingPageClient() {
+  const router = useRouter();
   const { t } = useI18n();
   const { token, hydrate } = useAuthStore();
   const [showLogin, setShowLogin] = useState(false);
@@ -707,16 +709,9 @@ export default function LandingPageClient() {
     hydrate();
   }, [hydrate]);
 
-  const enterAppOrLogin = async () => {
-    const hasToken = token || hasUserSession();
-    if (hasToken) {
-      try {
-        await api("/api/me");
-        window.location.assign("/app");
-      } catch {
-        clearUserSession();
-        setShowLogin(true);
-      }
+  const enterAppOrLogin = () => {
+    if (token || hasUserSession()) {
+      router.push("/app");
       return;
     }
     setShowLogin(true);

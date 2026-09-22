@@ -3097,34 +3097,33 @@ function CanvasEditor({
   }, [locale]);
 
   useEffect(() => {
-    const controller = new AbortController();
+    let active = true;
     setWorkspaceConfigReady(false);
-    apiForLocale<CanvasWorkflow>(`/api/agents/${encodeURIComponent(workflowCode)}`, locale, { signal: controller.signal })
+    apiForLocaleCached<CanvasWorkflow>(`/api/agents/${encodeURIComponent(workflowCode)}`, locale)
       .then((workflow) => {
+        if (!active) return;
         const items = workflow.display_config?.canvas_templates;
         setManagedTemplates(Array.isArray(items) ? items.filter((item) => item && item.id && item.name) : []);
         setWorkspaceRuntime(workflow.runtime_config || {});
         setWorkspaceConfigReady(true);
       })
-      .catch((error) => {
-        if (error?.name !== "AbortError") {
+      .catch(() => {
+        if (active) {
           setManagedTemplates([]);
           setWorkspaceRuntime({});
           setWorkspaceConfigReady(true);
         }
       });
-    return () => controller.abort();
+    return () => { active = false; };
   }, [locale, workflowCode]);
 
   useEffect(() => {
-    const controller = new AbortController();
+    let active = true;
     setEnabledWorkflowCodes(new Set());
-    apiForLocale<{ items: { code: string }[] }>("/api/agents", locale, { signal: controller.signal })
-      .then((result) => setEnabledWorkflowCodes(new Set((result.items || []).map((item) => item.code))))
-      .catch((error) => {
-        if (error?.name !== "AbortError") setEnabledWorkflowCodes(null);
-      });
-    return () => controller.abort();
+    apiForLocaleCached<{ items: { code: string }[] }>("/api/agents", locale)
+      .then((result) => { if (active) setEnabledWorkflowCodes(new Set((result.items || []).map((item) => item.code))); })
+      .catch(() => { if (active) setEnabledWorkflowCodes(null); });
+    return () => { active = false; };
   }, [locale, workflowCode]);
 
   useEffect(() => {

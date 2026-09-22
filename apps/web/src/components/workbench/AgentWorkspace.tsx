@@ -8,7 +8,7 @@ import { useRouter } from "next/navigation";
 import Image from "next/image";
 import dynamic from "next/dynamic";
 import { Archive, ArrowUp, Check, Copy, Download, Folder, HelpCircle, History, ImageIcon, Loader2, Mic2, Plus, RefreshCw, Settings2, Star, Trash2, Wand2, X } from "lucide-react";
-import { api, apiForLocale, listAssets, uploadAsset } from "@/lib/api";
+import { api, apiForLocaleCached, listAssets, uploadAsset } from "@/lib/api";
 import type { Model } from "@starai/shared-types";
 import {
   buildVideoTaskParams,
@@ -425,17 +425,17 @@ export function AgentWorkspace({ code }: { code: string }) {
   }, [code]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    apiForLocale<Workflow>(`/api/agents/${code}`, locale, { signal: controller.signal })
+    let active = true;
+    apiForLocaleCached<Workflow>(`/api/agents/${code}`, locale)
       .then((wf) => {
-        if (controller.signal.aborted) return;
+        if (!active) return;
         setWorkflow(wf);
         setCount(Math.max(1, Number(wf.runtime_config?.default_count || 1)));
         const modelCode = wf.runtime_config?.generation_model_code;
         if (modelCode) {
-          apiForLocale<Model>(`/api/models/${modelCode}`, locale, { signal: controller.signal })
+          apiForLocaleCached<Model>(`/api/models/${modelCode}`, locale)
             .then((m) => {
-              if (controller.signal.aborted) return;
+              if (!active) return;
               setGenerationModel(m);
               setParams(
                 m.category === "video"
@@ -446,20 +446,14 @@ export function AgentWorkspace({ code }: { code: string }) {
                 setBottom((prev) => ({ ...prev, channel_key: String(m.default_params.channel_key) }));
               }
             })
-            .catch((error) => {
-              if (error?.name !== "AbortError") setGenerationModel(null);
-            });
+            .catch(() => { if (active) setGenerationModel(null); });
         } else {
           setGenerationModel(null);
           setParams({});
         }
       })
-      .catch((error) => {
-        if (error?.name !== "AbortError") setWorkflow(null);
-      });
-    return () => {
-      controller.abort();
-    };
+      .catch(() => { if (active) setWorkflow(null); });
+    return () => { active = false; };
   }, [code, locale]);
 
   useEffect(() => {
@@ -523,23 +517,23 @@ export function AgentWorkspace({ code }: { code: string }) {
       setComicVideoModels([]);
       return;
     }
-    const controller = new AbortController();
+    let active = true;
     Promise.all([
-      apiForLocale<Model[]>("/api/models?category=image", locale, { signal: controller.signal }),
-      apiForLocale<Model[]>("/api/models?category=video", locale, { signal: controller.signal }),
+      apiForLocaleCached<Model[]>("/api/models?category=image", locale),
+      apiForLocaleCached<Model[]>("/api/models?category=video", locale),
     ])
       .then(([images, videos]) => {
-        if (controller.signal.aborted) return;
+        if (!active) return;
         setComicImageModels((images || []).filter((item) => item.is_enabled !== false));
         setComicVideoModels((videos || []).filter((item) => item.is_enabled !== false));
       })
-      .catch((error) => {
-        if (error?.name !== "AbortError") {
+      .catch(() => {
+        if (active) {
           setComicImageModels([]);
           setComicVideoModels([]);
         }
       });
-    return () => controller.abort();
+    return () => { active = false; };
   }, [isComicDrama, locale]);
   const [comicSettings, setComicSettings] = useState({
     style_reference_mode: "image_reference",

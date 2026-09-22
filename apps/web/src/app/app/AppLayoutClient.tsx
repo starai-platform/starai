@@ -66,7 +66,10 @@ export default function AppLayoutClient({ children, defaultTheme, initialSession
             </button>
           </div>
         ) : (
-          <span className="sr-only">正在验证登录状态</span>
+          <div role="status" className="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-300">
+            <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-primary dark:border-white/20 dark:border-t-primary" />
+            正在验证登录状态...
+          </div>
         )}
       </div>
     );

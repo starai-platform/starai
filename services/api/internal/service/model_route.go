@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math/rand"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -14,7 +15,10 @@ import (
 	"github.com/starai/api/internal/util"
 )
 
-const routeFailureThreshold = 5
+const (
+	routeFailureThreshold = 5
+	routeHistoryWindow    = 200
+)
 
 // ModelRoute is one independently configurable upstream for a platform model.
 // PriceRule on ModelFull remains the user-facing price; CostRule is private
@@ -347,16 +351,52 @@ func (s *ModelService) RuntimeRoutes(ctx context.Context, model *ModelFull) ([]M
 			end++
 		}
 		weightedRouteOrder(routes[start:end])
+		spreadModelRouteFailureDomains(routes[start:end])
 		start = end
 	}
 	return routes, nil
+}
+
+// Keep the weighted primary choice, then spread fallbacks across independent
+// gateway hosts. Two credentials behind the same Cloudflare/NewAPI host are
+// one failure domain and should not be tried back-to-back when another host is
+// available at the same priority.
+func spreadModelRouteFailureDomains(routes []ModelRoute) {
+	seen := map[string]bool{}
+	for pos := 0; pos < len(routes); pos++ {
+		selected := -1
+		for i := pos; i < len(routes); i++ {
+			if !seen[modelRouteFailureDomain(routes[i])] {
+				selected = i
+				break
+			}
+		}
+		if selected < 0 {
+			clear(seen)
+			selected = pos
+		}
+		routes[pos], routes[selected] = routes[selected], routes[pos]
+		seen[modelRouteFailureDomain(routes[pos])] = true
+	}
+}
+
+func modelRouteFailureDomain(route ModelRoute) string {
+	if parsed, err := url.Parse(strings.TrimSpace(route.BaseURL)); err == nil {
+		if host := strings.ToLower(strings.TrimSpace(parsed.Hostname())); host != "" {
+			return "host:" + host
+		}
+	}
+	if provider := strings.ToLower(strings.TrimSpace(route.Provider)); provider != "" {
+		return "provider:" + provider
+	}
+	return "route:" + strconv.FormatInt(route.ID, 10)
 }
 
 func weightedRouteOrder(routes []ModelRoute) {
 	for pos := 0; pos < len(routes)-1; pos++ {
 		total := 0
 		for i := pos; i < len(routes); i++ {
-			total += routes[i].Weight
+			total += modelRouteSelectionWeight(routes[i])
 		}
 		if total <= 0 {
 			return
@@ -364,7 +404,7 @@ func weightedRouteOrder(routes []ModelRoute) {
 		pick := rand.Intn(total)
 		selected := pos
 		for i := pos; i < len(routes); i++ {
-			pick -= routes[i].Weight
+			pick -= modelRouteSelectionWeight(routes[i])
 			if pick < 0 {
 				selected = i
 				break
@@ -372,6 +412,20 @@ func weightedRouteOrder(routes []ModelRoute) {
 		}
 		routes[pos], routes[selected] = routes[selected], routes[pos]
 	}
+}
+
+// Blend the configured weight with observed reliability. A small Bayesian
+// prior avoids overreacting to the first few calls while sustained failures
+// naturally reduce how often a route is selected as the primary.
+func modelRouteSelectionWeight(route ModelRoute) int {
+	if route.Weight <= 0 {
+		return 0
+	}
+	effective := int(float64(route.Weight) * (float64(route.SuccessCount) + 9) / (float64(route.SuccessCount) + float64(route.FailureCount) + 10))
+	if effective < 1 {
+		return 1
+	}
+	return effective
 }
 
 func (r ModelRoute) RequestExtra(model *ModelFull) map[string]interface{} {
@@ -629,7 +683,11 @@ func (s *ModelService) MarkRouteSuccess(ctx context.Context, routeID int64) {
 	if routeID <= 0 {
 		return
 	}
-	_, _ = s.db.Exec(ctx, `UPDATE model_routes SET health_status='healthy',consecutive_failures=0,success_count=success_count+1,last_success_at=now(),cooldown_until=NULL,updated_at=now() WHERE id=$1`, routeID)
+	_, _ = s.db.Exec(ctx, `UPDATE model_routes SET
+		health_status='healthy',consecutive_failures=0,
+		success_count=CASE WHEN success_count+failure_count >= $2 THEN success_count/2+1 ELSE success_count+1 END,
+		failure_count=CASE WHEN success_count+failure_count >= $2 THEN failure_count/2 ELSE failure_count END,
+		last_success_at=now(),cooldown_until=NULL,updated_at=now() WHERE id=$1`, routeID, routeHistoryWindow)
 }
 
 // AcquireRouteProbe prevents a recovered circuit from receiving a burst of
@@ -673,7 +731,8 @@ func (s *ModelService) MarkRouteFailure(ctx context.Context, routeID int64) {
 	// 不进入 open 状态也不设置冷却，保持旧的直连重试行为。
 	_, _ = s.db.Exec(ctx, `UPDATE model_routes r SET
 		consecutive_failures=r.consecutive_failures+1,
-		failure_count=r.failure_count+1,
+		success_count=CASE WHEN r.success_count+r.failure_count >= $3 THEN r.success_count/2 ELSE r.success_count END,
+		failure_count=CASE WHEN r.success_count+r.failure_count >= $3 THEN r.failure_count/2+1 ELSE r.failure_count+1 END,
 		health_status=CASE
 			WHEN EXISTS(SELECT 1 FROM model_routes p WHERE p.model_id=r.model_id AND p.is_enabled=true AND p.id<>r.id)
 				THEN CASE WHEN r.consecutive_failures+1 >= $2 THEN 'open' ELSE 'degraded' END
@@ -682,7 +741,7 @@ func (s *ModelService) MarkRouteFailure(ctx context.Context, routeID int64) {
 			WHEN EXISTS(SELECT 1 FROM model_routes p WHERE p.model_id=r.model_id AND p.is_enabled=true AND p.id<>r.id)
 				AND r.consecutive_failures+1 >= $2 THEN now()+interval '60 seconds'
 			ELSE r.cooldown_until END,
-		last_failure_at=now(),updated_at=now() WHERE r.id=$1`, routeID, routeFailureThreshold)
+		last_failure_at=now(),updated_at=now() WHERE r.id=$1`, routeID, routeFailureThreshold, routeHistoryWindow)
 }
 
 func (s *ModelService) LogRouteAttempt(ctx context.Context, requestID string, modelID, routeID int64, attempt int, status string, statusCode int, errorCode string, latencyMS int, providerCost float64) {

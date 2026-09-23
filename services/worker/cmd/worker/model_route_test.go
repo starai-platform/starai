@@ -6,7 +6,7 @@ import (
 )
 
 func TestWorkerStatusCanFailover(t *testing.T) {
-	for _, status := range []int{0, 401, 429, 500, 502, 503, 524} {
+	for _, status := range []int{0, 401, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524} {
 		if !workerStatusCanFailover(status) {
 			t.Fatalf("status %d should fail over", status)
 		}
@@ -19,14 +19,55 @@ func TestWorkerStatusCanFailover(t *testing.T) {
 }
 
 func TestWorkerSameRouteRetryClassification(t *testing.T) {
-	if workerShouldRetrySameRoute(nil, 429) {
+	if workerShouldRetrySameRoute(nil, 429, true) {
 		t.Fatal("429 should switch routes without retrying the same one")
 	}
-	if !workerShouldRetrySameRoute(nil, 503) {
+	if !workerShouldRetrySameRoute(nil, 503, false) {
 		t.Fatal("503 should allow configured same-route retry")
 	}
-	if !workerShouldRetrySameRoute(assertionError("network"), 0) {
+	if workerShouldRetrySameRoute(nil, 502, true) {
+		t.Fatal("502 should switch to an independent route before same-route retry")
+	}
+	if !workerShouldRetrySameRoute(assertionError("network"), 0, false) {
 		t.Fatal("network errors should allow configured retry")
+	}
+	if workerShouldRetrySameRoute(assertionError("network"), 0, true) {
+		t.Fatal("network errors should switch routes when a fallback exists")
+	}
+}
+
+func TestWorkerRouteFailoversSpreadGatewayHosts(t *testing.T) {
+	routes := []workerModelRoute{
+		{ID: 1, Connection: connectionConfig{BaseURL: "https://new-api.example.com/v1"}},
+		{ID: 2, Connection: connectionConfig{BaseURL: "https://new-api.example.com/v1"}},
+		{ID: 3, Connection: connectionConfig{BaseURL: "https://official.example.net/v1"}},
+		{ID: 4, Connection: connectionConfig{BaseURL: "https://new-api.example.com/v1"}},
+	}
+	spreadWorkerRouteFailureDomains(routes)
+	if routes[0].ID != 1 || routes[1].ID != 3 {
+		t.Fatalf("same gateway routes remained adjacent before an independent fallback: %#v", routes)
+	}
+}
+
+func TestWorkerRouteSelectionWeightUsesObservedReliability(t *testing.T) {
+	if got := workerRouteSelectionWeight(workerModelRoute{Weight: 100}); got != 90 {
+		t.Fatalf("new route weight = %d, want 90", got)
+	}
+	if got := workerRouteSelectionWeight(workerModelRoute{Weight: 100, FailureCount: 20}); got != 30 {
+		t.Fatalf("unreliable route weight = %d, want 30", got)
+	}
+	if got := workerRouteSelectionWeight(workerModelRoute{Weight: 50, SuccessCount: 90, FailureCount: 10}); got != 45 {
+		t.Fatalf("configured weight was not retained: %d", got)
+	}
+}
+
+func TestAgentConfirmedCostCapsUserChargeOnlyForConfirmedRun(t *testing.T) {
+	confirmed := map[string]interface{}{"_agent_confirmation": "signed", "_agent_max_cost": 1.25}
+	if got := agentConfirmedCost(confirmed, 2); got != 1.25 {
+		t.Fatalf("confirmed cost = %v, want 1.25", got)
+	}
+	if got := agentConfirmedCost(map[string]interface{}{"_agent_max_cost": 1.25}, 2); got != 2 {
+		t.Fatalf("untrusted cost limit changed charge: %v", got)
 	}
 }
 
@@ -43,11 +84,11 @@ func TestWorkerRouteProviderCost(t *testing.T) {
 
 func TestWorkerRouteProviderCostPerTokenWithCache(t *testing.T) {
 	route := workerModelRoute{CostRule: map[string]interface{}{
-		"billing_type":             "per_token",
-		"input_cost_per_m":         float64(10),
-		"output_cost_per_m":        float64(40),
-		"cache_read_cost_per_m":    float64(1),
-		"cache_write_cost_per_m":   float64(12),
+		"billing_type":           "per_token",
+		"input_cost_per_m":       float64(10),
+		"output_cost_per_m":      float64(40),
+		"cache_read_cost_per_m":  float64(1),
+		"cache_write_cost_per_m": float64(12),
 	}}
 	// 输入 1000（缓存读 400 + 缓存写 100），输出 500
 	got := workerRouteProviderCost(route, map[string]interface{}{}, 1000, 500, 400, 100)

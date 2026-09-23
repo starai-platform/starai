@@ -106,6 +106,23 @@ func (h *Handler) GetAgentProject(c *gin.Context) {
 	util.OK(c, project)
 }
 
+func (h *Handler) RecordCreativeAgentFeedback(c *gin.Context) {
+	var req struct {
+		ConversationID string `json:"conversation_id"`
+		ProjectID      string `json:"project_id"`
+		Rating         int    `json:"rating"`
+	}
+	if c.ShouldBindJSON(&req) != nil || (req.Rating != -1 && req.Rating != 1) || strings.TrimSpace(req.ConversationID) == "" || strings.TrimSpace(req.ProjectID) == "" {
+		util.BadRequest(c, "评价参数错误")
+		return
+	}
+	if err := h.agents.RecordExplicitWorkflowFeedback(c.Request.Context(), c.GetInt64("user_id"), req.ConversationID, req.ProjectID, req.Rating); err != nil {
+		util.BadRequest(c, err.Error())
+		return
+	}
+	util.OK(c, map[string]int{"rating": req.Rating})
+}
+
 func (h *Handler) RetryAgentProject(c *gin.Context) {
 	h.retryAgentProject(c, false)
 }
@@ -170,6 +187,7 @@ func (h *Handler) retryAgentProject(c *gin.Context, retryNode bool) {
 		util.BadRequest(c, err.Error())
 		return
 	}
+	_ = h.agents.RecordWorkflowRetryFeedback(c.Request.Context(), c.GetInt64("user_id"), c.Param("id"))
 	if conversationID, userMessage := strings.TrimSpace(req.ConversationID), strings.TrimSpace(req.UserMessage); conversationID != "" && userMessage != "" {
 		_ = h.chat.AppendConversationMessage(c.Request.Context(), c.GetInt64("user_id"), conversationID, "user", userMessage)
 		_ = h.chat.AppendConversationMessage(c.Request.Context(), c.GetInt64("user_id"), conversationID, "assistant", "已从失败节点继续执行，已完成的步骤和分段不会重新生成。")

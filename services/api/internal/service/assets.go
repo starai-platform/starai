@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -113,6 +115,52 @@ func (s *AssetService) Get(ctx context.Context, userID int64, publicID string) (
 	json.Unmarshal(tagsJSON, &a.Tags)
 	a.CreatedAt = created.Format(time.RFC3339)
 	return bucket, objectKey, &a, nil
+}
+
+func (s *AssetService) GetMany(ctx context.Context, userID int64, publicIDs []string) ([]AssetDTO, error) {
+	if len(publicIDs) > 100 {
+		return nil, errors.New("单次最多查询100个素材")
+	}
+	unique := make([]string, 0, len(publicIDs))
+	seen := make(map[string]bool, len(publicIDs))
+	for _, publicID := range publicIDs {
+		publicID = strings.TrimSpace(publicID)
+		if publicID != "" && !seen[publicID] {
+			seen[publicID] = true
+			unique = append(unique, publicID)
+		}
+	}
+	if len(unique) == 0 {
+		return []AssetDTO{}, nil
+	}
+	rows, err := s.db.Query(ctx, `SELECT public_id,name,description,kind,asset_type,mime_type,size_bytes,bucket,object_key,tags,created_at
+		FROM assets WHERE user_id=$1 AND public_id=ANY($2)`, userID, unique)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byID := make(map[string]AssetDTO, len(unique))
+	for rows.Next() {
+		var item AssetDTO
+		var tags []byte
+		var created time.Time
+		if err := rows.Scan(&item.PublicID, &item.Name, &item.Description, &item.Kind, &item.AssetType, &item.MimeType, &item.SizeBytes, &item.Bucket, &item.ObjectKey, &tags, &created); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(tags, &item.Tags)
+		item.CreatedAt = created.Format(time.RFC3339)
+		byID[item.PublicID] = item
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	items := make([]AssetDTO, 0, len(byID))
+	for _, publicID := range unique {
+		if item, ok := byID[publicID]; ok {
+			items = append(items, item)
+		}
+	}
+	return items, nil
 }
 
 func (s *AssetService) IDByObjectKey(ctx context.Context, userID int64, key string) (string, error) {

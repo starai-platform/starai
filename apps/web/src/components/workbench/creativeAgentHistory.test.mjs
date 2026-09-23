@@ -69,8 +69,8 @@ test("Agent history shows text before slow media, deduplicates tasks and blocks 
         { role: "assistant", content: "普通解释正文" },
       ] };
       if (url.startsWith("/api/creative-agent/state/")) return { slots: {}, status: "draft" };
-      if (url.startsWith("/api/tasks/")) return { task_no: "same-task", status: "succeeded", output: {} };
-      if (url.startsWith("/api/assets/")) return slowAsset;
+      if (url === "/api/tasks/status") return { items: [{ task_no: "same-task", status: "succeeded", output: {} }] };
+      if (url === "/api/assets/batch") return slowAsset;
       throw new Error(`unexpected request ${url}`);
     },
   };
@@ -85,7 +85,9 @@ test("Agent history shows text before slow media, deduplicates tasks and blocks 
   assert.equal(displayed[0].find(item => item.content === "普通解释正文").documentRequested, false);
   assert.equal(calls.filter(url => url.startsWith("/api/tasks/")).length, 1);
   assert.equal(calls.filter(url => url.startsWith("/api/chat/conversations/")).length, 1);
-  release({ public_id: "asset", kind: "image", url: "https://test/image.png" });
+  assert.ok(calls.includes("/api/chat/conversations/conversation?limit=200"));
+  assert.ok(calls.includes("/api/assets/batch"));
+  release({ items: [{ public_id: "asset", kind: "image", url: "https://test/image.png" }] });
   await opening;
   assert.equal(displayed.length, 2);
   assert.equal(displayed[1][0].images[0], "https://test/image.png");

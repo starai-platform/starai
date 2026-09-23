@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { workflowMaterials, finalWorkflowMedia, workflowSuccessMessage, updateWorkflowMessages } from "./creativeAgentWorkflow.ts";
+import { workflowMaterials, finalWorkflowMedia, workflowOutputIssue, workflowSuccessMessage, updateWorkflowMessages } from "./creativeAgentWorkflow.ts";
 
 const run = {
   public_id: "workflow-a", status: "succeeded",
@@ -23,7 +23,7 @@ test("all process materials survive, including segments after the fourth and nar
 test("success message contains only final video, never cover, frames or narration", () => {
   assert.deepEqual(finalWorkflowMedia(run), { images: [], videos: ["final.mp4"], audios: [] });
   const result = workflowSuccessMessage(run);
-  assert.equal(result.content, "您的视频生成成功啦！");
+  assert.equal(result.content, "视频生成完成。");
   assert.deepEqual(result.images, []);
   assert.deepEqual(result.videos, ["final.mp4"]);
   assert.equal(result.workflow, undefined);
@@ -100,4 +100,22 @@ test("content image workflow returns publishable copy and final card images", ()
   assert.match(message.content, /秋季护肤指南/);
   assert.match(message.content, /#秋季护肤/);
   assert.deepEqual(message.images, ["cover.png", "point.png"]);
+});
+
+test("generic workflows surface image and audio outputs without workflow-specific code", () => {
+  const generic = {
+    public_id: "generic-a", workflow_code: "photo_studio", status: "succeeded",
+    outputs: { results: [{ image_url: "portrait.webp" }], voice: { audio_url: "intro.mp3" } },
+  };
+  assert.deepEqual(finalWorkflowMedia(generic), { images: ["portrait.webp"], videos: [], audios: ["intro.mp3"] });
+  const message = workflowSuccessMessage(generic);
+  assert.equal(message.content, "图片生成完成。");
+});
+
+test("a succeeded media workflow without its expected final output is reported honestly", () => {
+  const emptyImage = { public_id: "empty-image", status: "succeeded", inputs: { _agent_expected_output: "image" }, outputs: {} };
+  assert.match(workflowOutputIssue(emptyImage), /未返回预期图片/);
+  assert.equal(workflowSuccessMessage(emptyImage), null);
+  assert.equal(workflowOutputIssue({ ...emptyImage, outputs: { result: { image_url: "done.png" } } }), "");
+  assert.equal(workflowOutputIssue({ ...emptyImage, inputs: { _agent_expected_output: "workflow" } }), "");
 });

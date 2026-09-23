@@ -77,6 +77,11 @@ func TestCreativeAgentVideoPlanUsesModelCapabilities(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	model := &service.ModelFull{ModelDTO: service.ModelDTO{Code: "selected", InputSchema: map[string]interface{}{"properties": map[string]interface{}{"duration": map[string]interface{}{"enum": []interface{}{8}}}}}}
+	v2 := prepareCreativeAgentVideoPlan(map[string]interface{}{"intent": "workflow", "workflow_code": "video_creation_v2", "params": map[string]interface{}{"target_duration_sec": 24}}, "制作24秒视频", model)
+	if v2["workflow_code"] != "video_creation_v2" {
+		t.Fatalf("explicit V2 workflow was downgraded: %#v", v2)
+	}
 }
 
 func TestCreativeAgentRejectsStaleDurationAndUnknownCapabilities(t *testing.T) {

@@ -576,6 +576,10 @@ func processCustomWorkflow(ctx context.Context, pool *pgxpool.Pool, baseURL, tok
 	}
 
 	totalCost = workflowActualCost(ctx, pool, p.ProjectID, outputs)
+	totalCost = agentConfirmedCost(inputs, totalCost)
+	if err := validateAgentExpectedWorkflowOutput(inputs, outputs); err != nil {
+		return failWorkflow(ctx, pool, p, publicID, estimated, "最终交付物校验失败："+err.Error())
+	}
 	chargeCost := incrementalWorkflowCharge(ctx, pool, p.ProjectID, totalCost)
 	if err := chargeBillingWithFinalize(ctx, pool, p.UserID, estimated, chargeCost, "workflow", publicID, "workflow_usage", "智能体工作流", func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `
@@ -2393,7 +2397,7 @@ func executeWorkerLLMWithMedia(ctx context.Context, pool *pgxpool.Pool, baseURL,
 			if !workerStatusCanFailover(status) {
 				return workerLLMResult{}, fmt.Errorf("上游拒绝请求：HTTP %d %s", status, message)
 			}
-			if retry < retries && workerShouldRetrySameRoute(requestErr, status) && waitWorkerRouteRetry(ctx, retry) {
+			if retry < retries && workerShouldRetrySameRoute(requestErr, status, poolEnabled) && waitWorkerRouteRetry(ctx, retry) {
 				continue
 			}
 			break
@@ -2938,6 +2942,7 @@ func incrementalChargeAmount(cumulativeCost, settledCost float64) float64 {
 // 剩余额度继续担保后续步骤；结算进度记录在 actual_cost 供后续增量结算使用。
 // 与最终完成结算（chargeBillingWithFinalize）互不重复：后者只收累计成本减去 actual_cost 的差额。
 func chargeStepBilling(ctx context.Context, pool *pgxpool.Pool, userID, projectID int64, publicID string, cumulativeCost float64) error {
+	cumulativeCost = agentConfirmedWorkflowCost(ctx, pool, projectID, cumulativeCost)
 	var settled float64
 	if err := pool.QueryRow(ctx, `SELECT COALESCE(actual_cost,0) FROM workflow_projects WHERE id=$1`, projectID).Scan(&settled); err != nil {
 		return err
@@ -4371,7 +4376,17 @@ func completeSimpleAgentWorkflow(ctx context.Context, pool *pgxpool.Pool, p Work
 	if stopped, stopErr := stopWorkflowIfRequested(ctx, pool, p, publicID, estimated); stopped {
 		return stopErr
 	}
+	var inputsRaw []byte
+	if err := pool.QueryRow(ctx, `SELECT inputs FROM workflow_projects WHERE id=$1`, p.ProjectID).Scan(&inputsRaw); err != nil {
+		return err
+	}
+	inputs := map[string]interface{}{}
+	_ = json.Unmarshal(inputsRaw, &inputs)
+	if err := validateAgentExpectedWorkflowOutput(inputs, outputs); err != nil {
+		return failWorkflow(ctx, pool, p, publicID, estimated, "最终交付物校验失败："+err.Error())
+	}
 	actual := workflowActualCost(ctx, pool, p.ProjectID, outputs)
+	actual = agentConfirmedCost(inputs, actual)
 	chargeCost := incrementalWorkflowCharge(ctx, pool, p.ProjectID, actual)
 	if err := chargeBillingWithFinalize(ctx, pool, p.UserID, estimated, chargeCost, "workflow", publicID, "workflow_usage", "智能体工作流", func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `
@@ -4394,6 +4409,86 @@ func completeSimpleAgentWorkflow(ctx context.Context, pool *pgxpool.Pool, p Work
 	}
 	log.Printf("Workflow project %s completed (cost=%.4f)", publicID, actual)
 	return nil
+}
+
+var workflowMediaExtensions = map[string]*regexp.Regexp{
+	"image": regexp.MustCompile(`(?i)\.(?:png|jpe?g|webp|gif|avif)(?:[?#]|$)`),
+	"video": regexp.MustCompile(`(?i)\.(?:mp4|webm|mov|m3u8)(?:[?#]|$)`),
+	"audio": regexp.MustCompile(`(?i)\.(?:mp3|wav|m4a|aac|ogg|flac)(?:[?#]|$)`),
+}
+
+func validateAgentExpectedWorkflowOutput(inputs, outputs map[string]interface{}) error {
+	expected := strings.ToLower(strings.TrimSpace(stringAny(inputs["_agent_expected_output"])))
+	if expected == "speech" || expected == "music" {
+		expected = "audio"
+	}
+	if expected != "image" && expected != "video" && expected != "audio" {
+		return nil
+	}
+	if workflowOutputHasMedia(outputs, expected, "") {
+		return nil
+	}
+	label := map[string]string{"image": "图片", "video": "视频", "audio": "音频"}[expected]
+	return fmt.Errorf("工作流已结束但未返回预期%s", label)
+}
+
+func workflowOutputHasMedia(value interface{}, expected, hint string) bool {
+	switch item := value.(type) {
+	case string:
+		item = strings.TrimSpace(item)
+		if item == "" {
+			return false
+		}
+		return workflowMediaExtensions[expected].MatchString(item) || (workflowMediaHintMatches(hint, expected) && workflowMediaValueLooksLikeURL(item))
+	case []interface{}:
+		for _, child := range item {
+			if workflowOutputHasMedia(child, expected, hint) {
+				return true
+			}
+		}
+	case []map[string]interface{}:
+		for _, child := range item {
+			if workflowOutputHasMedia(child, expected, hint) {
+				return true
+			}
+		}
+	case map[string]interface{}:
+		if strings.EqualFold(strings.TrimSpace(stringAny(item["status"])), "failed") {
+			return false
+		}
+		if mediaType := strings.ToLower(strings.TrimSpace(stringAny(item["type"]))); mediaType == expected || (expected == "audio" && (mediaType == "speech" || mediaType == "music")) {
+			hint = expected
+		}
+		for key, child := range item {
+			lowerKey := strings.ToLower(key)
+			if strings.Contains(lowerKey, "source") || strings.Contains(lowerKey, "reference") || strings.Contains(lowerKey, "original") || strings.Contains(lowerKey, "input") {
+				continue
+			}
+			if workflowOutputHasMedia(child, expected, key+" "+hint) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func workflowMediaValueLooksLikeURL(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(value, "https://") || strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "data:") || strings.HasPrefix(value, "s3://") || strings.HasPrefix(value, "/")
+}
+
+func workflowMediaHintMatches(hint, expected string) bool {
+	hint = strings.ToLower(hint)
+	switch expected {
+	case "image":
+		return strings.Contains(hint, "image") || strings.Contains(hint, "poster") || strings.Contains(hint, "cover") || strings.Contains(hint, "photo") || strings.Contains(hint, "thumbnail")
+	case "video":
+		return strings.Contains(hint, "video") || strings.Contains(hint, "movie") || strings.Contains(hint, "clip")
+	case "audio":
+		return strings.Contains(hint, "audio") || strings.Contains(hint, "voice") || strings.Contains(hint, "speech") || strings.Contains(hint, "music") || strings.Contains(hint, "narration")
+	default:
+		return false
+	}
 }
 
 func runNode(ctx context.Context, pool *pgxpool.Pool, baseURL, token string, userID int64, publicID string, category string, node workflowNode, prompt string, inputs map[string]interface{}) (map[string]interface{}, string) {
@@ -5238,6 +5333,7 @@ func failWorkflow(ctx context.Context, pool *pgxpool.Pool, p WorkflowTaskPayload
 		return stopErr
 	}
 	actual := workflowAccruedCost(ctx, pool, p.ProjectID)
+	actual = agentConfirmedWorkflowCost(ctx, pool, p.ProjectID, actual)
 	chargeCost := incrementalWorkflowCharge(ctx, pool, p.ProjectID, actual)
 	finalize := func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `
@@ -5284,18 +5380,19 @@ func stopWorkflowIfRequested(ctx context.Context, pool *pgxpool.Pool, p Workflow
 
 func cancelWorkflow(ctx context.Context, pool *pgxpool.Pool, p WorkflowTaskPayload, publicID string, estimated float64) error {
 	var mode string
-	var productInputs []byte
-	if err := pool.QueryRow(ctx, `SELECT COALESCE(w.runtime_config->>'agent_mode',''),p.inputs FROM workflow_projects p JOIN workflow_definitions w ON w.id=p.workflow_id WHERE p.id=$1`, p.ProjectID).Scan(&mode, &productInputs); err != nil {
+	var inputsRaw []byte
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(w.runtime_config->>'agent_mode',''),p.inputs FROM workflow_projects p JOIN workflow_definitions w ON w.id=p.workflow_id WHERE p.id=$1`, p.ProjectID).Scan(&mode, &inputsRaw); err != nil {
+		return err
+	}
+	inputs := map[string]interface{}{}
+	if err := json.Unmarshal(inputsRaw, &inputs); err != nil {
 		return err
 	}
 	if mode == "product_refine" {
-		var inputs map[string]interface{}
-		if err := json.Unmarshal(productInputs, &inputs); err != nil {
-			return err
-		}
 		return finishProductWorkflow(ctx, pool, p, publicID, estimated, floatAny(inputs["max_cost"]), loadWorkflowOutputs(ctx, pool, p.ProjectID), "用户已停止，已有结果已保留")
 	}
 	actual := workflowAccruedCost(ctx, pool, p.ProjectID)
+	actual = agentConfirmedCost(inputs, actual)
 	chargeCost := incrementalWorkflowCharge(ctx, pool, p.ProjectID, actual)
 	finalize := func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `
@@ -5321,4 +5418,26 @@ func cancelWorkflow(ctx context.Context, pool *pgxpool.Pool, p WorkflowTaskPaylo
 	}
 	log.Printf("Workflow project %s canceled by user (cost=%.4f)", publicID, actual)
 	return nil
+}
+
+func agentConfirmedWorkflowCost(ctx context.Context, pool *pgxpool.Pool, projectID int64, actual float64) float64 {
+	var raw []byte
+	if err := pool.QueryRow(ctx, `SELECT inputs FROM workflow_projects WHERE id=$1`, projectID).Scan(&raw); err != nil {
+		return actual
+	}
+	inputs := map[string]interface{}{}
+	if json.Unmarshal(raw, &inputs) != nil {
+		return actual
+	}
+	return agentConfirmedCost(inputs, actual)
+}
+
+func agentConfirmedCost(inputs map[string]interface{}, actual float64) float64 {
+	if strings.TrimSpace(stringAny(inputs["_agent_confirmation"])) == "" {
+		return actual
+	}
+	if limit := floatAny(inputs["_agent_max_cost"]); limit > 0 && actual > limit {
+		return limit
+	}
+	return actual
 }

@@ -3,10 +3,12 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestChatCompletionClaudeProtocol(t *testing.T) {
@@ -261,5 +263,26 @@ func TestChatCompletionStreamRequestsUsage(t *testing.T) {
 	}
 	if usage == nil || usage.TotalTokens != 15 {
 		t.Fatalf("usage = %#v, want total_tokens=15", usage)
+	}
+}
+
+func TestChatCompletionStreamHonorsRouteHeaderTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token", 5, 5)
+	started := time.Now()
+	_, err := client.ChatCompletionStreamWithConfig(context.Background(), "/chat", ChatRequest{Model: "test", Messages: []ChatMessage{{Role: "user", Content: "hello"}}}, map[string]interface{}{"timeout_seconds": 1})
+	var platformErr *PlatformError
+	if !errors.As(err, &platformErr) || platformErr.Code != "MODEL_TIMEOUT" {
+		t.Fatalf("error = %#v, want MODEL_TIMEOUT", err)
+	}
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatalf("header timeout took %v", elapsed)
 	}
 }

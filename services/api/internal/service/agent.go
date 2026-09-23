@@ -52,6 +52,14 @@ type WorkflowDTO struct {
 	SortOrder     int                    `json:"sort_order"`
 }
 
+type WorkflowOutcomeStat struct {
+	RecentRuns       int
+	SuccessRate      float64
+	AvgDurationMS    int
+	FeedbackSamples  float64
+	SatisfactionRate float64
+}
+
 func (s *AgentService) List(ctx context.Context, includeDisabled bool) ([]WorkflowDTO, error) {
 	q := `SELECT code, name, description, icon, category, nodes, input_schema, price_rule, display_config, runtime_config, is_enabled, sort_order FROM workflow_definitions`
 	if !includeDisabled {
@@ -72,6 +80,50 @@ func (s *AgentService) List(ctx context.Context, includeDisabled bool) ([]Workfl
 		items = append(items, *w)
 	}
 	return items, nil
+}
+
+// AgentWorkflowOutcomeStats summarizes only projects dispatched by the
+// Creative Agent. Manual workflow runs must not bias the Agent's own router.
+func (s *AgentService) AgentWorkflowOutcomeStats(ctx context.Context) (map[string]WorkflowOutcomeStat, error) {
+	rows, err := s.db.Query(ctx, `WITH feedback AS (
+		SELECT workflow_code,
+			SUM(weight)::double precision AS sample_weight,
+			COALESCE(SUM(weight) FILTER (WHERE rating=1),0)::double precision AS positive_weight
+		FROM creative_agent_workflow_feedback
+		WHERE updated_at>=now()-interval '30 days'
+		GROUP BY workflow_code
+	) SELECT w.code,
+		COUNT(p.id) FILTER (WHERE p.status IN ('succeeded','failed')),
+		COUNT(p.id) FILTER (WHERE p.status='succeeded'),
+		COALESCE((AVG(EXTRACT(EPOCH FROM (p.finished_at-p.started_at))*1000)
+			FILTER (WHERE p.status IN ('succeeded','failed') AND p.started_at IS NOT NULL AND p.finished_at IS NOT NULL))::double precision,0),
+		COALESCE(f.sample_weight,0),
+		(3+COALESCE(f.positive_weight,0))/(4+COALESCE(f.sample_weight,0))
+		FROM workflow_definitions w
+		LEFT JOIN workflow_projects p ON p.workflow_id=w.id
+			AND p.created_at>=now()-interval '30 days'
+			AND p.inputs ? '_agent_confirmation'
+		LEFT JOIN feedback f ON f.workflow_code=w.code
+		GROUP BY w.id,w.code,f.sample_weight,f.positive_weight`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	stats := map[string]WorkflowOutcomeStat{}
+	for rows.Next() {
+		var code string
+		var runs, successes int64
+		var duration, feedbackSamples, satisfaction float64
+		if err := rows.Scan(&code, &runs, &successes, &duration, &feedbackSamples, &satisfaction); err != nil {
+			return nil, err
+		}
+		stat := WorkflowOutcomeStat{RecentRuns: int(runs), AvgDurationMS: int(duration), FeedbackSamples: feedbackSamples, SatisfactionRate: satisfaction}
+		if runs > 0 {
+			stat.SuccessRate = float64(successes) / float64(runs)
+		}
+		stats[code] = stat
+	}
+	return stats, rows.Err()
 }
 
 func (s *AgentService) Get(ctx context.Context, code string) (*WorkflowDTO, error) {
@@ -117,12 +169,78 @@ type WorkflowProjectDTO struct {
 	Outputs        map[string]interface{} `json:"outputs"`
 	EstimatedCost  float64                `json:"estimated_cost"`
 	ActualCost     float64                `json:"actual_cost"`
+	UserFeedback   int                    `json:"user_feedback,omitempty"`
 	ErrorMessage   *string                `json:"error_message,omitempty"`
 	NodeRuns       []NodeRunDTO           `json:"node_runs"`
 	CurrentStep    string                 `json:"current_step,omitempty"`
 	WaitingConfirm bool                   `json:"waiting_confirm"`
 	MediaTasks     []AgentMediaTaskDTO    `json:"media_tasks,omitempty"`
 	CreatedAt      string                 `json:"created_at"`
+}
+
+func (s *AgentService) recordWorkflowFeedback(ctx context.Context, userID int64, conversationID, workflowCode, targetType, targetRef, source string, rating int, weight float64) error {
+	if rating != -1 && rating != 1 {
+		return errors.New("评价参数无效")
+	}
+	result, err := s.db.Exec(ctx, `INSERT INTO creative_agent_workflow_feedback
+		(user_id,conversation_public_id,workflow_code,target_type,target_ref,source,rating,weight)
+		SELECT $1,$2,$3,$4,$5,$6,$7,$8
+		WHERE EXISTS (SELECT 1 FROM conversations WHERE public_id=$2 AND user_id=$1)
+		ON CONFLICT (user_id,target_type,target_ref,source) DO UPDATE SET
+			conversation_public_id=EXCLUDED.conversation_public_id,
+			workflow_code=EXCLUDED.workflow_code,rating=EXCLUDED.rating,
+			weight=EXCLUDED.weight,updated_at=now()`,
+		userID, strings.TrimSpace(conversationID), strings.TrimSpace(workflowCode), targetType, targetRef, source, rating, weight)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return errors.New("会话不存在")
+	}
+	return nil
+}
+
+func agentConfirmationConversation(value string) string {
+	value = strings.TrimSpace(value)
+	if pos := strings.LastIndexByte(value, ':'); pos > 0 {
+		return value[:pos]
+	}
+	return ""
+}
+
+func (s *AgentService) RecordExplicitWorkflowFeedback(ctx context.Context, userID int64, conversationID, projectID string, rating int) error {
+	var workflowCode, confirmation string
+	if err := s.db.QueryRow(ctx, `SELECT w.code,COALESCE(p.inputs->>'_agent_confirmation','')
+		FROM workflow_projects p JOIN workflow_definitions w ON w.id=p.workflow_id
+		WHERE p.public_id=$1 AND p.user_id=$2 AND p.status='succeeded'`, strings.TrimSpace(projectID), userID).Scan(&workflowCode, &confirmation); err != nil {
+		return err
+	}
+	if conversationID = strings.TrimSpace(conversationID); conversationID == "" || conversationID != agentConfirmationConversation(confirmation) {
+		return errors.New("该任务不属于当前 Agent 会话")
+	}
+	return s.recordWorkflowFeedback(ctx, userID, conversationID, workflowCode, "project", projectID, "explicit", rating, 1)
+}
+
+func (s *AgentService) RecordWorkflowRouteChange(ctx context.Context, userID int64, conversationID, previousWorkflowCode string, planVersion int64) error {
+	if planVersion <= 0 || strings.TrimSpace(previousWorkflowCode) == "" {
+		return nil
+	}
+	target := fmt.Sprintf("%s:%d", strings.TrimSpace(conversationID), planVersion)
+	return s.recordWorkflowFeedback(ctx, userID, conversationID, previousWorkflowCode, "plan", target, "route_change", -1, 0.25)
+}
+
+func (s *AgentService) RecordWorkflowRetryFeedback(ctx context.Context, userID int64, projectID string) error {
+	var workflowCode, confirmation string
+	if err := s.db.QueryRow(ctx, `SELECT w.code,COALESCE(p.inputs->>'_agent_confirmation','')
+		FROM workflow_projects p JOIN workflow_definitions w ON w.id=p.workflow_id
+		WHERE p.public_id=$1 AND p.user_id=$2`, strings.TrimSpace(projectID), userID).Scan(&workflowCode, &confirmation); err != nil {
+		return err
+	}
+	conversationID := agentConfirmationConversation(confirmation)
+	if conversationID == "" {
+		return nil
+	}
+	return s.recordWorkflowFeedback(ctx, userID, conversationID, workflowCode, "project", projectID, "retry", -1, 0.25)
 }
 
 type AgentMediaTaskDTO struct {
@@ -264,7 +382,6 @@ func (s *AgentService) CreateProject(ctx context.Context, userID int64, code str
 			return nil, err
 		}
 	}
-	nodeEstimate := 0.0
 	productEstimate := 0.0
 	billingReservation := 0.0
 	if stringValue(def.RuntimeConfig["agent_mode"]) == "product_refine" {
@@ -284,13 +401,15 @@ func (s *AgentService) CreateProject(ctx context.Context, userID int64, code str
 		billingReservation = productBillingReservation(productEstimate, executionBudget)
 		inputs["_billing_reservation"] = billingReservation
 	}
-	for _, node := range def.Nodes {
-		nodeEstimate += node.Cost
+	estimated := productEstimate
+	if stringValue(def.RuntimeConfig["agent_mode"]) != "product_refine" {
+		estimated, err = s.EstimateWorkflowCost(ctx, def, inputs)
+		if err != nil {
+			return nil, err
+		}
 	}
-	runtimeEstimate := s.estimateAgentRuntimeCost(ctx, def.RuntimeConfig, inputs)
-	estimated := estimateAgentProjectCost(def.PriceRule, inputs, nodeEstimate, runtimeEstimate)
-	if stringValue(def.RuntimeConfig["agent_mode"]) == "product_refine" {
-		estimated = productEstimate
+	if err := validateAgentCostLimit(inputs, estimated); err != nil {
+		return nil, err
 	}
 	if billingReservation <= 0 {
 		billingReservation = estimated
@@ -316,7 +435,7 @@ func (s *AgentService) CreateProject(ctx context.Context, userID int64, code str
 		s.attachWorkflowToComicProject(ctx, userID, projectID, inputs)
 	}
 	if err := queue.EnqueueWorkflowTask(s.queue, queue.WorkflowTaskPayload{ProjectID: projectID, UserID: userID}); err != nil {
-		cleanupErr := s.billing.UnfreezeWithFinalize(ctx, userID, estimated, "workflow", publicID, func(tx pgx.Tx) error {
+		cleanupErr := s.billing.UnfreezeWithFinalize(ctx, userID, billingReservation, "workflow", publicID, func(tx pgx.Tx) error {
 			_, updateErr := tx.Exec(ctx, `UPDATE workflow_projects SET status='failed', error_message='入队失败', finished_at=now(), updated_at=now() WHERE id=$1`, projectID)
 			return updateErr
 		})
@@ -326,6 +445,32 @@ func (s *AgentService) CreateProject(ctx context.Context, userID int64, code str
 		return nil, err
 	}
 	return s.GetProject(ctx, userID, publicID)
+}
+
+func (s *AgentService) EstimateWorkflowCost(ctx context.Context, def *WorkflowDTO, inputs map[string]interface{}) (float64, error) {
+	if def == nil {
+		return 0, errors.New("工作流不存在")
+	}
+	if stringValue(def.RuntimeConfig["agent_mode"]) == "product_refine" {
+		_, estimate, err := s.productPricing(ctx, def.RuntimeConfig, def.PriceRule, intFromAgentAny(inputs["count"]), stringValue(inputs["quality"]))
+		return estimate, err
+	}
+	nodeEstimate := 0.0
+	for _, node := range def.Nodes {
+		nodeEstimate += node.Cost
+	}
+	runtimeEstimate := s.estimateAgentRuntimeCost(ctx, def.RuntimeConfig, inputs)
+	return estimateAgentProjectCost(def.PriceRule, inputs, nodeEstimate, runtimeEstimate), nil
+}
+
+func validateAgentCostLimit(inputs map[string]interface{}, estimated float64) error {
+	if strings.TrimSpace(stringValue(inputs["_agent_confirmation"])) == "" {
+		return nil
+	}
+	if limit := floatValue(inputs["_agent_max_cost"]); limit > 0 && estimated > limit+0.000001 {
+		return errors.New("生成费用预估已超过确认上限，请更新方案后重新确认")
+	}
+	return nil
 }
 
 func estimateAgentProjectCost(priceRule, inputs map[string]interface{}, nodeEstimate, runtimeEstimate float64) float64 {
@@ -889,11 +1034,14 @@ func (s *AgentService) GetProject(ctx context.Context, userID int64, publicID st
 	var inputs, outputs []byte
 	var created time.Time
 	err := s.db.QueryRow(ctx, `
-		SELECT p.id, p.public_id, w.code, w.name, p.status, p.inputs, p.outputs, p.estimated_cost, p.actual_cost, p.error_message, p.created_at
+		SELECT p.id, p.public_id, w.code, w.name, p.status, p.inputs, p.outputs, p.estimated_cost, p.actual_cost, p.error_message,
+			COALESCE((SELECT rating FROM creative_agent_workflow_feedback f
+				WHERE f.user_id=p.user_id AND f.target_type='project' AND f.target_ref=p.public_id AND f.source='explicit'),0),
+			p.created_at
 		FROM workflow_projects p JOIN workflow_definitions w ON w.id = p.workflow_id
 		WHERE p.public_id=$1 AND p.user_id=$2`, publicID, userID).Scan(
 		&projectID, &p.PublicID, &p.WorkflowCode, &p.WorkflowName, &p.Status, &inputs, &outputs,
-		&p.EstimatedCost, &p.ActualCost, &p.ErrorMessage, &created)
+		&p.EstimatedCost, &p.ActualCost, &p.ErrorMessage, &p.UserFeedback, &created)
 	if err != nil {
 		return nil, err
 	}

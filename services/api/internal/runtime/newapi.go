@@ -10,11 +10,12 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
 var transientHTTPStatuses = map[int]bool{
-	404: true, 408: true, 429: true, 500: true, 502: true, 503: true, 520: true, 521: true, 522: true, 524: true,
+	404: true, 408: true, 429: true, 500: true, 502: true, 503: true, 504: true, 520: true, 521: true, 522: true, 523: true, 524: true,
 }
 
 type Client struct {
@@ -22,6 +23,7 @@ type Client struct {
 	token      string
 	httpClient *http.Client
 	streamTO   time.Duration
+	streamHTTP sync.Map
 }
 
 type RequestConfig struct {
@@ -181,7 +183,7 @@ func (c *Client) ChatCompletionStreamWithConfig(ctx context.Context, endpoint st
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 
-	streamClient := &http.Client{Timeout: c.streamTO}
+	streamClient := c.streamClient(cfg)
 	resp, err := streamClient.Do(httpReq)
 	if err != nil {
 		return nil, mapError(err)
@@ -198,6 +200,44 @@ func (c *Client) ChatCompletionStreamWithConfig(ctx context.Context, endpoint st
 		consumeChatStream(resp.Body, protocol, ch)
 	}()
 	return ch, nil
+}
+
+func (c *Client) streamClient(cfg map[string]interface{}) *http.Client {
+	seconds := 30
+	if configured, ok := cfg["timeout_seconds"]; ok {
+		switch value := configured.(type) {
+		case int:
+			seconds = value
+		case int64:
+			seconds = int(value)
+		case float64:
+			seconds = int(value)
+		}
+	}
+	if seconds < 1 {
+		seconds = 30
+	}
+	if seconds > 30 {
+		seconds = 30
+	}
+	if c.streamTO > 0 && time.Duration(seconds)*time.Second > c.streamTO {
+		seconds = int(c.streamTO / time.Second)
+		if seconds < 1 {
+			seconds = 1
+		}
+	}
+	if cached, ok := c.streamHTTP.Load(seconds); ok {
+		return cached.(*http.Client)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = time.Duration(seconds) * time.Second
+	client := &http.Client{Transport: transport, Timeout: c.streamTO}
+	actual, loaded := c.streamHTTP.LoadOrStore(seconds, client)
+	if loaded {
+		transport.CloseIdleConnections()
+		return actual.(*http.Client)
+	}
+	return client
 }
 
 type ImageRequest struct {

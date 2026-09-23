@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_conversation_messages_conversation_id;

@@ -121,7 +121,8 @@ func creativeAgentTextOnly(text string) bool {
 
 func guardCreativeAgentIntent(plan map[string]interface{}, text string) map[string]interface{} {
 	intent := strings.ToLower(strings.TrimSpace(stringAny(plan["intent"])))
-	if intent == "text" || (creativeAgentTextOnly(text) && intent != "chat" && intent != "clarify") {
+	dedicatedWorkflow := intent == "workflow" && strings.TrimSpace(stringAny(plan["workflow_code"])) != ""
+	if intent == "text" || (creativeAgentTextOnly(text) && intent != "chat" && intent != "clarify" && !dedicatedWorkflow) {
 		reply := stringAny(plan["reply"])
 		if reply == "" && creativeAgentPromptDraftRequest(text) {
 			reply = creativeAgentArtifactCandidate(plan)
@@ -183,7 +184,7 @@ func prepareCreativeAgentVideoPlan(plan map[string]interface{}, text string, mod
 	if count > 1 || seconds != target || stringAny(plan["intent"]) == "workflow" || creativeAgentWorkflowCue(text) {
 		requestedWorkflow := stringAny(plan["workflow_code"])
 		plan["intent"], plan["workflow_code"] = "workflow", "video_creation"
-		if requestedWorkflow == "one_click_viral_remake" || requestedWorkflow == "viral_remake" {
+		if creativeAgentUsesCanvasWorkflow(requestedWorkflow) && requestedWorkflow != "content_image_post" {
 			plan["workflow_code"] = requestedWorkflow
 		}
 		if strings.Contains(text, "复刻") || strings.Contains(text, "反推") {

@@ -102,14 +102,48 @@ func TestRouteFailureClassification(t *testing.T) {
 	if isRouteFailoverError(badRequest) {
 		t.Fatal("400 must not fail over or degrade a route")
 	}
-	if shouldRetrySameRoute(&runtime.PlatformError{Code: "MODEL_RATE_LIMITED", StatusCode: 429}) {
+	if shouldRetrySameRoute(&runtime.PlatformError{Code: "MODEL_RATE_LIMITED", StatusCode: 429}, true) {
 		t.Fatal("429 should move to another route immediately")
 	}
-	if !shouldRetrySameRoute(&runtime.PlatformError{Code: "MODEL_PROVIDER_ERROR", StatusCode: 503}) {
+	if !shouldRetrySameRoute(&runtime.PlatformError{Code: "MODEL_PROVIDER_ERROR", StatusCode: 503}, false) {
 		t.Fatal("503 should retry the same route when configured")
 	}
-	if shouldRetrySameRoute(&runtime.PlatformError{Code: "MODEL_TIMEOUT"}) {
+	if shouldRetrySameRoute(&runtime.PlatformError{Code: "MODEL_PROVIDER_ERROR", StatusCode: 502}, true) {
+		t.Fatal("502 should switch failure domains before retrying the same route")
+	}
+	if shouldRetrySameRoute(&runtime.PlatformError{Code: "MODEL_TIMEOUT"}, false) {
 		t.Fatal("a full timeout must not repeat the same slow request")
+	}
+}
+
+func TestModelRouteFailoversSpreadGatewayHosts(t *testing.T) {
+	routes := []ModelRoute{
+		{ID: 1, BaseURL: "https://new-api.example.com/v1"},
+		{ID: 2, BaseURL: "https://new-api.example.com/v1"},
+		{ID: 3, BaseURL: "https://official.example.net/v1"},
+		{ID: 4, BaseURL: "https://new-api.example.com/v1"},
+	}
+	spreadModelRouteFailureDomains(routes)
+	if routes[0].ID != 1 || routes[1].ID != 3 {
+		t.Fatalf("same gateway routes remained adjacent before an independent fallback: %#v", routes)
+	}
+}
+
+func TestModelRouteSelectionWeightUsesObservedReliability(t *testing.T) {
+	tests := []struct {
+		route ModelRoute
+		want  int
+	}{
+		{ModelRoute{Weight: 100}, 90},
+		{ModelRoute{Weight: 100, SuccessCount: 90, FailureCount: 10}, 90},
+		{ModelRoute{Weight: 100, FailureCount: 20}, 30},
+		{ModelRoute{Weight: 50, SuccessCount: 90, FailureCount: 10}, 45},
+		{ModelRoute{Weight: 0, SuccessCount: 100}, 0},
+	}
+	for _, test := range tests {
+		if got := modelRouteSelectionWeight(test.route); got != test.want {
+			t.Fatalf("selection weight = %d, want %d for %#v", got, test.want, test.route)
+		}
 	}
 }
 

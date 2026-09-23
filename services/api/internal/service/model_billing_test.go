@@ -143,3 +143,26 @@ func TestValidateModelPriceRuleRejectsUnknownAndNegativePricing(t *testing.T) {
 		t.Fatal("negative unit price was accepted")
 	}
 }
+
+func TestValidateAgentCostLimitRequiresConfirmation(t *testing.T) {
+	if err := validateAgentCostLimit(map[string]interface{}{"_agent_confirmation": "signed", "_agent_max_cost": 1.0}, 1.1); err == nil {
+		t.Fatal("confirmed cost overrun was accepted")
+	}
+	if err := validateAgentCostLimit(map[string]interface{}{"_agent_max_cost": 1.0}, 1.1); err != nil {
+		t.Fatalf("untrusted cost limit affected ordinary task: %v", err)
+	}
+	if err := validateAgentCostLimit(map[string]interface{}{"_agent_confirmation": "signed", "_agent_max_cost": 1.0}, 1.0); err != nil {
+		t.Fatalf("estimate at confirmed limit was rejected: %v", err)
+	}
+}
+
+func TestAgentConfirmationConversation(t *testing.T) {
+	if got := agentConfirmationConversation("conversation_123:7"); got != "conversation_123" {
+		t.Fatalf("conversation = %q", got)
+	}
+	for _, invalid := range []string{"", "conversation_123", ":7"} {
+		if got := agentConfirmationConversation(invalid); got != "" {
+			t.Fatalf("invalid confirmation %q produced %q", invalid, got)
+		}
+	}
+}

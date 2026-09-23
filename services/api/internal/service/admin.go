@@ -1508,7 +1508,52 @@ func (s *AdminService) GetRawSystemConfigs(ctx context.Context) (map[string]inte
 	return result, nil
 }
 
+// GetPublicSystemConfigs leaves the large per-locale translation catalog out
+// of the base response. Translations are read separately for one locale.
+func (s *AdminService) GetPublicSystemConfigs(ctx context.Context) (map[string]interface{}, error) {
+	rows, err := s.db.Query(ctx, `SELECT key,value FROM system_configs WHERE key<>'ui_translation_overrides'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]interface{})
+	for rows.Next() {
+		var key string
+		var raw []byte
+		if err := rows.Scan(&key, &raw); err != nil {
+			return nil, err
+		}
+		var value interface{}
+		_ = json.Unmarshal(raw, &value)
+		result[key] = value
+	}
+	return result, rows.Err()
+}
+
+func (s *AdminService) GetUITranslationOverrides(ctx context.Context, locale string) ([]map[string]interface{}, error) {
+	var raw []byte
+	err := s.db.QueryRow(ctx, `SELECT COALESCE(jsonb_agg(item),'[]'::jsonb)
+		FROM system_configs cfg
+		CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(cfg.value)='array' THEN cfg.value ELSE '[]'::jsonb END) item
+		WHERE cfg.key='ui_translation_overrides'
+		  AND item->>'locale'=$1
+		  AND COALESCE(item->>'enabled','true')<>'false'`, strings.TrimSpace(locale)).Scan(&raw)
+	if err != nil {
+		return nil, err
+	}
+	items := []map[string]interface{}{}
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 func (s *AdminService) UpdateSystemConfig(ctx context.Context, key string, value interface{}) error {
+	if key == "user_login_days" {
+		if err := ValidateUserLoginDays(value); err != nil {
+			return err
+		}
+	}
 	if key == "workbench_default_theme" {
 		if err := ValidateWorkbenchTheme(value); err != nil {
 			return err

@@ -256,17 +256,30 @@ func (s *ChatService) CompletionStream(ctx context.Context, userID int64, input 
 	}
 	req := runtime.ChatRequest{Model: model.NewAPIModel, Messages: chatRequestMessages(input.Messages, input.Params), Temperature: temperature, Extra: nil}
 	// per-request timeout override (seconds)
+	var timeoutCancel context.CancelFunc
 	if v, ok := input.Params["timeout_sec"].(float64); ok && v > 0 && v <= 600 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(v)*time.Second)
-		defer cancel()
+		ctx, timeoutCancel = context.WithTimeout(ctx, time.Duration(v)*time.Second)
 	}
 	ch, _, err := s.chatCompletionStreamWithFailover(ctx, requestID, model, req, input.Params)
 	if err != nil {
+		if timeoutCancel != nil {
+			timeoutCancel()
+		}
 		if unfreezeErr := s.billing.Unfreeze(ctx, userID, estimated, "chat", requestID); unfreezeErr != nil {
 			return "", nil, 0, fmt.Errorf("模型流启动失败: %v；释放冻结额度失败: %w", err, unfreezeErr)
 		}
 		return "", nil, 0, err
+	}
+	if timeoutCancel != nil {
+		forwarded := make(chan runtime.StreamChunk, 32)
+		go func() {
+			defer close(forwarded)
+			defer timeoutCancel()
+			for chunk := range ch {
+				forwarded <- chunk
+			}
+		}()
+		ch = forwarded
 	}
 	return requestID, ch, estimated, nil
 }
@@ -459,18 +472,30 @@ func isRouteFailoverError(err error) bool {
 	return true
 }
 
-func shouldRetrySameRoute(err error) bool {
+func shouldRetrySameRoute(err error, hasAlternative bool) bool {
 	var platformErr *runtime.PlatformError
 	if !errors.As(err, &platformErr) {
-		return true
+		return !hasAlternative
 	}
 	if platformErr.Code == "MODEL_TIMEOUT" || platformErr.Code == "CONTENT_REJECTED" || platformErr.Code == "MODEL_BAD_REQUEST" {
 		return false
 	}
 	if platformErr.StatusCode == 408 || platformErr.StatusCode >= 500 {
+		if hasAlternative && isGatewayFailureStatus(platformErr.StatusCode) {
+			return false
+		}
 		return true
 	}
 	return platformErr.StatusCode == 0 && (platformErr.Code == "MODEL_TIMEOUT" || platformErr.Code == "MODEL_PROVIDER_ERROR")
+}
+
+func isGatewayFailureStatus(status int) bool {
+	switch status {
+	case 502, 503, 504, 520, 521, 522, 523, 524:
+		return true
+	default:
+		return false
+	}
 }
 
 func waitRouteRetry(ctx context.Context, retry int) bool {
@@ -552,7 +577,7 @@ routeLoop:
 			}
 			s.models.MarkRouteFailure(ctx, route.ID)
 			s.models.LogRouteAttempt(ctx, requestID, model.ID, route.ID, attempt, "failed", statusCode, errorCode, latency, 0)
-			if retry < route.MaxRetries && latency < 15_000 && shouldRetrySameRoute(callErr) && waitRouteRetry(ctx, retry) {
+			if retry < route.MaxRetries && latency < 15_000 && shouldRetrySameRoute(callErr, len(routes) > 1) && waitRouteRetry(ctx, retry) {
 				continue
 			}
 			break
@@ -627,7 +652,7 @@ routeLoop:
 			}
 			s.models.MarkRouteFailure(ctx, route.ID)
 			s.models.LogRouteAttempt(ctx, requestID, model.ID, route.ID, attempt, "failed", statusCode, errorCode, latency, 0)
-			if retry < route.MaxRetries && latency < 15_000 && shouldRetrySameRoute(callErr) && waitRouteRetry(ctx, retry) {
+			if retry < route.MaxRetries && latency < 15_000 && shouldRetrySameRoute(callErr, len(routes) > 1) && waitRouteRetry(ctx, retry) {
 				continue
 			}
 			break
@@ -887,7 +912,7 @@ func truncate(s string, n int) string {
 	return string(runes[:n]) + "..."
 }
 
-func (s *ChatService) GetConversation(ctx context.Context, userID int64, publicID string) (map[string]interface{}, error) {
+func (s *ChatService) GetConversation(ctx context.Context, userID int64, publicID string, limit int) (map[string]interface{}, error) {
 	var convID int64
 	var title *string
 	var created, updated time.Time
@@ -895,7 +920,19 @@ func (s *ChatService) GetConversation(ctx context.Context, userID int64, publicI
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(ctx, `SELECT role, content, COALESCE(reasoning_content, ''), created_at FROM conversation_messages WHERE conversation_id=$1 ORDER BY created_at`, convID)
+	query := `SELECT role,content,COALESCE(reasoning_content,''),created_at FROM conversation_messages WHERE conversation_id=$1 ORDER BY id`
+	args := []interface{}{convID}
+	if limit > 0 {
+		if limit > 500 {
+			limit = 500
+		}
+		query = `SELECT role,content,reasoning_content,created_at FROM (
+			SELECT id,role,content,COALESCE(reasoning_content,'') AS reasoning_content,created_at
+			FROM conversation_messages WHERE conversation_id=$1 ORDER BY id DESC LIMIT $2
+		) recent ORDER BY id`
+		args = append(args, limit)
+	}
+	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

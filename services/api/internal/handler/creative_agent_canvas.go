@@ -25,6 +25,9 @@ func creativeCanvasTemplate(kind, workflow, prompt string, params map[string]int
 	if workflow == "viral_remake" {
 		return "viral-remake"
 	}
+	if workflow == "video_creation_v2" {
+		return "story-short-video-v2"
+	}
 	if workflow == "video_creation" || ((kind == "video" || kind == "workflow") && creativeAgentPositiveInt(params["storyboard_grid"]) > 1) {
 		return "story-short-video"
 	}
@@ -53,7 +56,10 @@ func creativeCanvasTemplate(kind, workflow, prompt string, params map[string]int
 // Never dispatch finished media through a second, unrelated workflow engine.
 func (h *Handler) createCreativeCanvas(c *gin.Context, conversation string, version int64, kind, workflow, prompt string, params map[string]interface{}) {
 	template := creativeCanvasTemplate(kind, workflow, prompt, params)
-	workflowCode := map[string]string{"story-short-video": "video_creation", "one-click-viral-remake": "one_click_viral_remake", "viral-remake": "viral_remake", "content-image-post": "content_image_post"}[template]
+	workflowCode := strings.TrimSpace(workflow)
+	if workflowCode == "" {
+		workflowCode = map[string]string{"story-short-video": "video_creation", "story-short-video-v2": "video_creation_v2", "one-click-viral-remake": "one_click_viral_remake", "viral-remake": "viral_remake", "content-image-post": "content_image_post"}[template]
+	}
 	if workflowCode != "" {
 		definition, err := h.agents.Get(c.Request.Context(), workflowCode)
 		if err != nil || definition == nil || !definition.IsEnabled {

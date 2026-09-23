@@ -604,6 +604,7 @@ func completeNovelWorkflow(
 		return stopErr
 	}
 	totalCost := workflowActualCost(ctx, pool, p.ProjectID, outputs)
+	totalCost = agentConfirmedWorkflowCost(ctx, pool, p.ProjectID, totalCost)
 	chargeCost := incrementalWorkflowCharge(ctx, pool, p.ProjectID, totalCost)
 
 	if err := chargeBillingWithFinalize(ctx, pool, p.UserID, estimated, chargeCost, "workflow", publicID, "workflow_usage", "AI小说工坊", func(tx pgx.Tx) error {

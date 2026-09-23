@@ -43,9 +43,10 @@ var (
 )
 
 const (
-	TypeImageTask    = "image:generate"
-	TypeComposeTask  = "media:compose"
-	TypeWorkflowTask = "workflow:run"
+	TypeImageTask      = "image:generate"
+	TypeComposeTask    = "media:compose"
+	TypeWorkflowTask   = "workflow:run"
+	routeHistoryWindow = 200
 )
 
 func configuredWorkExpiration(ctx context.Context, pool *pgxpool.Pool, fallbackDays int) *time.Time {
@@ -353,7 +354,7 @@ routeLoop:
 			markWorkerRouteFailure(ctx, pool, route.ID, poolEnabled)
 			logWorkerRouteAttempt(ctx, pool, p.TaskNo, p.ModelID, route.ID, attempt, "failed", candidate.StatusCode, latency)
 			log.Printf("Task %s route %d failed status=%d: %s", p.TaskNo, route.ID, candidate.StatusCode, truncateText(fmt.Sprint(lastRouteErr), 800))
-			if retry < route.MaxRetries && workerShouldRetrySameRoute(callErr, candidate.StatusCode) && waitWorkerRouteRetry(ctx, retry) {
+			if retry < route.MaxRetries && workerShouldRetrySameRoute(callErr, candidate.StatusCode, poolEnabled) && waitWorkerRouteRetry(ctx, retry) {
 				continue
 			}
 			break
@@ -658,6 +659,8 @@ type workerModelRoute struct {
 	MaxRetries          int
 	HealthStatus        string
 	ConsecutiveFailures int
+	SuccessCount        int64
+	FailureCount        int64
 	CooldownUntil       *time.Time
 	// LegacyRequestTransform holds connection.request_transform recovered from the
 	// model's legacy extra_params before that block is stripped.
@@ -681,7 +684,7 @@ func workerRouteRequestTransform(route workerModelRoute) map[string]interface{} 
 var errNoEnabledModelRoutes = errors.New("model has configured routes but none are enabled")
 
 func loadWorkerModelRoutes(ctx context.Context, pool *pgxpool.Pool, modelID int64, fallbackBaseURL, fallbackToken, legacyModel, legacyEndpoint string, legacyExtra, legacyRuntime map[string]interface{}) ([]workerModelRoute, error) {
-	rows, err := pool.Query(ctx, `SELECT id,protocol,upstream_model,endpoint,base_url,api_key,auth_type,api_key_header,headers,extra_params,runtime_rule,cost_rule,priority,weight,timeout_seconds,max_retries,health_status,consecutive_failures,cooldown_until
+	rows, err := pool.Query(ctx, `SELECT id,protocol,upstream_model,endpoint,base_url,api_key,auth_type,api_key_header,headers,extra_params,runtime_rule,cost_rule,priority,weight,timeout_seconds,max_retries,health_status,consecutive_failures,success_count,failure_count,cooldown_until
 		FROM model_routes WHERE model_id=$1 AND is_enabled=true ORDER BY priority,id`, modelID)
 	if err != nil {
 		return nil, err
@@ -692,7 +695,7 @@ func loadWorkerModelRoutes(ctx context.Context, pool *pgxpool.Pool, modelID int6
 		var route workerModelRoute
 		var baseURL, apiKey, authType, apiKeyHeader string
 		var headersRaw, extraRaw, runtimeRaw, costRaw []byte
-		if err := rows.Scan(&route.ID, &route.Protocol, &route.UpstreamModel, &route.Endpoint, &baseURL, &apiKey, &authType, &apiKeyHeader, &headersRaw, &extraRaw, &runtimeRaw, &costRaw, &route.Priority, &route.Weight, &route.TimeoutSeconds, &route.MaxRetries, &route.HealthStatus, &route.ConsecutiveFailures, &route.CooldownUntil); err != nil {
+		if err := rows.Scan(&route.ID, &route.Protocol, &route.UpstreamModel, &route.Endpoint, &baseURL, &apiKey, &authType, &apiKeyHeader, &headersRaw, &extraRaw, &runtimeRaw, &costRaw, &route.Priority, &route.Weight, &route.TimeoutSeconds, &route.MaxRetries, &route.HealthStatus, &route.ConsecutiveFailures, &route.SuccessCount, &route.FailureCount, &route.CooldownUntil); err != nil {
 			return nil, err
 		}
 		var headers map[string]interface{}
@@ -770,9 +773,38 @@ func loadWorkerModelRoutes(ctx context.Context, pool *pgxpool.Pool, modelID int6
 			end++
 		}
 		weightedWorkerRouteOrder(routes[start:end])
+		spreadWorkerRouteFailureDomains(routes[start:end])
 		start = end
 	}
 	return routes, nil
+}
+
+func spreadWorkerRouteFailureDomains(routes []workerModelRoute) {
+	seen := map[string]bool{}
+	for pos := 0; pos < len(routes); pos++ {
+		selected := -1
+		for i := pos; i < len(routes); i++ {
+			if !seen[workerRouteFailureDomain(routes[i])] {
+				selected = i
+				break
+			}
+		}
+		if selected < 0 {
+			clear(seen)
+			selected = pos
+		}
+		routes[pos], routes[selected] = routes[selected], routes[pos]
+		seen[workerRouteFailureDomain(routes[pos])] = true
+	}
+}
+
+func workerRouteFailureDomain(route workerModelRoute) string {
+	if parsed, err := url.Parse(strings.TrimSpace(route.Connection.BaseURL)); err == nil {
+		if host := strings.ToLower(strings.TrimSpace(parsed.Hostname())); host != "" {
+			return "host:" + host
+		}
+	}
+	return fmt.Sprintf("route:%d", route.ID)
 }
 
 func decryptWorkerRouteSecret(value, secret string) (string, error) {
@@ -818,7 +850,7 @@ func weightedWorkerRouteOrder(routes []workerModelRoute) {
 	for pos := 0; pos < len(routes)-1; pos++ {
 		total := 0
 		for index := pos; index < len(routes); index++ {
-			total += routes[index].Weight
+			total += workerRouteSelectionWeight(routes[index])
 		}
 		if total <= 0 {
 			return
@@ -826,7 +858,7 @@ func weightedWorkerRouteOrder(routes []workerModelRoute) {
 		pick := rand.Intn(total)
 		selected := pos
 		for index := pos; index < len(routes); index++ {
-			pick -= routes[index].Weight
+			pick -= workerRouteSelectionWeight(routes[index])
 			if pick < 0 {
 				selected = index
 				break
@@ -834,6 +866,17 @@ func weightedWorkerRouteOrder(routes []workerModelRoute) {
 		}
 		routes[pos], routes[selected] = routes[selected], routes[pos]
 	}
+}
+
+func workerRouteSelectionWeight(route workerModelRoute) int {
+	if route.Weight <= 0 {
+		return 0
+	}
+	effective := int(float64(route.Weight) * (float64(route.SuccessCount) + 9) / (float64(route.SuccessCount) + float64(route.FailureCount) + 10))
+	if effective < 1 {
+		return 1
+	}
+	return effective
 }
 
 func mergeWorkerMaps(base, override map[string]interface{}) map[string]interface{} {
@@ -857,7 +900,11 @@ func markWorkerRouteSuccess(ctx context.Context, pool *pgxpool.Pool, routeID int
 	if routeID <= 0 {
 		return
 	}
-	_, _ = pool.Exec(ctx, `UPDATE model_routes SET health_status='healthy',consecutive_failures=0,success_count=success_count+1,last_success_at=now(),cooldown_until=NULL,updated_at=now() WHERE id=$1`, routeID)
+	_, _ = pool.Exec(ctx, `UPDATE model_routes SET
+		health_status='healthy',consecutive_failures=0,
+		success_count=CASE WHEN success_count+failure_count >= $2 THEN success_count/2+1 ELSE success_count+1 END,
+		failure_count=CASE WHEN success_count+failure_count >= $2 THEN failure_count/2 ELSE failure_count END,
+		last_success_at=now(),cooldown_until=NULL,updated_at=now() WHERE id=$1`, routeID, routeHistoryWindow)
 }
 
 func acquireWorkerRouteProbe(ctx context.Context, pool *pgxpool.Pool, route workerModelRoute) bool {
@@ -881,10 +928,20 @@ func markWorkerRouteFailure(ctx context.Context, pool *pgxpool.Pool, routeID int
 	}
 	if !poolEnabled {
 		// 单线路保留直连能力，但仍标记降级，避免轮询失败后后台误报健康。
-		_, _ = pool.Exec(ctx, `UPDATE model_routes SET consecutive_failures=consecutive_failures+1,failure_count=failure_count+1,last_failure_at=now(),health_status='degraded',updated_at=now() WHERE id=$1`, routeID)
+		_, _ = pool.Exec(ctx, `UPDATE model_routes SET
+			consecutive_failures=consecutive_failures+1,
+			success_count=CASE WHEN success_count+failure_count >= $2 THEN success_count/2 ELSE success_count END,
+			failure_count=CASE WHEN success_count+failure_count >= $2 THEN failure_count/2+1 ELSE failure_count+1 END,
+			last_failure_at=now(),health_status='degraded',updated_at=now() WHERE id=$1`, routeID, routeHistoryWindow)
 		return
 	}
-	_, _ = pool.Exec(ctx, `UPDATE model_routes SET consecutive_failures=consecutive_failures+1,failure_count=failure_count+1,last_failure_at=now(),health_status=CASE WHEN consecutive_failures+1>=5 THEN 'open' ELSE 'degraded' END,cooldown_until=CASE WHEN consecutive_failures+1>=5 THEN now()+interval '60 seconds' ELSE cooldown_until END,updated_at=now() WHERE id=$1`, routeID)
+	_, _ = pool.Exec(ctx, `UPDATE model_routes SET
+		consecutive_failures=consecutive_failures+1,
+		success_count=CASE WHEN success_count+failure_count >= $2 THEN success_count/2 ELSE success_count END,
+		failure_count=CASE WHEN success_count+failure_count >= $2 THEN failure_count/2+1 ELSE failure_count+1 END,
+		last_failure_at=now(),health_status=CASE WHEN consecutive_failures+1>=5 THEN 'open' ELSE 'degraded' END,
+		cooldown_until=CASE WHEN consecutive_failures+1>=5 THEN now()+interval '60 seconds' ELSE cooldown_until END,
+		updated_at=now() WHERE id=$1`, routeID, routeHistoryWindow)
 }
 
 // healWorkerSingleRouteState 清除单线路模型残留的熔断/冷却状态，避免无降级可走时自伤。
@@ -1389,18 +1446,30 @@ func applyRequestTransform(payload map[string]interface{}, extraParams map[strin
 
 func workerStatusCanFailover(status int) bool {
 	switch status {
-	case 0, 401, 403, 404, 408, 409, 429, 500, 502, 503, 504, 520, 521, 522, 524:
+	case 0, 401, 403, 404, 408, 409, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524:
 		return true
 	default:
 		return false
 	}
 }
 
-func workerShouldRetrySameRoute(err error, status int) bool {
+func workerShouldRetrySameRoute(err error, status int, hasAlternative bool) bool {
 	if err != nil {
-		return true
+		return !hasAlternative
+	}
+	if hasAlternative && workerGatewayFailureStatus(status) {
+		return false
 	}
 	return status == 408 || status >= 500
+}
+
+func workerGatewayFailureStatus(status int) bool {
+	switch status {
+	case 502, 503, 504, 520, 521, 522, 523, 524:
+		return true
+	default:
+		return false
+	}
 }
 
 func waitWorkerRouteRetry(ctx context.Context, retry int) bool {
@@ -3086,7 +3155,7 @@ func buildMediaDownloadCandidates(conn connectionConfig, mediaURL, upstreamID st
 
 func isTransientDownloadStatus(code int) bool {
 	switch code {
-	case 404, 408, 429, 500, 502, 503, 520, 521, 522, 524:
+	case 404, 408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524:
 		return true
 	default:
 		return false
@@ -3633,6 +3702,7 @@ func isTransientError(code string, statusCode int, errMsg string) bool {
 		520: true, // Cloudflare Unknown Error
 		521: true, // Web Server Is Down
 		522: true, // Connection Timed Out
+		523: true, // Origin Is Unreachable
 		524: true, // A Timeout Occurred
 	}
 	if transientStatuses[statusCode] {

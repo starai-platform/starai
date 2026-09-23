@@ -23,6 +23,7 @@ func TestCreativeCanvasRouting(t *testing.T) {
 		{"video", "", "视频", nil, "text-video"},
 		{"video", "", "参考图视频", []string{"image"}, "image-video"},
 		{"workflow", "video_creation", "故事", nil, "story-short-video"},
+		{"workflow", "video_creation_v2", "故事", nil, "story-short-video-v2"},
 		{"video", "video_creation", "故事视频", nil, "story-short-video"},
 		{"workflow", "ai_comic_drama", "旧方案", nil, "story-short-video"},
 		{"workflow", "one_click_viral_remake", "商品", nil, "one-click-viral-remake"},

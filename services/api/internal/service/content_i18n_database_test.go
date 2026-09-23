@@ -37,6 +37,31 @@ func TestContentTranslationDatabase(t *testing.T) {
 	if _, err := pool.Exec(ctx, strings.ReplaceAll(string(migration), "CREATE TABLE ", "CREATE TEMP TABLE ")); err != nil {
 		t.Fatal(err)
 	}
+	t.Run("public config splits translation overrides by locale", func(t *testing.T) {
+		if _, err := pool.Exec(ctx, `INSERT INTO system_configs(key,value) VALUES
+			('site_name','"StarAI"'::jsonb),
+			('ui_translation_overrides','[{"locale":"en-US","key":"hello","value":"Hello","enabled":true},{"locale":"ja-JP","key":"hello","value":"こんにちは","enabled":true},{"locale":"en-US","key":"hidden","value":"Hidden","enabled":false}]'::jsonb)`); err != nil {
+			t.Fatal(err)
+		}
+		admin := NewAdminService(pool, nil, "")
+		configs, err := admin.GetPublicSystemConfigs(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if configs["site_name"] != "StarAI" {
+			t.Fatalf("missing base config: %#v", configs)
+		}
+		if _, exists := configs["ui_translation_overrides"]; exists {
+			t.Fatal("large translation catalog leaked into public config")
+		}
+		items, err := admin.GetUITranslationOverrides(ctx, "en-US")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != 1 || items[0]["key"] != "hello" || items[0]["locale"] != "en-US" {
+			t.Fatalf("locale filtering failed: %#v", items)
+		}
+	})
 	service := NewContentI18nService(pool)
 	batch := func(key string) []PendingContentTranslation {
 		t.Helper()

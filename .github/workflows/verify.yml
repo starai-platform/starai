@@ -78,7 +78,7 @@ jobs:
         run: node --experimental-strip-types --test apps/web/src/lib/api-cache.test.mjs apps/web/src/lib/pollAsync.test.mjs
 
       - name: Test translations and canvas workflow
-        run: node --experimental-strip-types --test apps/web/src/i18n/translation.test.mjs apps/web/src/i18n/I18nProvider.test.mjs apps/web/src/components/workbench/canvasIntegrity.test.mjs apps/web/src/components/workbench/videoCreationWorkflow.test.mjs apps/web/src/components/workbench/canvasMediaUI.test.mjs
+        run: node --experimental-strip-types --test apps/web/src/i18n/translation.test.mjs apps/web/src/i18n/I18nProvider.test.mjs apps/web/src/components/workbench/canvasIntegrity.test.mjs apps/web/src/components/workbench/videoCreationWorkflow.test.mjs apps/web/src/components/workbench/canvasMediaUI.test.mjs apps/web/src/components/workbench/creativeAgentWorkflow.test.mjs apps/web/src/components/workbench/creativeAgentHistory.test.mjs
 
       - name: Build frontend
         run: |

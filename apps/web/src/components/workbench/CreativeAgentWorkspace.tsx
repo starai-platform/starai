@@ -6,7 +6,7 @@ import { type CanvasAgentState } from "./canvasAgentExecution";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { ArrowUp, AudioLines, BrainCircuit, Check, ChevronDown, ChevronRight, Copy, Download, Globe, HelpCircle, History, ImageIcon, Loader2, Maximize2, Menu, Music2, Plus, RotateCcw, SlidersHorizontal, Sparkles, Square, Upload, UserRound, Video, X } from "lucide-react";
+import { ArrowUp, AudioLines, BrainCircuit, Check, ChevronDown, ChevronRight, Copy, Download, Globe, HelpCircle, History, ImageIcon, Loader2, Maximize2, Menu, Music2, Plus, RotateCcw, SlidersHorizontal, Sparkles, Square, ThumbsDown, ThumbsUp, Upload, UserRound, Video, X } from "lucide-react";
 import type { Model } from "@starai/shared-types";
 import { API_URL, api, apiCached, legacyAuthHeaders, uploadAsset } from "@/lib/api";
 import { useAuthStore } from "@/store/auth";
@@ -18,7 +18,7 @@ import { AgentRichText } from "./AgentRichText";
 import { downloadAgentDocument, requestsAgentDocument } from "./agentDocumentExport";
 import { ChatTopTools, type BottomBarState } from "./BottomBar";
 import { AGENT_THEMES } from "./categoryMeta";
-import { finalWorkflowMedia, workflowMaterials, workflowSuccessMessage, updateWorkflowMessages, type TaskState, type WorkflowMessage } from "./creativeAgentWorkflow";
+import { finalWorkflowMedia, workflowMaterials, workflowOutputIssue, workflowSuccessMessage, updateWorkflowMessages, type TaskState, type WorkflowMessage } from "./creativeAgentWorkflow";
 import { useI18n } from "@/i18n/I18nProvider";
 import { nextAgentPollDelay } from "./agentPolling";
 
@@ -40,7 +40,7 @@ type SearchResult = { title: string; url: string; snippet?: string; published_da
 type SearchTrace = { queries?: string[]; searched_count?: number; browsed_count?: number; duration_ms?: number };
 type Artifact = { kind: string; text: string };
 type Message = WorkflowMessage & { documentRequested?: boolean; exportBlocked?: boolean; canvasId?: string; canvasState?: CanvasAgentState; artifact?: Artifact; plan?: Plan; planState?: "pending" | "submitted" | "cancelled"; attachments?: Attachment[]; sources?: SearchResult[]; searchTrace?: SearchTrace; searchWarning?: string; searchRequired?: boolean; retryText?: string };
-type Plan = { artifact?: Artifact; plan_version?: number; draft_status?: string; slots?: Record<string, unknown>; missing_fields?: string[]; intent?: string; model_code?: string; workflow_code?: string; reply?: string; prompt?: string; params?: Record<string, unknown>; needs_confirm?: boolean };
+type Plan = { artifact?: Artifact; plan_version?: number; draft_status?: string; slots?: Record<string, unknown>; missing_fields?: string[]; intent?: string; model_code?: string; model_selection_reason?: string; workflow_code?: string; reply?: string; prompt?: string; params?: Record<string, unknown>; needs_confirm?: boolean; route_confidence?: number; route_reason?: string; route_changed?: boolean; workflow_candidates?: Array<{ code?: string; score?: number; reason?: string }>; estimated_cost?: number; confirmed_max_cost?: number; cost_estimate_available?: boolean; cost_estimate_note?: string };
 type AgentDraft = { version: number; status: string; slots: Record<string, unknown>; plan?: Plan; execution_ref?: string; execution_kind?: string; error?: string; last_user_message?: string; incomplete_reply?: string };
 type ReplanResult = { changed: boolean; draft: AgentDraft; changes?: string[] };
 type HistoryItem = { public_id: string; title?: string | null; updated_at: string };
@@ -248,7 +248,7 @@ function workflowStatusText(task: TaskState) {
   if (task.status === "pending") return `排队中 · 尚未调用上游 · 下一步：${stage}`;
   if (task.status === "canceling") return `正在停止 · 当前上游请求完成后不再启动后续步骤 · 已完成内容会保留`;
   if (task.status === "canceled" || task.status === "cancelled") return "已停止 · 已完成内容已保留";
-  if (task.status === "succeeded") return "全部完成 · 成品已保存";
+  if (task.status === "succeeded") return workflowOutputIssue(task) || "全部完成 · 成品已保存";
   if (task.status === "waiting_confirm") return `等待你的确认 · ${stage}`;
   if (task.status === "failed") {
     const reason = task.error_message || "生成失败";
@@ -264,13 +264,14 @@ function workflowStatusText(task: TaskState) {
   return `正在执行 · ${stage}`;
 }
 
-function WorkflowRunCard({ task, busy, onRetry, onCancel }: { task: TaskState; busy: boolean; onRetry: () => void; onCancel: () => void }) {
+function WorkflowRunCard({ task, busy, onRetry, onCancel, onFeedback }: { task: TaskState; busy: boolean; onRetry: () => void; onCancel: () => void; onFeedback: (rating: -1 | 1) => void }) {
   const { ts } = useI18n();
   const progress = runProgress(task);
   const step = task.current_step || String(task.outputs?.current_step || "");
   const latestRuns = new Map<string, string>();
   for (const run of task.node_runs || []) if (run.node_id) latestRuns.set(run.node_id, run.status || "pending");
   const media = runMedia(task);
+  const outputIssue = workflowOutputIssue(task);
   const contentImage = task.workflow_code === "content_image_post" || task.inputs?.creative_scene === "content_image_post" || Boolean(task.outputs?.content_post);
   const plan = task.outputs?.comic_drama && typeof task.outputs.comic_drama === "object" ? task.outputs.comic_drama as Record<string, unknown> : {};
   const comic = ["ai_comic_drama", "video_creation", "one_click_viral_remake", "viral_remake"].includes(task.workflow_code || "") || Array.isArray(plan.storyboards);
@@ -309,8 +310,9 @@ function WorkflowRunCard({ task, busy, onRetry, onCancel }: { task: TaskState; b
         {media.images.length ? <div className="mt-3 flex gap-2 overflow-x-auto pb-1">{media.images.map((url, index) => <a key={url} href={url} target="_blank" rel="noreferrer"><img src={url} loading="lazy" decoding="async" alt={contentImage ? `内容配图 ${index + 1}` : `已完成关键帧 ${index + 1}`} className="h-20 w-20 shrink-0 rounded-lg object-cover" /></a>)}</div> : null}
         {media.videos.length ? <div className="mt-3 grid gap-2 sm:grid-cols-2">{media.videos.map((url, index) => <div key={url}><p className="mb-1">分段视频 {index + 1}</p><video src={url} controls preload="none" className="w-full rounded-lg bg-black" aria-label={`分段视频 ${index + 1}`} /></div>)}</div> : null}
         {media.audios.length ? <div className="mt-3 space-y-2">{media.audios.map((url, index) => <audio key={url} src={url} controls preload="none" className="w-full" aria-label={`配音 ${index + 1}`} />)}</div> : null}
-        {!outline && !media.images.length && !media.videos.length && !media.audios.length ? <p className="mt-2">{ts("素材生成后会逐步显示在这里。")}</p> : null}
+        {!outline && !media.images.length && !media.videos.length && !media.audios.length ? <p className={`mt-2 ${outputIssue ? "text-amber-600 dark:text-amber-300" : ""}`}>{ts(outputIssue || "素材生成后会逐步显示在这里。")}</p> : null}
       </details>
+      {task.status === "succeeded" && task.public_id ? <div className="mt-3 flex items-center justify-end gap-1.5 border-t border-gray-100 pt-3 dark:border-white/10"><span className="mr-1 text-gray-400">{ts("这次结果符合预期吗？")}</span><button type="button" disabled={busy} aria-pressed={task.user_feedback === 1} aria-label={ts("符合预期")} title={ts("符合预期")} onClick={() => onFeedback(1)} className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition disabled:opacity-50 ${task.user_feedback === 1 ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20" : "text-gray-400 hover:bg-gray-100 dark:hover:bg-white/10"}`}><ThumbsUp size={14} /></button><button type="button" disabled={busy} aria-pressed={task.user_feedback === -1} aria-label={ts("不符合预期")} title={ts("不符合预期")} onClick={() => onFeedback(-1)} className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition disabled:opacity-50 ${task.user_feedback === -1 ? "bg-red-100 text-red-500 dark:bg-red-500/20" : "text-gray-400 hover:bg-gray-100 dark:hover:bg-white/10"}`}><ThumbsDown size={14} /></button></div> : null}
     </div>
   );
 }
@@ -455,7 +457,7 @@ export function CreativeAgentWorkspace({
   const [deepThink, setDeepThink] = useState(false);
   const [reasoningCapability, setReasoningCapability] = useState<ReasoningCapability>({ supported: false, can_disable: false, message: "正在读取当前模型的思考能力…" });
   const refreshReasoningCapability = useCallback(async () => {
-    const agent = await api<AgentConfig>("/api/agents/general_creative_agent", { cache: "no-store" });
+    const agent = await apiCached<AgentConfig>("/api/agents/general_creative_agent");
     const capability = agent.runtime_config?.reasoning_capability || { supported: false, can_disable: false, message: "当前模型尚未配置思考能力，请管理员检查。" };
     setReasoningCapability(capability);
     if (agent.runtime_config?.analysis_model_code) setChatModelCode(agent.runtime_config.analysis_model_code);
@@ -745,11 +747,11 @@ export function CreativeAgentWorkspace({
   };
 
   const runWorkflow = async (nextPlan: Plan, activeConversationId: string) => {
-    if (!["ai_comic_drama", "video_creation", "one_click_viral_remake", "viral_remake", "content_image_post"].includes(nextPlan.workflow_code || "")) throw new Error("Agent 选择了暂不支持的工作流");
+    if (!nextPlan.workflow_code?.trim()) throw new Error("Agent 未能选择有效工作流");
     const generationPrompt = nextPlan.prompt?.trim();
     if (!generationPrompt) throw new Error(nextPlan.workflow_code === "content_image_post" ? "Agent 未能整理出可执行的图文主题" : "Agent 未能整理出可执行的故事或短剧内容");
     const referenceImages = nextPlan.params?.use_previous_media ? Array.from(new Set(latestGeneratedMedia.images)) : [];
-    const result = await api<{ canvas_id: string }>("/api/creative-agent/run-workflow", {
+    const result = await api<{ canvas_id?: string; project_id?: string; public_id?: string; workflow_code?: string; status?: string }>("/api/creative-agent/run-workflow", {
       method: "POST",
       body: JSON.stringify({
         confirmed: true,
@@ -766,7 +768,16 @@ export function CreativeAgentWorkspace({
         reference_image_urls: referenceImages,
       }),
     });
-    acceptCanvas(result, activeConversationId);
+    if (result.canvas_id) {
+      acceptCanvas({ canvas_id: result.canvas_id }, activeConversationId);
+      return;
+    }
+    const projectID = result.project_id || result.public_id;
+    if (!projectID) throw new Error("工作流已提交，但未返回有效任务编号");
+    if (draftRef.current) draftRef.current = { ...draftRef.current, status: "submitted", execution_ref: projectID, execution_kind: "workflow" };
+    const run = await api<TaskState>(`/api/agent-projects/${encodeURIComponent(projectID)}`);
+    setTask(run);
+    setMessages((current) => updateWorkflowMessages(current, run));
   };
 
   const retryWorkflow = async (selectedVideoModel = videoModelCode, userMessage = "", run = task) => {
@@ -877,10 +888,9 @@ export function CreativeAgentWorkspace({
     setAgentStage("正在准备上下文与素材…");
     let requestConversationId = conversationId;
     try {
-      const capability = await refreshReasoningCapability();
-      if (deepThink && !capability.supported) {
+      if (deepThink && !reasoningCapability.supported) {
         setDeepThink(false);
-        throw new Error(`当前模型能力已变化：${capability.message} 已关闭深度思考，请重新发送。`);
+        throw new Error(`当前模型能力已变化：${reasoningCapability.message} 已关闭深度思考，请重新发送。`);
       }
       const updateAssistant = (update: Partial<Message> | ((message: Message) => Message)) => setMessages((current) => {
         const next = [...current];
@@ -1012,7 +1022,7 @@ export function CreativeAgentWorkspace({
     setError("");
     try {
       const [conversation, currentChatModel, draft] = await Promise.all([
-        api<{ messages?: Array<{ role: string; content: string }> }>(`/api/chat/conversations/${publicID}`),
+        api<{ messages?: Array<{ role: string; content: string }> }>(`/api/chat/conversations/${publicID}?limit=200`),
         chatModelCode ? Promise.resolve(null) : Promise.all([apiCached<Model[]>("/api/models?category=chat"), apiCached<AgentConfig>("/api/agents/general_creative_agent")])
           .then(([chats, agent]) => activeAgentChatModel(chats, agent))
           .catch(() => null),
@@ -1088,7 +1098,7 @@ export function CreativeAgentWorkspace({
               break;
             }
           }
-          const messageIndex = restored.push({ role: "assistant", content: `短剧工作流：${event.project_id}` }) - 1;
+          const messageIndex = restored.push({ role: "assistant", content: `${event.workflow_code || "工作流"}：${event.project_id}` }) - 1;
           workflowTargets.push({ messageIndex, userMessageIndex, projectId: event.project_id });
         }
       }
@@ -1117,15 +1127,21 @@ export function CreativeAgentWorkspace({
       setConversationId(publicID);
       setCanvasVisible(false);
       setTask(null);
-      const taskRequests = new Map([...new Set(taskTargets.map(item => item.taskNo))]
-        .map(id => [id, api<TaskState>(`/api/tasks/${encodeURIComponent(id)}`).catch(() => null)]));
+      const uniqueTaskNos = [...new Set(taskTargets.map(item => item.taskNo))];
+      const assetBatches: string[][] = [];
+      const taskBatches: string[][] = [];
+      for (let index = 0; index < allAssetIds.length; index += 100) assetBatches.push(allAssetIds.slice(index, index + 100));
+      for (let index = 0; index < uniqueTaskNos.length; index += 100) taskBatches.push(uniqueTaskNos.slice(index, index + 100));
       const workflowRequests = new Map([...new Set(workflowTargets.map(item => item.projectId))]
         .map(id => [id, api<TaskState>(`/api/agent-projects/${encodeURIComponent(id)}`).catch(() => null)]));
-      const [assets, tasks, workflows] = await Promise.all([
-        Promise.all(allAssetIds.map((id) => api<AssetRecord>(`/api/assets/${encodeURIComponent(id)}`).catch(() => null))),
-        Promise.all(taskTargets.map(item => taskRequests.get(item.taskNo)!)),
+      const [assetResponses, taskResponses, workflows] = await Promise.all([
+        Promise.all(assetBatches.map((assetIds) => api<{ items: AssetRecord[] }>("/api/assets/batch", { method: "POST", body: JSON.stringify({ asset_ids: assetIds }) }).catch(() => ({ items: [] })))),
+        Promise.all(taskBatches.map((taskNos) => api<{ items: TaskState[] }>("/api/tasks/status", { method: "POST", body: JSON.stringify({ task_nos: taskNos }) }).catch(() => ({ items: [] })))),
         Promise.all(workflowTargets.map(item => workflowRequests.get(item.projectId)!)),
       ]);
+      const assets = assetResponses.flatMap((response) => response.items || []);
+      const tasksByNumber = new Map(taskResponses.flatMap((response) => response.items || []).map((item) => [item.task_no, item]));
+      const tasks = taskTargets.map((item) => tasksByNumber.get(item.taskNo) || null);
       const assetMap = new Map(assets.filter((item): item is AssetRecord => !!item).map((item) => [item.public_id, item]));
       for (const target of assetTargets) {
         const items = target.assetIds.map((id) => assetMap.get(id)).filter((item): item is AssetRecord => !!item);
@@ -1218,6 +1234,19 @@ export function CreativeAgentWorkspace({
       setError(err instanceof Error ? err.message : t("停止任务失败"));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const rateWorkflow = async (run: TaskState, rating: -1 | 1) => {
+    if (!run.public_id || !conversationId || busy) return;
+    setError("");
+    try {
+      await api("/api/creative-agent/feedback", { method: "POST", body: JSON.stringify({ conversation_id: conversationId, project_id: run.public_id, rating }) });
+      const next = { ...run, user_feedback: rating };
+      if (task?.public_id === run.public_id) setTask(next);
+      setMessages((items) => items.map((item) => item.workflow?.public_id === run.public_id ? { ...item, workflow: next } : item));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("评价保存失败"));
     }
   };
 
@@ -1379,6 +1408,9 @@ export function CreativeAgentWorkspace({
                       <div className="mt-2 rounded-xl border border-primary/30 bg-primary/5 p-3">
                         <div className="text-xs text-gray-500">{message.planState === "pending" ? t("待确认 · 确认后会调用模型并产生相应费用") : message.planState === "submitted" ? message.plan.plan_version ? t("已提交确认方案") : t("历史已执行任务（旧版）") : t("历史或已失效方案 · 更新后确认即可继续")}</div>
                         {message.plan.model_code ? <div className="mt-1 text-xs">方案版本：{message.plan.plan_version || "旧版"} · 模型：{message.plan.model_code}</div> : null}
+                        {message.plan.workflow_code ? <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">工作流：{message.plan.workflow_code}{typeof message.plan.route_confidence === "number" && message.plan.route_confidence > 0 ? ` · 匹配度 ${Math.round(message.plan.route_confidence * 100)}%` : ""}{message.plan.route_changed ? ` · ${ts("已按新需求切换")}` : ""}{message.plan.route_reason ? ` · ${message.plan.route_reason}` : ""}</div> : null}
+                        {message.plan.model_selection_reason ? <div className="mt-1 text-xs text-gray-500">{message.plan.model_selection_reason}</div> : null}
+                        {message.plan.cost_estimate_note ? <div className="mt-1 rounded-lg bg-amber-50 px-2 py-1.5 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{message.plan.cost_estimate_available && typeof message.plan.estimated_cost === "number" ? `${t("预计费用")}：${message.plan.estimated_cost.toFixed(4)}（${t("账户计费单位")}） · ` : ""}{message.plan.cost_estimate_note}</div> : null}
                         {message.plan.slots ? <div className="mt-1 text-xs text-gray-500">{[message.plan.slots.platform ? `用途：${message.plan.slots.platform}` : "", message.plan.slots.target_duration_sec ? `${message.plan.slots.target_duration_sec} 秒` : "", message.plan.slots.aspect_ratio === "16:9" ? t("16:9 横屏") : message.plan.slots.aspect_ratio === "9:16" ? t("9:16 竖屏") : message.plan.slots.aspect_ratio, message.plan.slots.character, message.plan.slots.style].filter(Boolean).join(" · ")}</div> : null}
                         <details className="mt-2"><summary className="cursor-pointer">{ts("查看完整方案 / 文案")}</summary><div className="mt-2 whitespace-pre-wrap">{message.plan.prompt || String(message.plan.slots?.generation_prompt || message.plan.slots?.script || ts("尚未形成可执行正文，请先完善需求"))}</div></details>
                         {message.planState === "pending" ? <div className="mt-3 flex flex-wrap gap-2">
@@ -1401,7 +1433,7 @@ export function CreativeAgentWorkspace({
                       {["waiting_confirm", "failed", "paused"].includes(message.canvasState?.status || "") && <button type="button" disabled={busy || message.canvasState?.canContinue === false} onClick={() => void continueCanvas(message.canvasId!)} className="rounded-lg bg-primary px-4 py-2 text-dark disabled:opacity-50">{message.canvasState?.canContinue === false ? t("正在暂停，请稍候") : message.canvasState?.status === "paused" ? t("继续未完成部分") : message.canvasState?.status === "failed" ? t("核对任务并重试未完成部分") : t("确认并继续生成")}</button>}
                       <div><button type="button" className="text-xs text-gray-500 underline" onClick={() => openCanvas(message.canvasId!)}>{ts("查看工作流记录")}</button></div>
                     </div>}
-                    {message.workflow ? <WorkflowRunCard task={message.workflow} busy={busy || (!!task && task.public_id !== message.workflow.public_id && ["pending", "running", "canceling"].includes(task.status))} onRetry={() => void retryWorkflow(videoModelCode, "", message.workflow)} onCancel={() => void cancelRun(message.workflow!)} /> : null}
+                    {message.workflow ? <WorkflowRunCard task={message.workflow} busy={busy || (!!task && task.public_id !== message.workflow.public_id && ["pending", "running", "canceling"].includes(task.status))} onRetry={() => void retryWorkflow(videoModelCode, "", message.workflow)} onCancel={() => void cancelRun(message.workflow!)} onFeedback={(rating) => void rateWorkflow(message.workflow!, rating)} /> : null}
                     {message.searchRequired && message.retryText ? (
                       <button type="button" disabled={busy} onClick={() => { setBottom((value) => ({ ...value, web_search: true })); void sendMessage(message.retryText, true); }} className="mt-2 inline-flex h-9 items-center gap-1.5 rounded-xl border border-primary/30 bg-primary/10 px-3 text-sm text-primary transition hover:bg-primary/15 disabled:opacity-50">
                         <Globe size={14} />启用智能搜索并继续

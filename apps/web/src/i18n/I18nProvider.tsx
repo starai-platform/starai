@@ -12,7 +12,6 @@ import { DEFAULT_UI_LANGUAGES, dictionaries, loadLocaleDictionaries, sourceTrans
 type PublicConfig = {
   default_locale?: string;
   ui_languages?: UILanguage[];
-  ui_translation_overrides?: UITranslationOverride[];
 };
 
 type I18nContextValue = {
@@ -120,9 +119,13 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
 
   const activateLocale = useCallback((next: string, onActivated?: () => void) => {
     const request = ++localeRequestRef.current;
-    void loadLocaleDictionaries(next)
-      .then(() => {
+    const overrides = next === "zh-CN"
+      ? Promise.resolve([] as UITranslationOverride[])
+      : apiCached<UITranslationOverride[]>(`/api/ui-translations?locale=${encodeURIComponent(next)}`, 60_000, false).catch(() => []);
+    void Promise.all([loadLocaleDictionaries(next), overrides])
+      .then(([, items]) => {
         if (request !== localeRequestRef.current) return;
+        setOverrides((current) => ({ ...current, ...normalizeTranslationOverrides(items) }));
         localStorage.setItem("site_locale", next);
         setLocaleState(next);
         onActivated?.();
@@ -146,7 +149,6 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
         if (!alive) return;
         const next = normalizeUILanguages(cfg?.ui_languages);
         setLanguages(next);
-        setOverrides(normalizeTranslationOverrides(cfg?.ui_translation_overrides));
         const stored = localStorage.getItem("site_locale") || "";
         if (selectedLocaleRef.current && next.some((item) => item.code === selectedLocaleRef.current)) return;
         const userLocale = useAuthStore.getState().user?.locale || "";

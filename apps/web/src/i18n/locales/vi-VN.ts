@@ -347,6 +347,7 @@ const dictionary: Record<string, string> = {
     "canvas.unsupportedTemplate": "Mẫu “{name}” không có quy trình tích hợp có thể chạy",
     "canvas.upstreamFailed": "Nút trước “{name}” chưa thành công; đã bỏ qua nút này",
     "canvas.upstreamNotReady": "Nút trước “{name}” chưa sẵn sàng để tái sử dụng. Hãy tiếp tục từ nút đó; nội dung đã tạo vẫn được giữ lại.",
+    "canvas.existingMediaContinued": "Tiếp tục bằng nội dung hiện có từ nút trước “{name}”. Bản ghi chạy không hoàn toàn khớp với cài đặt hiện tại nhưng tệp phương tiện vẫn hợp lệ. Hãy hoàn tất ghép video trước và chỉ tạo lại nút đó khi cần.",
     "canvas.executionFinished": "Hoàn tất: chạy {executed}, tái sử dụng {reused}",
     "canvas.executionFinishedWithBlocked": "Hoàn tất: {executed} thành công, {reused} tái sử dụng, {failed} lỗi, {blocked} bỏ qua",
     "canvas.resume.tasksStillRunning": "Có {count} tác vụ nền vẫn đang chạy. Hệ thống đã tiếp tục thăm dò mà không gửi trùng.",

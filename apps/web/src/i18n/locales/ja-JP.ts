@@ -347,6 +347,7 @@ const dictionary: Record<string, string> = {
     "canvas.unsupportedTemplate": "テンプレート「{name}」には実行可能な組み込みフローがありません",
     "canvas.upstreamFailed": "上流ノード「{name}」が完了していないため、このノードをスキップしました",
     "canvas.upstreamNotReady": "上流ノード「{name}」はまだ再利用できません。そのノードから実行を続けてください。既存の素材は保持されています。",
+    "canvas.existingMediaContinued": "上流ノード「{name}」の既存メディアを使用して続行します。実行記録は現在の設定と一致していませんが、メディアファイルは有効です。まず合成を完了し、必要な場合のみそのノードを再生成してください。",
     "canvas.executionFinished": "完了：{executed} 件実行、{reused} 件再利用",
     "canvas.executionFinishedWithBlocked": "終了：{executed} 件成功、{reused} 件再利用、{failed} 件失敗、{blocked} 件スキップ",
     "canvas.resume.tasksStillRunning": "バックグラウンドで{count}件のタスクが実行中です。重複送信せずポーリングを再開しました。",

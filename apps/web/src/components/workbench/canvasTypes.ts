@@ -72,6 +72,7 @@ export type CanvasNodeData = Record<string, unknown> & {
   progressStage?: string;
   error?: string;
   warning?: string;
+  reuseWarning?: string;
   dirty?: boolean;
   lastRunSignature?: string;
   activeRunSignature?: string;

@@ -347,6 +347,7 @@ const dictionary: Record<string, string> = {
     "canvas.unsupportedTemplate": "템플릿 “{name}”에 실행 가능한 기본 워크플로가 없습니다",
     "canvas.upstreamFailed": "상위 노드 “{name}”가 성공하지 않아 이 노드를 건너뛰었습니다",
     "canvas.upstreamNotReady": "상위 노드 “{name}”를 아직 재사용할 수 없습니다. 해당 노드부터 실행을 계속하세요. 기존 미디어는 보존됩니다.",
+    "canvas.existingMediaContinued": "상위 노드 “{name}”의 기존 미디어를 사용해 계속합니다. 실행 기록이 현재 설정과 일치하지 않지만 미디어 파일은 유효합니다. 먼저 합성을 완료하고 필요한 경우에만 해당 노드를 다시 생성하세요.",
     "canvas.executionFinished": "완료: {executed}개 실행, {reused}개 재사용",
     "canvas.executionFinishedWithBlocked": "완료: {executed}개 성공, {reused}개 재사용, {failed}개 실패, {blocked}개 건너뜀",
     "canvas.resume.tasksStillRunning": "백그라운드 작업 {count}개가 아직 실행 중입니다. 중복 제출 없이 폴링을 재개했습니다.",

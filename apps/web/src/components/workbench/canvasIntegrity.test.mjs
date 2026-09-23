@@ -26,7 +26,7 @@ function visit(node) {
   ts.forEachChild(node, visit);
 }
 visit(source);
-const helpers = ["indexedCanvasEdges", "hasGraphCycle", "validCanvasDocument", "validateCompositorNode", "collectDownstreamIDs", "collectUpstreamNodes", "stableValue", "compactSignature", "contentSourceContext", "nodeRunSignature", "nodeHasResult", "nodeHasReconcilableTask", "nodeResultReusable", "orderedGeneratorNodes", "collectURLs", "extractMedia", "runningProgress", "canvasTaskStatusHint", "truncateCanvasTitle", "automaticCanvasTitle", "storyNodeNeedsReset"];
+const helpers = ["indexedCanvasEdges", "hasGraphCycle", "validCanvasDocument", "validateCompositorNode", "collectDownstreamIDs", "collectUpstreamNodes", "stableValue", "compactSignature", "contentSourceContext", "nodeRunSignature", "nodeHasResult", "nodeHasReconcilableTask", "nodeResultReusable", "nodeResultConsumable", "orderedGeneratorNodes", "collectURLs", "extractMedia", "runningProgress", "canvasTaskStatusHint", "truncateCanvasTitle", "automaticCanvasTitle", "storyNodeNeedsReset"];
 const noop = () => {};
 const plain = value => JSON.parse(JSON.stringify(value));
 const node = (id, type = "generator", data = {}) => ({ id, type, position: { x: 0, y: 0 }, data: { mediaKind: "text", status: "succeeded", outputText: id, ...data } });
@@ -416,6 +416,38 @@ test("scoped execution rejects a dirty ancestor even when its old output exists"
   assert.deepEqual(executed, []);
   assert.equal(ctx.nodesRef.current[1].data.status, "blocked");
   assert.equal(ctx.nodesRef.current[1].data.error, "canvas.upstreamNotReady");
+});
+
+test("completed paid media remains usable after edits until the user explicitly retries it", async () => {
+  const { ctx, executed, pending } = executor();
+  ctx.nodesRef.current = [
+    node("clip-1", "generator", { mediaKind: "video", outputText: "", outputUrl: "clip-1.mp4", outputKind: "video", status: "stale", dirty: true, modelCode: "text" }),
+    { ...pending("clip-2"), data: { ...pending("clip-2").data, mediaKind: "video" } },
+  ];
+  ctx.videoModels = [{ code: "text" }];
+  ctx.parseVideoRuntime = () => ({});
+  ctx.edgesRef.current = [edge("clip-1", "clip-2")];
+  await ctx.executeNodes(new Set(["clip-2"]));
+  assert.deepEqual(executed, ["clip-2"]);
+  assert.equal(ctx.nodesRef.current[1].data.status, "succeeded");
+  assert.equal(ctx.nodesRef.current[1].data.reuseWarning, "canvas.existingMediaContinued");
+});
+
+test("reapplying identical configuration does not falsely dirty a node or its downstream", () => {
+  const ctx = environment(["update"]);
+  ctx.nodesRef.current = [
+    node("a", "generator", { prompt: "same", params: { duration: 8 }, dirty: false }),
+    node("b", "generator", { dirty: false }),
+  ];
+  ctx.edgesRef.current = [edge("a", "b")];
+  ctx.update("a", { prompt: "same", params: { duration: 8 } });
+  assert.equal(ctx.nodesRef.current[0].data.status, "succeeded");
+  assert.equal(ctx.nodesRef.current[0].data.dirty, false);
+  assert.equal(ctx.nodesRef.current[1].data.status, "succeeded");
+  assert.equal(ctx.nodesRef.current[1].data.dirty, false);
+  ctx.update("a", { prompt: "changed" });
+  assert.equal(ctx.nodesRef.current[0].data.status, "stale");
+  assert.equal(ctx.nodesRef.current[1].data.status, "stale");
 });
 
 test("retrying a video recovers its unchanged successful keyframe without generating it again", async () => {

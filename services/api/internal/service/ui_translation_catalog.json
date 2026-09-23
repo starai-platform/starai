@@ -746,6 +746,7 @@
   "canvas.unsupportedTemplate": "模板“{name}”没有可执行的内置链路",
   "canvas.upstreamFailed": "上游节点“{name}”未成功，已跳过此节点",
   "canvas.upstreamNotReady": "上游节点“{name}”尚不可复用，请从该节点继续执行；已有素材已保留",
+  "canvas.existingMediaContinued": "已沿用上游“{name}”的现有媒体继续执行；其运行记录与当前配置不完全一致，但媒体文件有效。可先完成合成，不满意时再从该节点重新生成。",
   "canvas.executionFinished": "执行完成：新运行 {executed} 个，复用 {reused} 个",
   "canvas.executionFinishedWithBlocked": "执行结束：成功 {executed} 个，复用 {reused} 个，失败 {failed} 个，跳过 {blocked} 个",
   "canvas.resume.tasksStillRunning": "检测到 {count} 个后台任务仍在生成，已恢复轮询，不会重复提交。",

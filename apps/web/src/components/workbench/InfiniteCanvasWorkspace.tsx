@@ -135,6 +135,15 @@ function nodeResultReusable(node: CanvasNode, nodes: CanvasNode[], edges: Canvas
     && node.data.lastRunSignature === nodeRunSignature(node.id, nodes, edges);
 }
 
+function nodeResultConsumable(node: CanvasNode, nodes: CanvasNode[], edges: CanvasEdge[]) {
+  // Keep paid media usable as downstream material even when an edit marks it
+  // stale. Explicit retry/run-from still uses the strict reusable check above.
+  return nodeResultReusable(node, nodes, edges)
+    || node.data.mediaKind !== "text"
+      && nodeHasResult(node)
+      && ["succeeded", "stale"].includes(String(node.data.status || ""));
+}
+
 function readLocalCanvases(): CanvasDetail[] {
   if (typeof window === "undefined") return [];
   try {
@@ -2636,6 +2645,9 @@ function GeneratorNode({ id, data, selected }: NodeProps<CanvasNode>) {
         {data.warning && (
           <div className="rounded-lg bg-amber-50 px-2.5 py-2 text-[10px] leading-relaxed text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">{data.warning}</div>
         )}
+        {data.reuseWarning && (
+          <div className="rounded-lg bg-cyan-50 px-2.5 py-2 text-[10px] leading-relaxed text-cyan-700 dark:bg-cyan-500/10 dark:text-cyan-200">{data.reuseWarning}</div>
+        )}
         {data.error && (
           <div className="flex items-center gap-2 rounded-lg bg-red-50 px-2.5 py-2 text-[11px] text-red-600 dark:bg-red-500/10 dark:text-red-300">
             <span className="min-w-0 flex-1">{canvasGenerationError(data.error)}</span>
@@ -2847,6 +2859,9 @@ function CompositorNode({ id, data, selected }: NodeProps<CanvasNode>) {
               <span className="mt-0.5 block text-[9px] text-gray-400">{t("canvas.compositor.waitingDesc")}</span>
             </span>
           </div>
+        )}
+        {data.reuseWarning && (
+          <div className="rounded-lg bg-cyan-50 px-2.5 py-2 text-[10px] leading-relaxed text-cyan-700 dark:bg-cyan-500/10 dark:text-cyan-200">{data.reuseWarning}</div>
         )}
         {data.error && (
           <div className="flex items-center gap-2 rounded-lg bg-red-50 px-2.5 py-2 text-[11px] text-red-600 dark:bg-red-500/10 dark:text-red-300">
@@ -3350,8 +3365,9 @@ function CanvasEditor({
 
   const update = useCallback((id: string, patch: Partial<CanvasNodeData>) => {
     const patchKeys = Object.keys(patch);
-    const configurationChanged = patchKeys.some((key) => !CANVAS_NODE_RUNTIME_KEYS.has(key));
     const currentNode = nodesRef.current.find((node) => node.id === id);
+    const configurationChanged = patchKeys.some((key) => !CANVAS_NODE_RUNTIME_KEYS.has(key)
+      && JSON.stringify(stableValue(currentNode?.data[key])) !== JSON.stringify(stableValue(patch[key])));
     const outputChanged =
       (Object.prototype.hasOwnProperty.call(patch, "outputUrl") && currentNode?.data.outputUrl !== patch.outputUrl)
       || (Object.prototype.hasOwnProperty.call(patch, "outputUrls") && JSON.stringify(currentNode?.data.outputUrls || []) !== JSON.stringify(patch.outputUrls || []))
@@ -4534,7 +4550,7 @@ function CanvasEditor({
         const previous = directIncoming.find(item => item.data.storyRole === "video");
         if (previous) {
           const sourceURL = String(previous.data.outputUrl || "");
-          if (!sourceURL || previous.data.dirty || previous.data.status !== "succeeded") throw new Error("连续镜头需先完成上一段视频。");
+          if (!sourceURL || !nodeResultConsumable(previous, nodesRef.current, edgesRef.current)) throw new Error("连续镜头需先完成上一段视频。");
           let tailURL = previous.data.storyTailFrameSource === sourceURL ? previous.data.storyTailFrameURL : "";
           if (!tailURL) {
             const [sample] = await storyVideoSamples(sourceURL, [1]);
@@ -4554,7 +4570,7 @@ function CanvasEditor({
         if (segmentIndex > 1) {
           const previous = directIncoming.find(item => item.data.storyRole === "video" && Number(item.data.storySegmentIndex) === segmentIndex - 1);
           const sourceURL = String(previous?.data.outputUrl || "");
-          if (!previous || !sourceURL || previous.data.dirty || previous.data.status !== "succeeded") throw new Error("V2 当前片段必须等待上一片段完成，才能读取其实际尾帧。");
+          if (!previous || !sourceURL || !nodeResultConsumable(previous, nodesRef.current, edgesRef.current)) throw new Error("V2 当前片段必须等待上一片段完成，才能读取其实际尾帧。");
           let tailURL = previous.data.storyTailFrameSource === sourceURL ? String(previous.data.storyTailFrameURL || "") : "";
           if (!tailURL) {
             const [sample] = await storyVideoSamples(sourceURL, [1]);
@@ -5462,12 +5478,14 @@ function CanvasEditor({
         for (const snapshot of ready) {
           const upstream = edgesRef.current.filter(e => e.target === snapshot.id).map(e => nodesRef.current.find(n => n.id === e.source)).filter((n): n is CanvasNode => Boolean(n));
           if (upstream.some(n => inFlight.has(n.id) && !nodeResultReusable(n, nodesRef.current, edgesRef.current))) continue;
-          const unavailable = upstream.find(n => ["generator", "compositor"].includes(String(n.type)) && !nodeResultReusable(n, nodesRef.current, edgesRef.current));
+          const unavailable = upstream.find(n => ["generator", "compositor"].includes(String(n.type)) && !nodeResultConsumable(n, nodesRef.current, edgesRef.current));
           if (unavailable) {
             blocked++; visited.add(snapshot.id); advanced = true;
-            update(snapshot.id, { status: "blocked", dirty: true, error: t(unavailable.data.status === "failed" ? "canvas.upstreamFailed" : "canvas.upstreamNotReady", { name: unavailable.data.label || unavailable.id }) });
+            update(snapshot.id, { status: "blocked", dirty: true, reuseWarning: "", error: t(unavailable.data.status === "failed" ? "canvas.upstreamFailed" : "canvas.upstreamNotReady", { name: unavailable.data.label || unavailable.id }) });
             continue;
           }
+          const fallbackMedia = upstream.filter(n => nodeResultConsumable(n, nodesRef.current, edgesRef.current) && !nodeResultReusable(n, nodesRef.current, edgesRef.current));
+          update(snapshot.id, { reuseWarning: fallbackMedia.length ? t("canvas.existingMediaContinued", { name: fallbackMedia.map(n => n.data.label || n.id).join(", ") }) : "" });
           if (nodeResultReusable(snapshot, nodesRef.current, edgesRef.current) && !(canvasQualityModel(snapshot, nodesRef.current, workspaceRuntimeRef.current.quality_model_code) && ["asset", "keyframe", "video"].includes(String(snapshot.data.storyRole)) && !canvasQualityResult(snapshot, nodesRef.current, executionModeRef.current))) { reused++; visited.add(snapshot.id); advanced = true; continue; }
           const reviewBlock = snapshot.id !== rerunID && storyReviewBlockForMode(executionModeRef.current, snapshot, nodesRef.current);
           if (reviewBlock) { pausedForStoryReview = true; continue; }

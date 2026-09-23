@@ -373,7 +373,7 @@ export function pauseCanvasAfterStep(mode: string, nodeCount: number, scopeSize:
 export const CANVAS_NODE_RUNTIME_KEYS: ReadonlySet<string> = new Set([
   "label", "previousRole", "status", "progress", "progressStage", "error", "dirty",
   "lastRunSignature", "activeRunSignature", "outputUrl", "outputUrls", "outputText", "outputKind",
-  "taskNo", "taskNos", "warning", "qualityStatus", "storySpeechPlan", "storyVoiceAssignments", "speechTasks", "speechCost", "storySpeechEmpty",
+  "taskNo", "taskNos", "warning", "reuseWarning", "qualityStatus", "storySpeechPlan", "storyVoiceAssignments", "speechTasks", "speechCost", "storySpeechEmpty",
   "storyReviewRequired", "storyStoryboardApproved", "storyApproved", "storyTailFrameURL", "storyTailFrameSource", "estimatedCost", "actualCost", "enhancing",
   "referenceSheetSignature", "referenceSheetUrl", "storyArchivedAssets", "storyQualityModelCode", "storyQualityMode", "storyContinuityMode", "qualityVerdict", "resultTaskNo", "lastAttemptTaskNo", "attemptTaskNos", "storyValidationErrors", "taskStatusHint", "storyRetryError", "storyRetryDraft", "storyDurationPromptSeconds",
   "framePairShotStates", "framePairTaskMap", "framePairOutputMap", "framePairShotSignatures", "framePairRerunShotID",

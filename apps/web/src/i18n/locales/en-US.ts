@@ -369,6 +369,7 @@ const dictionary: Record<string, string> = {
     "canvas.unsupportedTemplate": "Template “{name}” does not have an executable built-in workflow",
     "canvas.upstreamFailed": "Upstream node “{name}” did not succeed; this node was skipped",
     "canvas.upstreamNotReady": "Upstream node “{name}” is not ready to reuse. Continue from that node; existing media is preserved.",
+    "canvas.existingMediaContinued": "Continuing with existing media from upstream node “{name}”. Its run record differs from the current settings, but the media file is valid. Finish the composition first and regenerate that node only if needed.",
     "canvas.executionFinished": "Finished: {executed} executed, {reused} reused",
     "canvas.executionFinishedWithBlocked": "Finished: {executed} succeeded, {reused} reused, {failed} failed, {blocked} skipped",
     "canvas.resume.tasksStillRunning": "{count} background task(s) are still running. Polling resumed without submitting duplicates.",

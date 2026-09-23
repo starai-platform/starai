@@ -67,9 +67,9 @@ export function buildImageGenerationParams({
   ratio?: string;
   imageSize?: string;
 }) {
-  const aspect_ratio = normalizeRatio(ratio);
+  const aspect_ratio = ratio === "auto" ? "auto" : normalizeRatio(ratio);
   const image_size = normalizeTier(imageSize);
-  const size = getImagePixelSize(aspect_ratio, image_size);
+  const size = aspect_ratio === "auto" ? undefined : getImagePixelSize(aspect_ratio, image_size);
   const n = Math.max(1, Math.min(50, Number(count || 1) || 1));
   return { n, count: n, aspect_ratio, image_size, size };
 }
@@ -89,6 +89,7 @@ export function ImageGenerationToolbar({
   sizeTiers = IMAGE_SIZE_TIERS,
   showSizeTier = true,
   showCount = true,
+  allowAutoRatio = false,
 }: {
   count: number;
   onCountChange: (value: number) => void;
@@ -104,10 +105,11 @@ export function ImageGenerationToolbar({
   sizeTiers?: ImageSizeTier[];
   showSizeTier?: boolean;
   showCount?: boolean;
+  allowAutoRatio?: boolean;
 }) {
   const { t, ts } = useI18n();
   const [customDraft, setCustomDraft] = useState(String(count || 1));
-  const activeRatio = normalizeRatio(ratio);
+  const activeRatio = ratio === "auto" && allowAutoRatio ? "auto" : normalizeRatio(ratio);
   const activeTier = normalizeTier(imageSize);
   const commonRatios = useMemo(() => COMMON_RATIOS.filter((item) => ratios.includes(item)), [ratios]);
   const completeRatios = useMemo(() => ratios.filter((item) => !COMMON_RATIOS.includes(item)), [ratios]);
@@ -189,13 +191,16 @@ export function ImageGenerationToolbar({
       ) : <>
         <MediaOptionMenu
         icon={<FileText size={16} />}
-        activeLabel={activeRatio}
+        activeLabel={activeRatio === "auto" ? ts("智能适配") : activeRatio}
         title={t("imageToolbar.ratio")}
         subtitle={t("imageToolbar.ratioDesc")}
         compactOnMobile
       >
         {(close) => (
           <div className="space-y-2">
+            {allowAutoRatio && <MediaMenuOption selected={activeRatio === "auto"} onClick={() => { onRatioChange("auto"); close(); }}>
+              <span className="text-xs font-normal">{ts("智能适配")}</span>
+            </MediaMenuOption>}
             <div className="px-1 text-[11px] font-semibold text-gray-400">{t("imageToolbar.commonRatios")}</div>
             {commonRatios.map((item) => (
               <MediaMenuOption
@@ -244,7 +249,7 @@ export function ImageGenerationToolbar({
                   close();
                 }}
               >
-                {tier} · {getImagePixelSize(activeRatio, tier)}
+              {tier}{activeRatio === "auto" ? "" : ` · ${getImagePixelSize(activeRatio, tier)}`}
               </MediaMenuOption>
             ))}
           </div>

@@ -1128,10 +1128,16 @@ func executeWorkerGenerationAttempt(ctx context.Context, pool *pgxpool.Pool, p I
 			if imageBody["model"] == "" {
 				imageBody["model"] = p.ModelCode
 			}
-			if value, ok := p.Input["aspect_ratio"]; ok {
+			if value, ok := p.Input["aspect_ratio"]; ok && !isOtuapiImageAdapter(route.RuntimeRule) {
 				imageBody["aspect_ratio"] = value
 			}
-			applyOpenAIImageOptions(imageBody, p.Input)
+			if isOtuapiImageAdapter(route.RuntimeRule) {
+				if value, ok := p.Input["response_format"]; ok && strings.TrimSpace(fmt.Sprint(value)) != "" {
+					imageBody["response_format"] = value
+				}
+			} else {
+				applyOpenAIImageOptions(imageBody, p.Input)
+			}
 			if refs, ok := p.Input["reference_images"]; ok {
 				if isTencentImage {
 					imageBody["images"] = normalizeReferenceImages(ctx, refs)
@@ -1203,7 +1209,7 @@ func executeWorkerGenerationAttempt(ctx context.Context, pool *pgxpool.Pool, p I
 }
 
 func applyOpenAIImageOptions(out, input map[string]interface{}) {
-	for _, key := range []string{"quality", "style", "background", "output_format", "moderation", "input_fidelity", "seed", "negative_prompt", "watermark"} {
+	for _, key := range []string{"quality", "style", "background", "output_format", "response_format", "moderation", "input_fidelity", "seed", "negative_prompt", "watermark"} {
 		if value, ok := input[key]; ok && value != nil && strings.TrimSpace(fmt.Sprint(value)) != "" {
 			out[key] = value
 		}
@@ -1213,6 +1219,11 @@ func applyOpenAIImageOptions(out, input map[string]interface{}) {
 func isOpenAIImagesAdapter(runtimeRule map[string]interface{}) bool {
 	upstream, _ := runtimeRule["upstream"].(map[string]interface{})
 	return strings.EqualFold(strings.TrimSpace(fmt.Sprint(upstream["adapter"])), "openai_images")
+}
+
+func isOtuapiImageAdapter(runtimeRule map[string]interface{}) bool {
+	upstream, _ := runtimeRule["upstream"].(map[string]interface{})
+	return strings.EqualFold(strings.TrimSpace(fmt.Sprint(upstream["adapter"])), "otuapi_image")
 }
 
 func omitOpenAIImageQuality(runtimeRule map[string]interface{}) bool {
@@ -1242,6 +1253,9 @@ func openAIImageEditEndpoint(runtimeRule map[string]interface{}, generationEndpo
 }
 
 func resolveImageRequestEndpoint(runtimeRule map[string]interface{}, endpoint, model string, input map[string]interface{}) (string, error) {
+	if isOtuapiImageAdapter(runtimeRule) && !isVideoImageAPI(endpoint, model) && len(referenceImageSources(input["reference_images"])) > 0 {
+		endpoint = openAIImageEditEndpoint(runtimeRule, endpoint)
+	}
 	if stringAny(input["mask"]) == "" {
 		return endpoint, nil
 	}
@@ -1813,9 +1827,15 @@ func buildVideoImagePayload(ctx context.Context, runtimeRule map[string]interfac
 		"model":  model,
 		"prompt": prompt,
 	}
-	if v, ok := input["aspect_ratio"]; ok && !isGPTImageVideoAPI(endpoint, model) {
+	if v, ok := input["aspect_ratio"]; ok {
 		aspect := strings.TrimSpace(fmt.Sprint(v))
-		if aspect != "" && !strings.EqualFold(aspect, "auto") {
+		if isGPTImageVideoAPI(endpoint, model) && strings.EqualFold(aspect, "auto") {
+			payload["aspect_ratio"] = "auto"
+			lowerModel := strings.ToLower(model)
+			if strings.Contains(lowerModel, "2.5-flare") || strings.Contains(lowerModel, "2.5-sunburst") {
+				payload["image_size"] = imageSizeTier(input)
+			}
+		} else if aspect != "" && !strings.EqualFold(aspect, "auto") && !isGPTImageVideoAPI(endpoint, model) {
 			payload["aspect_ratio"] = aspect
 		}
 	}
@@ -1835,8 +1855,12 @@ func buildVideoImagePayload(ctx context.Context, runtimeRule map[string]interfac
 	if len(refs) == 0 {
 		refs = collectBananaReferenceImages(ctx, input["reference_image"])
 	}
-	if len(refs) > 5 {
-		refs = refs[:5]
+	maxRefs := 5
+	if isGPTImageVideoAPI(endpoint, model) {
+		maxRefs = 8
+	}
+	if len(refs) > maxRefs {
+		refs = refs[:maxRefs]
 	}
 	if len(refs) > 0 {
 		payload["images"] = refs
@@ -1929,6 +1953,21 @@ func resolveImageGenerationInput(input map[string]interface{}, runtimeRule map[s
 		(ratioInput == "" || ratioInput == "<nil>" || strings.EqualFold(ratioInput, "auto")) &&
 		(tierInput == "" || tierInput == "<nil>" || strings.EqualFold(tierInput, "auto")) {
 		input["resolved_size"] = explicitSize
+		return
+	}
+	ratioUnset := ratioInput == "" || ratioInput == "<nil>"
+	sizeUnset := explicitSize == "" || explicitSize == "<nil>" || strings.EqualFold(explicitSize, "auto")
+	if strings.EqualFold(ratioInput, "auto") || (isGPTImageVideoAPI(endpoint, model) && ratioUnset && sizeUnset) {
+		tier := normalizeImageSizeTier(tierInput)
+		if supported := supportedImageSizeTiers(runtimeRule); len(supported) > 0 && !stringInSlice(tier, supported) {
+			tier = supported[0]
+		}
+		input["aspect_ratio"] = "auto"
+		input["image_size"] = tier
+		delete(input, "size")
+		input["resolved_aspect_ratio"] = "auto"
+		input["resolved_image_size"] = tier
+		delete(input, "resolved_size")
 		return
 	}
 	ratio := normalizeImageRatio(fmt.Sprint(input["aspect_ratio"]))
@@ -2024,6 +2063,9 @@ func supportedImageRatios(runtimeRule map[string]interface{}, endpoint, model st
 func supportedImageSizeTiers(runtimeRule map[string]interface{}) []string {
 	if imageRule, ok := runtimeRule["image"].(map[string]interface{}); ok {
 		out := stringSlice(imageRule["supported_sizes"])
+		if len(out) == 0 {
+			out = stringSlice(imageRule["supported_size_tiers"])
+		}
 		if len(out) > 0 {
 			normalized := make([]string, 0, len(out))
 			for _, item := range out {

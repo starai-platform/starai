@@ -22,7 +22,7 @@ import { ChatTopTools, type BottomBarState } from "./BottomBar";
 import { VideoOptionToolbar } from "./video/VideoOptionToolbar";
 import { VideoUploadArea } from "./video/VideoUploadArea";
 import { MediaMenuOption, MediaOptionMenu } from "./MediaOptionMenu";
-import { ImageGenerationToolbar, buildImageGenerationParams } from "./ImageGenerationToolbar";
+import { ALL_RATIOS, ImageGenerationToolbar, buildImageGenerationParams, normalizeRatio, normalizeTier, type ImageAspectRatio, type ImageSizeTier } from "./ImageGenerationToolbar";
 import { GenerationLanguageMenu, buildLanguageParams, useGenerationLanguages } from "./GenerationLanguageMenu";
 import { useI18n } from "@/i18n/I18nProvider";
 import { AgentLanding, type AgentDisplayStep } from "./AgentLanding";
@@ -437,6 +437,12 @@ export function AgentWorkspace({ code }: { code: string }) {
             .then((m) => {
               if (!active) return;
               setGenerationModel(m);
+              if (m.category === "image") {
+                const runtimeImage = (m.runtime_rule?.image || {}) as Record<string, unknown>;
+                const defaultRatio = String(m.default_params?.aspect_ratio || "1:1");
+                setImageRatio(defaultRatio === "auto" && runtimeImage.allow_auto_ratio === true ? "auto" : normalizeRatio(defaultRatio));
+                setImageSize(normalizeTier(String(runtimeImage.default_quality || m.default_params?.quality || m.default_params?.image_size || "1K")));
+              }
               setParams(
                 m.category === "video"
                   ? { ...(m.default_params || {}), ...schemaDefaultsFromFields(m.input_schema) }
@@ -510,6 +516,15 @@ export function AgentWorkspace({ code }: { code: string }) {
   const usesCompactCommerceInput = code === "ecommerce_image" || code === "ecommerce_video";
   const usesInlineReferenceInput = usesCompactCommerceInput || code === "general_image";
   const videoConfig = parseVideoRuntime(generationModel?.runtime_rule);
+  const generationImageRuntime = (generationModel?.runtime_rule?.image || {}) as Record<string, unknown>;
+  const configuredImageTiers = Array.isArray(generationImageRuntime.supported_size_tiers) ? generationImageRuntime.supported_size_tiers : generationImageRuntime.supported_sizes;
+  const generationImageTiers = Array.isArray(configuredImageTiers)
+    ? configuredImageTiers.filter((value): value is ImageSizeTier => ["1K", "2K", "4K"].includes(String(value)))
+    : undefined;
+  const generationImageRatios = Array.isArray(generationImageRuntime.supported_ratios)
+    ? generationImageRuntime.supported_ratios.filter((value): value is ImageAspectRatio => ALL_RATIOS.includes(String(value) as ImageAspectRatio))
+    : undefined;
+  const generationImageAllowsAutoRatio = generationImageRuntime.allow_auto_ratio === true;
 
   useEffect(() => {
     if (!isComicDrama) {
@@ -2120,6 +2135,9 @@ export function AgentWorkspace({ code }: { code: string }) {
                       onRatioChange={setImageRatio}
                       imageSize={imageSize}
                       onImageSizeChange={setImageSize}
+                      ratios={generationImageRatios}
+                      sizeTiers={generationImageTiers}
+                      allowAutoRatio={typeof generationImageRuntime.allow_auto_ratio === "boolean" ? generationImageAllowsAutoRatio : code === "ecommerce_image"}
                     />
                     <GenerationLanguageMenu languages={generationLanguages} value={languageCode} onChange={setLanguageCode} />
                   </>

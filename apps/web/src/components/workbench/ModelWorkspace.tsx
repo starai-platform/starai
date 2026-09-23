@@ -50,7 +50,7 @@ import { AudioOptionToolbar, AudioTopControls } from "./audio/AudioOptionToolbar
 import { AudioUploadButton } from "./audio/AudioUploadButton";
 import { VideoUploadArea } from "./video/VideoUploadArea";
 import { VideoOptionToolbar, VideoTopControls } from "./video/VideoOptionToolbar";
-import { ImageGenerationToolbar, buildImageGenerationParams, normalizeRatio, normalizeTier, type ImageAspectRatio, type ImageSizeTier } from "./ImageGenerationToolbar";
+import { ALL_RATIOS, ImageGenerationToolbar, buildImageGenerationParams, normalizeRatio, normalizeTier, type ImageAspectRatio, type ImageSizeTier } from "./ImageGenerationToolbar";
 import { GenerationLanguageMenu, buildLanguageParams, useGenerationLanguages } from "./GenerationLanguageMenu";
 
 interface Message {
@@ -919,9 +919,14 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
     ? imageRuntime.count_options.map(Number).filter((value) => Number.isFinite(value) && value > 0)
     : undefined;
   const imageCountMax = Math.max(1, Number(imageRuntime.count_max || 50));
-  const imageSizeTiers = Array.isArray(imageRuntime.supported_size_tiers)
-    ? imageRuntime.supported_size_tiers.filter((value): value is ImageSizeTier => ["1K", "2K", "4K"].includes(String(value)))
+  const configuredImageSizeTiers = Array.isArray(imageRuntime.supported_size_tiers) ? imageRuntime.supported_size_tiers : imageRuntime.supported_sizes;
+  const imageSizeTiers = Array.isArray(configuredImageSizeTiers)
+    ? configuredImageSizeTiers.filter((value): value is ImageSizeTier => ["1K", "2K", "4K"].includes(String(value)))
     : undefined;
+  const imageRatios = Array.isArray(imageRuntime.supported_ratios)
+    ? imageRuntime.supported_ratios.filter((value): value is ImageAspectRatio => ALL_RATIOS.includes(String(value) as ImageAspectRatio))
+    : undefined;
+  const imageAllowsAutoRatio = imageRuntime.allow_auto_ratio === true;
   const videoConfig = parseVideoRuntime(model.runtime_rule);
   const audioConfig = parseAudioRuntime(model.runtime_rule);
   const isSeedance2 = isVideo && videoConfig.upload_profile === "seedance_2";
@@ -1022,7 +1027,8 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
     setAudioRef(null);
     if (isImage) {
       setImageSize(defaultImageSizeForConfig(model.runtime_rule, defaults));
-      setImageRatio(normalizeRatio(String(defaults.aspect_ratio || "1:1")));
+      const defaultRatio = String(defaults.aspect_ratio || "1:1");
+      setImageRatio(defaultRatio === "auto" && imageAllowsAutoRatio ? "auto" : normalizeRatio(defaultRatio));
     }
     setBottom((prev) => ({
       ...prev,
@@ -1030,7 +1036,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
     }));
     setDeepThink(capDeepThink && reasoningConfig.default_enabled === true);
     setPrompt(initialPrompt || "");
-  }, [model.code, initialPrompt, isVideo, isAudio, isImage, workbenchInputSchema, model.default_params, model.runtime_rule, capDeepThink, reasoningConfig.default_enabled]);
+  }, [model.code, initialPrompt, isVideo, isAudio, isImage, workbenchInputSchema, model.default_params, model.runtime_rule, capDeepThink, reasoningConfig.default_enabled, imageAllowsAutoRatio]);
 
   useEffect(() => {
     const selectedAssets = bottom.asset_ids?.length ? { asset_ids: bottom.asset_ids } : {};
@@ -2753,7 +2759,8 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                       countOptions={imageCountOptions}
                       countMax={imageCountMax}
                       sizeTiers={imageSizeTiers}
-                      ratios={isOpenAIImages ? (["1:1", "3:2", "2:3"] as ImageAspectRatio[]) : undefined}
+                      ratios={isOpenAIImages ? (["1:1", "3:2", "2:3"] as ImageAspectRatio[]) : imageRatios}
+                      allowAutoRatio={imageAllowsAutoRatio}
                       showSizeTier={!isOpenAIImages}
                     />
                     <VideoOptionToolbar schema={imageOptionSchema} values={params} onChange={setParams} />

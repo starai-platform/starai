@@ -58,6 +58,9 @@ const REQUEST_MODES = ["chat_completions", "responses", "images", "video", "audi
 const PAGE_SIZE = 10;
 const IMAGE_QUALITY_TIERS = ["1K", "2K", "4K"] as const;
 const OPENAI_IMAGE_QUALITIES = ["auto", "low", "medium", "high"] as const;
+const OTUAPI_IMAGE_RATIOS = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"] as const;
+const OTUAPI_SYNC_IMAGE_MODELS = ["gpt-image2", "image2"] as const;
+const OTUAPI_ASYNC_IMAGE_MODELS = ["gpt-image-2", "gpt-image-2-2K", "gpt-image-2-4K", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"] as const;
 const QWEN_IMAGE_SIZES = ["auto", "1024x1024", "1536x1024", "1024x1536", "1792x1024", "1024x1792", "2048x1536", "1536x2048", "2048x2048"] as const;
 type SeedanceVariant = "standard" | "fast" | "mini";
 type MiniMaxH3Variant = "standard" | "max";
@@ -229,6 +232,21 @@ const inferImageQualityFromModel = (modelName: string) => {
   if (text.includes("4k")) return "4K";
   if (text.includes("2k")) return "2K";
   return "1K";
+};
+
+const otuapiImageModelConfig = (modelName: string, isAsync: boolean) => {
+  const model = modelName.trim() || (isAsync ? "gpt-image-2.5-flare" : "gpt-image2");
+  if (!isAsync) {
+    const tiers = model === "image2" ? ["1K"] : [...IMAGE_QUALITY_TIERS];
+    return { model, tiers, modelBySize: Object.fromEntries(tiers.map((tier) => [tier, model])) };
+  }
+  if (model === "gpt-image-2") {
+    return { model, tiers: [...IMAGE_QUALITY_TIERS], modelBySize: { "1K": "gpt-image-2", "2K": "gpt-image-2-2K", "4K": "gpt-image-2-4K" } };
+  }
+  if (model === "gpt-image-2-2K") return { model, tiers: ["2K"], modelBySize: { "2K": model } };
+  if (model === "gpt-image-2-4K") return { model, tiers: ["4K"], modelBySize: { "4K": model } };
+  if (model === "gpt-image-2.5") return { model, tiers: ["1K"], modelBySize: { "1K": model } };
+  return { model, tiers: [...IMAGE_QUALITY_TIERS], modelBySize: Object.fromEntries(IMAGE_QUALITY_TIERS.map((tier) => [tier, model])) };
 };
 
 function ModelLogo({ model }: { model: Pick<AdminModel, "display_name" | "icon_url" | "code"> }) {
@@ -480,17 +498,17 @@ const IMAGE_ENDPOINT_PRESETS = [
   },
   {
     key: "otuapi_images",
-    label: "章鱼哥 Image 生成（同步）",
+    label: "章鱼哥 Image 2（同步）",
     endpoint: "/v1/images/generations",
-    model: "gpt-image-1",
-    description: "保留原图片向导的 1K / 2K / 4K、aspect_ratio 与分档模型路由格式。",
+    model: "gpt-image2",
+    description: "OpenAI 图片格式同步返回；gpt-image2 支持 1K / 2K / 4K，image2 仅支持 1K。",
   },
   {
     key: "otuapi_images_async",
-    label: "章鱼哥 GPT Image 2（异步）",
+    label: "章鱼哥 GPT Image 2 / 2.5（异步）",
     endpoint: "/v1/videos",
-    model: "gpt-image-2",
-    description: "通过 /v1/videos 创建图片任务，自动轮询并按图片展示结果。",
+    model: "gpt-image-2.5-flare",
+    description: "覆盖 GPT Image 2 / 2.5 全系列，通过 /v1/videos 创建任务并自动轮询。",
   },
   {
     key: "banana_async",
@@ -975,9 +993,13 @@ export default function ModelsPage() {
       supported_qualities: (Array.isArray(image.supported_qualities) ? image.supported_qualities : OPENAI_IMAGE_QUALITIES)
         .map(normalizeOpenAIImageQuality)
         .filter((quality: string, index: number, values: string[]) => values.indexOf(quality) === index),
-      supported_size_tiers: (Array.isArray(image.supported_size_tiers) ? image.supported_size_tiers : IMAGE_QUALITY_TIERS)
+      supported_size_tiers: (Array.isArray(image.supported_size_tiers) ? image.supported_size_tiers : Array.isArray(image.supported_sizes) ? image.supported_sizes : IMAGE_QUALITY_TIERS)
         .map(normalizeImageQuality)
         .filter((tier: string, index: number, values: string[]) => values.indexOf(tier) === index),
+      supported_ratios: (Array.isArray(image.supported_ratios) ? image.supported_ratios : OTUAPI_IMAGE_RATIOS)
+        .map(String)
+        .filter((ratio: string, index: number, values: string[]) => values.indexOf(ratio) === index),
+      allow_auto_ratio: image.allow_auto_ratio === true,
       model_by_size: (image.model_by_size || {}) as Record<string, string>,
     };
   };
@@ -1009,6 +1031,14 @@ export default function ModelsPage() {
     state.category === "image" &&
     safeParseJson(state.runtime_rule, {})?.upstream?.adapter === "openai_images";
 
+  const otuapiImageInterface = (state: FormState = form) =>
+    imageInterfaceType(safeParseJson(state.runtime_rule, {}), state.new_api_endpoint, state.new_api_model);
+
+  const isOtuapiImageForm = (state: FormState = form) =>
+    ["otuapi_images", "otuapi_images_async"].includes(otuapiImageInterface(state));
+
+  const isOtuapiAsyncImageForm = (state: FormState = form) => otuapiImageInterface(state) === "otuapi_images_async";
+
   const imagePresetKey = (state: FormState = form) => {
     const key = imageInterfaceType(safeParseJson(state.runtime_rule, {}), state.new_api_endpoint, state.new_api_model);
     return IMAGE_ENDPOINT_PRESETS.some((preset) => preset.key === key) ? key : "custom";
@@ -1016,7 +1046,7 @@ export default function ModelsPage() {
 
   const setImageRule = (
     runtimeRuleText: string,
-    patch: { adapter?: string; max_reference_images?: number; default_quality?: string; supported_size_tiers?: readonly string[]; model_by_size?: Record<string, string>; poll_path?: string | null; poll_interval_sec?: number | null; poll_timeout_sec?: number | null }
+    patch: { adapter?: string; max_reference_images?: number; default_quality?: string; supported_size_tiers?: readonly string[]; supported_ratios?: readonly string[]; allow_auto_ratio?: boolean; model_by_size?: Record<string, string>; poll_path?: string | null; poll_interval_sec?: number | null; poll_timeout_sec?: number | null; edit_endpoint?: string | null }
   ) => {
     const rr = safeParseJson(runtimeRuleText, {});
     const image = (rr?.image ?? {}) as Record<string, any>;
@@ -1033,6 +1063,13 @@ export default function ModelsPage() {
     }
     if (patch.supported_size_tiers !== undefined) {
       nextImage.supported_size_tiers = patch.supported_size_tiers.map(normalizeImageQuality);
+      nextImage.supported_sizes = patch.supported_size_tiers.map(normalizeImageQuality);
+    }
+    if (patch.supported_ratios !== undefined) {
+      nextImage.supported_ratios = [...patch.supported_ratios];
+    }
+    if (patch.allow_auto_ratio !== undefined) {
+      nextImage.allow_auto_ratio = patch.allow_auto_ratio;
     }
     if (patch.model_by_size !== undefined) {
       nextImage.model_by_size = patch.model_by_size;
@@ -1045,6 +1082,8 @@ export default function ModelsPage() {
     else if (patch.poll_interval_sec !== undefined) nextUpstream.poll_interval_sec = patch.poll_interval_sec;
     if (patch.poll_timeout_sec === null) delete nextUpstream.poll_timeout_sec;
     else if (patch.poll_timeout_sec !== undefined) nextUpstream.poll_timeout_sec = patch.poll_timeout_sec;
+    if (patch.edit_endpoint === null) delete nextUpstream.edit_endpoint;
+    else if (patch.edit_endpoint !== undefined) nextUpstream.edit_endpoint = patch.edit_endpoint;
     return JSON.stringify(
       {
         ...rr,
@@ -1057,7 +1096,26 @@ export default function ModelsPage() {
     );
   };
 
-  const imageAspectSchema = (values: string[]) =>
+  const updateOtuapiImageModel = (prev: FormState, modelName: string): FormState => {
+    const isAsync = isOtuapiAsyncImageForm(prev);
+    const config = otuapiImageModelConfig(modelName, isAsync);
+    const inferred = inferImageQualityFromModel(config.model);
+    const defaultQuality = config.tiers.includes(inferred) ? inferred : config.tiers[0];
+    return {
+      ...prev,
+      new_api_model: config.model,
+      runtime_rule: setImageRule(prev.runtime_rule, {
+        default_quality: defaultQuality,
+        supported_size_tiers: config.tiers,
+        supported_ratios: OTUAPI_IMAGE_RATIOS,
+        allow_auto_ratio: isAsync,
+        model_by_size: config.modelBySize,
+      }),
+      default_params: JSON.stringify({ ...(safeParseJson(prev.default_params, {}) || {}), quality: defaultQuality }, null, 2),
+    };
+  };
+
+  const imageAspectSchema = (values: readonly string[], defaultRatio = "auto", extraProperties: Record<string, unknown> = {}) =>
     JSON.stringify(
       {
         type: "object",
@@ -1066,11 +1124,12 @@ export default function ModelsPage() {
             type: "string",
             title: "图片比例",
             enum: values,
-            default: "auto",
+            default: defaultRatio,
             "x-order": 1,
             "x-widget": "option_menu",
             "x-icon": "ratio",
           },
+          ...extraProperties,
         },
       },
       null,
@@ -1125,38 +1184,50 @@ export default function ModelsPage() {
     }
     const isBanana = preset.key === "banana_async";
     const isAsync = isBanana || preset.key === "otuapi_images_async";
-    const modelName = isBanana
+    const otuapiModels = isAsync ? OTUAPI_ASYNC_IMAGE_MODELS : OTUAPI_SYNC_IMAGE_MODELS;
+    const selectedModel = isBanana
       ? (BANANA_MODELS.includes(prev.new_api_model) ? prev.new_api_model : preset.model)
-      : isAsync ? (prev.new_api_model.startsWith("gpt-image-2") ? prev.new_api_model : preset.model)
-      : (prev.new_api_model && !prev.new_api_model.startsWith("nano_banana") ? prev.new_api_model : preset.model);
+      : (otuapiModels as readonly string[]).includes(prev.new_api_model) ? prev.new_api_model : preset.model;
+    const otuapiConfig = otuapiImageModelConfig(selectedModel, isAsync);
+    const modelName = isBanana ? selectedModel : otuapiConfig.model;
     const defaultQuality = inferImageQualityFromModel(modelName);
     const modelBySize: Record<string, string> = isBanana
       ? { "1K": "nano_banana_pro-1K", "2K": "nano_banana_pro-2K", "4K": "nano_banana_pro-4K" }
-      : modelName.toLowerCase().startsWith("gpt-image-2")
-        ? { "1K": "gpt-image-2", "2K": "gpt-image-2-2K", "4K": "gpt-image-2-4K" }
-        : { "1K": modelName };
+      : otuapiConfig.modelBySize;
+    const supportedTiers = isBanana ? [...IMAGE_QUALITY_TIERS] : otuapiConfig.tiers;
+    const ratios = isBanana ? ["1:1", "9:16", "16:9"] : [...OTUAPI_IMAGE_RATIOS];
+    const allowAutoRatio = isAsync;
+    const maxReferenceImages = isBanana ? 5 : 8;
     return {
       ...prev,
       category: "image",
       request_mode: "images",
       new_api_endpoint: preset.endpoint,
       new_api_model: modelName,
-      input_schema: imageAspectSchema(isBanana ? ["auto", "1:1", "9:16", "16:9"] : ["auto", "1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9"]),
+      input_schema: imageAspectSchema(
+        allowAutoRatio ? ["auto", ...ratios] : ratios,
+        allowAutoRatio ? "auto" : "1:1",
+        !isAsync ? { response_format: { type: "string", title: "返回格式", enum: ["url", "b64_json"], default: "url", "x-order": 2 } } : {}
+      ),
       default_params: JSON.stringify(
         {
-          aspect_ratio: "auto",
+          aspect_ratio: allowAutoRatio ? "auto" : "1:1",
           quality: defaultQuality,
-          max_reference_images: isBanana ? 5 : getImageRule(prev.runtime_rule).max_reference_images,
+          ...(!isAsync ? { response_format: "url" } : {}),
+          max_reference_images: maxReferenceImages,
         },
         null,
         2
       ),
       runtime_rule: setImageRule(clearModelCaps(prev.runtime_rule), {
         adapter: isBanana ? "otuapi_banana_image" : "otuapi_image",
-        max_reference_images: isBanana ? 5 : getImageRule(prev.runtime_rule).max_reference_images,
+        max_reference_images: maxReferenceImages,
         default_quality: defaultQuality,
-        supported_size_tiers: IMAGE_QUALITY_TIERS,
+        supported_size_tiers: supportedTiers,
+        supported_ratios: ratios,
+        allow_auto_ratio: allowAutoRatio,
         model_by_size: modelBySize,
+        edit_endpoint: !isAsync ? "/v1/images/edits" : null,
         poll_path: isAsync ? "/v1/videos/{id}" : null,
         poll_interval_sec: isAsync ? 5 : null,
         poll_timeout_sec: isAsync ? 3600 : null,
@@ -4158,7 +4229,7 @@ export default function ModelsPage() {
                 <input
                   className="w-full mt-1 px-3 py-2 rounded-lg border text-sm"
                   value={form.new_api_model}
-                  onChange={(e) => setForm({ ...form, new_api_model: e.target.value })}
+                  onChange={(e) => setForm((prev) => isOtuapiImageForm(prev) ? updateOtuapiImageModel(prev, e.target.value) : { ...prev, new_api_model: e.target.value })}
                 />
               )
             : null}
@@ -4353,6 +4424,16 @@ export default function ModelsPage() {
                     >
                       {BANANA_MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
                     </select>
+                  ) : isOtuapiImageForm() ? (
+                    <select
+                      className="w-full mt-1 px-3 py-2 rounded-lg border text-sm bg-white"
+                      value={form.new_api_model}
+                      onChange={(e) => setForm((prev) => updateOtuapiImageModel(prev, e.target.value))}
+                    >
+                      {(isOtuapiAsyncImageForm() ? OTUAPI_ASYNC_IMAGE_MODELS : OTUAPI_SYNC_IMAGE_MODELS).map((modelName) => (
+                        <option key={modelName} value={modelName}>{modelName}</option>
+                      ))}
+                    </select>
                   ) : (
                     <input
                       className="w-full mt-1 px-3 py-2 rounded-lg border text-sm bg-white"
@@ -4377,12 +4458,12 @@ export default function ModelsPage() {
                   <input
                     type="number"
                     min={0}
-                    max={isBananaImageForm() ? 5 : 20}
+                    max={isBananaImageForm() ? 5 : isOtuapiImageForm() ? 8 : 20}
                     className="w-full mt-1 px-3 py-2 rounded-lg border text-sm bg-white"
                     value={getImageRule(form.runtime_rule).max_reference_images}
                     onChange={(e) =>
                       setForm((prev) => {
-                        const maxLimit = isBananaImageForm(prev) ? 5 : 20;
+                        const maxLimit = isBananaImageForm(prev) ? 5 : isOtuapiImageForm(prev) ? 8 : 20;
                         const n = Math.max(0, Math.min(maxLimit, parseInt(e.target.value, 10) || 0));
                         return {
                           ...prev,
@@ -4394,7 +4475,7 @@ export default function ModelsPage() {
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-gray-500">{isAliyunQwenImageForm() ? "默认输出尺寸" : "默认质量"}</label>
+                  <label className="text-xs text-gray-500">{isAliyunQwenImageForm() ? "默认输出尺寸" : isOtuapiImageForm() ? "默认清晰度" : "默认质量"}</label>
                   <select
                     className="w-full mt-1 px-3 py-2 rounded-lg border text-sm bg-white"
                     value={isAliyunQwenImageForm() ? getImageRule(form.runtime_rule).default_size : getImageRule(form.runtime_rule).default_quality}
@@ -4413,7 +4494,7 @@ export default function ModelsPage() {
                       <option key={tier} value={tier}>{tier === "auto" ? "自动推荐（官方默认）" : tier}</option>
                     ))}
                   </select>
-                  <div className="text-[11px] text-gray-400 mt-1">{isAliyunQwenImageForm() ? "比例与分辨率合并为官方 size 参数；自动推荐时不向上游发送 size。" : isOpenAIImagesForm() ? "标准接口只允许 auto、low、medium、high；其他值会安全回退为 auto。" : "前台工作台图片质量工具栏会默认选中该值。"}</div>
+                  <div className="text-[11px] text-gray-400 mt-1">{isAliyunQwenImageForm() ? "比例与分辨率合并为官方 size 参数；自动推荐时不向上游发送 size。" : isOpenAIImagesForm() ? "标准接口只允许 auto、low、medium、high；其他值会安全回退为 auto。" : isOtuapiImageForm() ? "档位按所选上游模型自动限制；工作台只展示该模型支持的清晰度。" : "前台工作台图片质量工具栏会默认选中该值。"}</div>
                 </div>
                 {!isAliyunQwenImageForm() && !isOpenAIImagesForm() && (
                   <div className="col-span-2 overflow-x-auto rounded-xl border border-emerald-100 bg-white">
@@ -4436,6 +4517,7 @@ export default function ModelsPage() {
                                 <label className="flex items-center gap-2 font-semibold text-gray-800">
                                   <input
                                     type="checkbox"
+                                    disabled={isOtuapiImageForm()}
                                     checked={enabled}
                                     onChange={(event) => setForm((prev) => {
                                       const current = getImageRule(prev.runtime_rule);
@@ -4457,6 +4539,7 @@ export default function ModelsPage() {
                               <td className="px-3 py-2">
                                 <input
                                   className="w-full rounded-lg border px-2 py-1.5"
+                                  disabled={isOtuapiImageForm()}
                                   value={String(imageRule.model_by_size[tier] || "")}
                                   placeholder={tier === "1K" ? form.new_api_model || "上游默认模型" : `例如 ${form.new_api_model}-${tier}`}
                                   onChange={(event) => setForm((prev) => {
@@ -4496,7 +4579,7 @@ export default function ModelsPage() {
                       </tbody>
                     </table>
                     <div className="border-t border-emerald-100 px-3 py-2 text-[11px] text-gray-500">
-                      前台只展示一个平台模型；用户选择档位后，系统按上游模型 ID 路由，并按该行售价扣费。未填写的上游 ID 回退到主模型。
+                      {isOtuapiImageForm() ? "章鱼哥接口的清晰度与模型路由按文档自动配置；售价仍可逐档调整。" : "前台只展示一个平台模型；用户选择档位后，系统按上游模型 ID 路由，并按该行售价扣费。未填写的上游 ID 回退到主模型。"}
                     </div>
                   </div>
                 )}

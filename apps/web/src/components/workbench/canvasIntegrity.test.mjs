@@ -26,7 +26,7 @@ function visit(node) {
   ts.forEachChild(node, visit);
 }
 visit(source);
-const helpers = ["indexedCanvasEdges", "hasGraphCycle", "validCanvasDocument", "validateCompositorNode", "collectDownstreamIDs", "collectUpstreamNodes", "stableValue", "compactSignature", "contentSourceContext", "nodeRunSignature", "nodeHasResult", "nodeHasReconcilableTask", "nodeResultReusable", "nodeResultConsumable", "orderedGeneratorNodes", "collectURLs", "extractMedia", "runningProgress", "canvasTaskStatusHint", "truncateCanvasTitle", "automaticCanvasTitle", "storyNodeNeedsReset"];
+const helpers = ["indexedCanvasEdges", "hasGraphCycle", "validCanvasDocument", "validateCompositorNode", "collectDownstreamIDs", "collectUpstreamNodes", "stableValue", "compactSignature", "contentSourceContext", "nodeRunSignature", "nodeHasResult", "nodeHasReconcilableTask", "nodeResultReusable", "nodeResultConsumable", "taskVideoSamples", "orderedGeneratorNodes", "collectURLs", "extractMedia", "runningProgress", "canvasTaskStatusHint", "truncateCanvasTitle", "automaticCanvasTitle", "storyNodeNeedsReset"];
 const noop = () => {};
 const plain = value => JSON.parse(JSON.stringify(value));
 const node = (id, type = "generator", data = {}) => ({ id, type, position: { x: 0, y: 0 }, data: { mediaKind: "text", status: "succeeded", outputText: id, ...data } });
@@ -77,6 +77,30 @@ function deferred() {
   const promise = new Promise(done => { resolve = done; });
   return { promise, resolve };
 }
+
+test("video sampling falls back to authenticated task media when the source blocks browser reads", async () => {
+  const sampled = [];
+  const proxied = [];
+  const revoked = [];
+  const ctx = environment([], {
+    storyVideoSamples: async (url, ratios) => {
+      sampled.push([url, ratios]);
+      if (url === "https://cdn.example/video.mp4") throw new Error("CORS blocked");
+      return ["data:image/jpeg;base64,frame"];
+    },
+    apiBlob: async path => { proxied.push(path); return {}; },
+    URL: {
+      createObjectURL: () => "blob:task-media",
+      revokeObjectURL: url => revoked.push(url),
+    },
+  });
+
+  const samples = await ctx.taskVideoSamples("https://cdn.example/video.mp4", "task/a", [1]);
+  assert.deepEqual(Array.from(samples), ["data:image/jpeg;base64,frame"]);
+  assert.deepEqual(proxied, ["/api/tasks/task%2Fa/media"]);
+  assert.deepEqual(sampled, [["https://cdn.example/video.mp4", [1]], ["blob:task-media", [1]]]);
+  assert.deepEqual(revoked, ["blob:task-media"]);
+});
 
 test("import rejects malformed nodes, dangling links, duplicate IDs and cycles before replacing a canvas", async () => {
   const ctx = environment(["importCanvas"]);

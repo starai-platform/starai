@@ -65,7 +65,7 @@ import {
   parseAudioRuntime,
   parseVideoRuntime,
 } from "@starai/shared-types";
-import { api, apiBlob, apiForLocale, apiForLocaleCached, importAssetFromURL, listAssets, uploadAsset } from "@/lib/api";
+import { api, apiBlob, apiForLocale, apiForLocaleCached, importAssetFromURL, uploadAsset } from "@/lib/api";
 import { canvasImageReferenceLimit, canvasVisionImages, createCanvasReferenceSheet, referenceSheetPrompt } from "./canvasReferenceSheet";
 import { useI18n } from "@/i18n/I18nProvider";
 import { socialPublishHTML, socialPublishText, contentImageMarkersValid } from "./contentCreationResult";
@@ -142,6 +142,24 @@ function nodeResultConsumable(node: CanvasNode, nodes: CanvasNode[], edges: Canv
     || node.data.mediaKind !== "text"
       && nodeHasResult(node)
       && ["succeeded", "stale"].includes(String(node.data.status || ""));
+}
+
+async function taskVideoSamples(url: string, taskNo = "", ratios?: number[]) {
+  try {
+    return await storyVideoSamples(url, ratios);
+  } catch (directError) {
+    if (!taskNo) throw directError;
+    let localURL = "";
+    try {
+      const video = await apiBlob(`/api/tasks/${encodeURIComponent(taskNo)}/media`);
+      localURL = URL.createObjectURL(video);
+      return await storyVideoSamples(localURL, ratios);
+    } catch {
+      throw directError;
+    } finally {
+      if (localURL) URL.revokeObjectURL(localURL);
+    }
+  }
 }
 
 function readLocalCanvases(): CanvasDetail[] {
@@ -4553,7 +4571,7 @@ function CanvasEditor({
           if (!sourceURL || !nodeResultConsumable(previous, nodesRef.current, edgesRef.current)) throw new Error("连续镜头需先完成上一段视频。");
           let tailURL = previous.data.storyTailFrameSource === sourceURL ? previous.data.storyTailFrameURL : "";
           if (!tailURL) {
-            const [sample] = await storyVideoSamples(sourceURL, [1]);
+            const [sample] = await taskVideoSamples(sourceURL, String(previous.data.resultTaskNo || previous.data.taskNo || ""), [1]);
             const file = new File([await (await fetch(sample)).blob()], "continuity-tail.jpg", { type: "image/jpeg" });
             tailURL = (await uploadAsset(file, { name: "连续镜头尾帧", kind: "image", asset_type: "prop" })).url;
             update(previous.id, { storyTailFrameURL: tailURL, storyTailFrameSource: sourceURL });
@@ -4573,7 +4591,7 @@ function CanvasEditor({
           if (!previous || !sourceURL || !nodeResultConsumable(previous, nodesRef.current, edgesRef.current)) throw new Error("V2 当前片段必须等待上一片段完成，才能读取其实际尾帧。");
           let tailURL = previous.data.storyTailFrameSource === sourceURL ? String(previous.data.storyTailFrameURL || "") : "";
           if (!tailURL) {
-            const [sample] = await storyVideoSamples(sourceURL, [1]);
+            const [sample] = await taskVideoSamples(sourceURL, String(previous.data.resultTaskNo || previous.data.taskNo || ""), [1]);
             const file = new File([await (await fetch(sample)).blob()], `segment-${segmentIndex - 1}-tail.jpg`, { type: "image/jpeg" });
             tailURL = (await uploadAsset(file, { name: `片段 ${segmentIndex - 1} 实际尾帧`, kind: "image", asset_type: "prop" })).url;
             update(previous.id, { storyTailFrameURL: tailURL, storyTailFrameSource: sourceURL });
@@ -5108,7 +5126,7 @@ function CanvasEditor({
               executionWakeRef.current?.();
               await checkpointCanvasRef.current?.();
               try {
-                const candidates = mediaKind === "video" ? await storyVideoSamples(outputUrl) : [outputUrl];
+                const candidates = mediaKind === "video" ? await taskVideoSamples(outputUrl, resultTaskNo) : [outputUrl];
                 const reviewImages = await canvasVisionImages([...imageInputs.filter(url => !candidates.includes(url)), ...candidates]);
                 const planningModel = incoming.find(item => item.data.storyRole === "storyboard")?.data.modelCode;
                 const fallback = chatModels.find(model => model.code === planningModel && supportsMediaAnalysis(model, "image"));

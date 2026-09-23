@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Globe, Upload, ChevronDown, BookOpen, UserRound, Shield, X, Film, FileText, Image as ImageIcon, Lock, Zap, Trash2 } from "lucide-react";
+import { Globe, Upload, ChevronDown, BookOpen, UserRound, Shield, X, Film, FileText, Image as ImageIcon, Lock, Zap, Trash2, Sparkles, Users, Plus } from "lucide-react";
 import { api, createRole, deleteAsset, listAssets, listChannelPresets, listRoleTemplates, listRoles, uploadAsset, uploadFile } from "@/lib/api";
 import { useI18n } from "@/i18n/I18nProvider";
 import { AssetPagination } from "./AssetPagination";
+import { SystemAssetLibraryDialog, type SystemAssetPick } from "./SystemAssetLibraryDialog";
+import { filterReferenceCases, loadReferenceGalleryManifest, referenceImageURL, type ReferenceGalleryItem } from "./galleryReference";
 
 export type ReferenceImagePick = { url: string; name: string; public_id?: string };
 
@@ -36,6 +38,9 @@ type AssetKind = "image" | "video" | "audio" | "doc";
 type AssetType = "role" | "scene" | "prop";
 type AssetItem = { public_id: string; name?: string; mime_type?: string; url: string; kind?: string; asset_type?: string };
 type PromptRoleItem = { id: number; name: string; description?: string; system_prompt: string; icon_url?: string; is_user_created?: boolean };
+
+const ASSET_PAGE_SIZE = 18;
+const USE_SYSTEM_ASSET_LIBRARY = true;
 
 const DOC_ACCEPT = [
   "application/pdf",
@@ -441,6 +446,8 @@ export function ChatTopTools({
   maxReferenceImages = 4,
   assetLibraryLabel,
   referenceAssetsOnly = false,
+  showAssets = true,
+  uploadVariant = "button",
 }: {
   value: BottomBarState;
   onChange: (next: BottomBarState) => void;
@@ -452,6 +459,8 @@ export function ChatTopTools({
   maxReferenceImages?: number;
   assetLibraryLabel?: string;
   referenceAssetsOnly?: boolean;
+  showAssets?: boolean;
+  uploadVariant?: "button" | "card";
 }) {
   const { t, td } = useI18n();
   const kindText = useCallback((k?: string) => {
@@ -532,6 +541,14 @@ export function ChatTopTools({
   referenceImagesRef.current = referenceImages;
   const [galleryItems, setGalleryItems] = useState<GalleryPickItem[]>([]);
   const [galleryQuery, setGalleryQuery] = useState("");
+  const [galleryMode, setGalleryMode] = useState<"reference" | "community">("reference");
+  const [galleryPage, setGalleryPage] = useState(1);
+  const [galleryTotal, setGalleryTotal] = useState(0);
+  const [galleryLoading, setGalleryLoading] = useState(false);
+  const galleryRequest = useRef(0);
+  const [referenceItems, setReferenceItems] = useState<ReferenceGalleryItem[]>([]);
+  const [referencePage, setReferencePage] = useState(1);
+  const [referenceLoading, setReferenceLoading] = useState(false);
   const [deletingAssetId, setDeletingAssetId] = useState<string | null>(null);
 
   // Files (chat attachments) — up to 10
@@ -554,6 +571,9 @@ export function ChatTopTools({
     if (!assetOpen) return;
     if (referencePickMode) {
       setAssetTab("mine");
+      setGalleryMode("reference");
+      setGalleryPage(1);
+      setReferencePage(1);
       setGalleryQuery("");
       // Snapshot when opening. Parent renders (e.g. the agent carousel) must
       // not overwrite the user's unconfirmed selection inside this dialog.
@@ -561,7 +581,7 @@ export function ChatTopTools({
       setAssetKind("image");
       setAssetType("all");
     }
-  }, [assetOpen, referencePickMode]);
+  }, [assetOpen, referenceAssetsOnly, referencePickMode]);
 
   const loadAssets = useCallback(
     async (override?: { kind?: AssetKind | "all"; type?: AssetType | "all"; q?: string; page?: number }) => {
@@ -578,14 +598,14 @@ export function ChatTopTools({
         const r = await listAssets({
           q: nextQuery,
           page,
-          page_size: 20,
+          page_size: ASSET_PAGE_SIZE,
           kind: referencePickMode ? "image" : nextKind === "all" ? undefined : nextKind,
           type: nextType === "all" ? undefined : nextType,
         } as any);
         if (request !== assetRequest.current) return;
         const total = Number(r.total || 0);
         setAssetTotal(total);
-        const lastPage = Math.max(1, Math.ceil(total / 20));
+        const lastPage = Math.max(1, Math.ceil(total / ASSET_PAGE_SIZE));
         if (page > lastPage) { setAssetPage(lastPage); return; }
         for (const item of r.items || []) assetCache.current.set(item.public_id, item);
         setAssetItems(r.items || []);
@@ -602,18 +622,40 @@ export function ChatTopTools({
   );
 
   useEffect(() => {
-    if (!assetOpen || assetTab !== "mine") return;
+    if (!assetOpen || assetTab !== "mine" || USE_SYSTEM_ASSET_LIBRARY) return;
     loadAssets();
     const request = assetRequest.current;
     return () => { if (assetRequest.current === request) assetRequest.current = request + 1; };
   }, [assetOpen, assetTab, loadAssets]);
 
   useEffect(() => {
-    if (!assetOpen || !referencePickMode || assetTab !== "gallery") return;
-    api<{ items: GalleryPickItem[] }>("/api/gallery")
-      .then((r) => setGalleryItems(r.items || []))
-      .catch(() => setGalleryItems([]));
-  }, [assetOpen, referencePickMode, assetTab]);
+    if (!assetOpen || !referencePickMode || assetTab !== "gallery" || galleryMode !== "reference" || USE_SYSTEM_ASSET_LIBRARY) return;
+    let active = true;
+    setReferenceLoading(true);
+    loadReferenceGalleryManifest()
+      .then((manifest) => { if (active) setReferenceItems(manifest.cases || []); })
+      .catch(() => { if (active) setReferenceItems([]); })
+      .finally(() => { if (active) setReferenceLoading(false); });
+    return () => { active = false; };
+  }, [assetOpen, referencePickMode, assetTab, galleryMode]);
+
+  useEffect(() => {
+    if (!assetOpen || !referencePickMode || assetTab !== "gallery" || galleryMode !== "community" || USE_SYSTEM_ASSET_LIBRARY) return;
+    const request = ++galleryRequest.current;
+    setGalleryLoading(true);
+    api<{ items: GalleryPickItem[]; total?: number }>(`/api/gallery?page=${galleryPage}&page_size=${ASSET_PAGE_SIZE}`)
+      .then((r) => {
+        if (request !== galleryRequest.current) return;
+        setGalleryItems(r.items || []);
+        setGalleryTotal(Number(r.total || 0));
+      })
+      .catch(() => {
+        if (request !== galleryRequest.current) return;
+        setGalleryItems([]);
+        setGalleryTotal(0);
+      })
+      .finally(() => { if (request === galleryRequest.current) setGalleryLoading(false); });
+  }, [assetOpen, referencePickMode, assetTab, galleryMode, galleryPage]);
 
   useEffect(() => {
     if (!assetNotice) return;
@@ -711,6 +753,15 @@ export function ChatTopTools({
     if (!q) return imageItems;
     return imageItems.filter((item) => (item.title || "").toLowerCase().includes(q));
   }, [galleryItems, galleryQuery]);
+
+  const filteredReferenceItems = useMemo(
+    () => filterReferenceCases(referenceItems, { query: galleryQuery, category: "all", style: "all", scene: "all" }),
+    [galleryQuery, referenceItems]
+  );
+  const pagedReferenceItems = useMemo(
+    () => filteredReferenceItems.slice((referencePage - 1) * ASSET_PAGE_SIZE, referencePage * ASSET_PAGE_SIZE),
+    [filteredReferenceItems, referencePage]
+  );
 
   const imageAssetItems = useMemo(
     () => assetItems.filter((a) => (a.kind || "image").toLowerCase() === "image" && a.url),
@@ -811,15 +862,22 @@ export function ChatTopTools({
           <button
             onClick={() => fileRef.current?.click()}
             disabled={uploading || value.files.length >= 10}
-            className="relative h-9 max-sm:w-9 max-sm:px-0 max-sm:justify-center px-2 sm:px-3 rounded-xl bg-white border border-gray-100 text-gray-700 text-sm shadow-sm flex items-center gap-1.5 shrink-0 disabled:opacity-50"
+            className={uploadVariant === "card"
+              ? "relative flex h-14 min-w-20 shrink-0 flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-gray-200 bg-gray-50 px-2 text-gray-400 transition hover:border-primary/40 hover:bg-primary/5 disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300"
+              : "relative h-9 max-sm:w-9 max-sm:px-0 max-sm:justify-center px-2 sm:px-3 rounded-xl bg-white border border-gray-100 text-gray-700 text-sm shadow-sm flex items-center gap-1.5 shrink-0 disabled:opacity-50"}
             title={`${t("asset.uploadAttachment")} ${value.files.length}/10`}
           >
-            <Upload size={16} className="text-gray-500 shrink-0" />
-            <span className="hidden sm:inline whitespace-nowrap">{uploading ? t("common.uploading") : t("common.upload")}</span>
-            <span className="hidden sm:inline text-xs text-gray-400 whitespace-nowrap">{value.files.length}/10</span>
-            <span className="sm:hidden absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-gray-100 border border-gray-200 text-[10px] text-gray-600 flex items-center justify-center">
-              {value.files.length}
-            </span>
+            {uploadVariant === "card" ? <>
+              <Plus size={17} />
+              <span className="whitespace-nowrap text-[10px]">{uploading ? t("common.uploading") : t("common.upload")} {value.files.length}/10</span>
+            </> : <>
+              <Upload size={16} className="text-gray-500 shrink-0" />
+              <span className="hidden sm:inline whitespace-nowrap">{uploading ? t("common.uploading") : t("common.upload")}</span>
+              <span className="hidden sm:inline text-xs text-gray-400 whitespace-nowrap">{value.files.length}/10</span>
+              <span className="sm:hidden absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-gray-100 border border-gray-200 text-[10px] text-gray-600 flex items-center justify-center">
+                {value.files.length}
+              </span>
+            </>}
           </button>
           <input
             ref={fileRef}
@@ -852,8 +910,12 @@ export function ChatTopTools({
       )}
 
       {/* Asset library */}
-      <button
-        onClick={() => setAssetOpen(true)}
+      {showAssets && <button
+        onClick={() => {
+          setAssetTab("mine");
+          setGalleryMode("reference");
+          setAssetOpen(true);
+        }}
         className="relative h-9 max-sm:w-9 max-sm:px-0 max-sm:justify-center px-2 sm:px-3 rounded-xl bg-white border border-gray-100 text-gray-700 text-sm shadow-sm flex items-center gap-1.5 shrink-0 dark:bg-white/5 dark:border-white/10 dark:text-gray-200"
         title={assetLibraryLabel || t("asset.library")}
       >
@@ -871,7 +933,7 @@ export function ChatTopTools({
             {referencePickMode ? referenceImages.length : value.asset_ids.length}
           </span>
         )}
-      </button>
+      </button>}
 
       {/* Role */}
       {showRole && (
@@ -1159,8 +1221,24 @@ export function ChatTopTools({
         </div>
       )}
 
-      {/* Asset library modal */}
-      {assetOpen && (
+      <SystemAssetLibraryDialog
+        open={assetOpen}
+        kind={referencePickMode ? "image" : "all"}
+        title={referencePickMode ? assetLibraryLabel || t("asset.selectReferenceFromLibrary") : t("asset.selectFromLibrary")}
+        description={referencePickMode ? td("asset.referenceLibraryHint", "默认打开我的资产；需要案例时可进入灵感广场。") : td("asset.libraryHint", "选择当前账号可访问的素材")}
+        selected={(referencePickMode ? referenceImages : selectedAssets) as SystemAssetPick[]}
+        maxSelected={referencePickMode ? maxReferenceImages : 20}
+        allowInspiration={referencePickMode && !referenceAssetsOnly}
+        onClose={() => setAssetOpen(false)}
+        onConfirm={(items) => {
+          if (referencePickMode) onReferenceImagesChange?.(items.map((item) => ({ url: item.url, name: item.name, public_id: item.public_id })));
+          else set({ asset_ids: items.map((item) => item.public_id).filter((id): id is string => !!id) });
+          setAssetOpen(false);
+        }}
+      />
+
+      {/* Legacy markup retained temporarily for upload-management actions; the unified dialog is the visible picker. */}
+      {assetOpen && !USE_SYSTEM_ASSET_LIBRARY && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-2 sm:p-4" onClick={() => setAssetOpen(false)}>
           <div className={clsx("flex w-full max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl dark:border dark:border-white/10 dark:bg-gray-900", referencePickMode ? "h-[min(680px,calc(100dvh-1rem))] sm:max-w-[900px]" : "sm:max-w-[980px]")} onClick={(e) => e.stopPropagation()}>
             <div className="z-10 flex shrink-0 items-center justify-between border-b bg-white px-4 py-2 dark:border-white/10 dark:bg-gray-900 sm:px-5">
@@ -1211,16 +1289,29 @@ export function ChatTopTools({
                     </button>}
                   </div>
                   {!referenceAssetsOnly && <p className="hidden max-w-[46%] text-[11px] leading-4 text-gray-400 lg:block">
-                    {t("asset.freeGalleryOnly")}
+                    {td("asset.gallerySourceHint", "默认展示参考案例；社区作品仅可选择免费内容。")}
                   </p>}
                   </div>
+
+                  {assetTab === "gallery" && <div className="mt-2 grid shrink-0 grid-cols-2 gap-1 rounded-xl bg-gray-100 p-1 dark:bg-white/5">
+                    <button type="button" onClick={() => { setGalleryMode("reference"); setGalleryPage(1); setReferencePage(1); }} className={clsx("flex h-8 items-center justify-center gap-1.5 rounded-lg text-xs font-semibold transition", galleryMode === "reference" ? "bg-white text-gray-900 shadow-sm dark:bg-gray-950 dark:text-white" : "text-gray-500 dark:text-gray-400")}><Sparkles size={14}/>{t("gallery.referenceCases")}</button>
+                    <button type="button" onClick={() => { setGalleryMode("community"); setGalleryPage(1); setReferencePage(1); }} className={clsx("flex h-8 items-center justify-center gap-1.5 rounded-lg text-xs font-semibold transition", galleryMode === "community" ? "bg-white text-gray-900 shadow-sm dark:bg-gray-950 dark:text-white" : "text-gray-500 dark:text-gray-400")}><Users size={14}/>{t("gallery.communityWorks")}</button>
+                  </div>}
 
                   <div className="mt-2 flex shrink-0 items-center gap-2">
                     <input
                       className="h-9 min-w-0 flex-1 rounded-xl border px-3 text-sm dark:border-white/10 dark:bg-gray-900 dark:text-gray-100 dark:placeholder:text-gray-500"
                       placeholder={assetTab === "gallery" ? t("asset.searchGallery") : t("asset.searchAssets")}
                       value={assetTab === "gallery" ? galleryQuery : assetQuery}
-                      onChange={(e) => (assetTab === "gallery" ? setGalleryQuery(e.target.value) : setAssetQuery(e.target.value))}
+                      onChange={(e) => {
+                        if (assetTab === "gallery") {
+                          setGalleryQuery(e.target.value);
+                          setGalleryPage(1);
+                          setReferencePage(1);
+                        } else {
+                          setAssetQuery(e.target.value);
+                        }
+                      }}
                     />
                     {assetTab === "mine" && (
                       <button
@@ -1272,7 +1363,19 @@ export function ChatTopTools({
                           })}
                         </div>
                       )
-                    ) : filteredGalleryItems.length === 0 ? (
+                    ) : galleryMode === "reference" ? (
+                      referenceLoading ? <div className="p-6 text-center text-sm text-gray-400" role="status">{td("asset.pageLoading", "加载中…")}</div> : pagedReferenceItems.length === 0 ? (
+                        <div className="flex h-full flex-col items-center justify-center text-gray-400"><ImageIcon size={28} className="mb-3 text-gray-300"/><div className="text-lg font-semibold text-gray-500">{t("gallery.noMatches")}</div></div>
+                      ) : (
+                        <div className="grid h-full grid-cols-3 content-start gap-2 overflow-y-auto p-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
+                          {pagedReferenceItems.map((item) => {
+                            const url = referenceImageURL(item.image);
+                            const selected = pickedRefs.some((pick) => pick.url === url);
+                            return <ReferencePickCard key={item.id} coverUrl={url} title={item.title} tag={t("gallery.referenceCases")} paid={false} price={0} selected={selected} locked={false} onClick={() => toggleRefPick({ url, name: item.title })}/>;
+                          })}
+                        </div>
+                      )
+                    ) : galleryLoading ? <div className="p-6 text-center text-sm text-gray-400" role="status">{td("asset.pageLoading", "加载中…")}</div> : filteredGalleryItems.length === 0 ? (
                       <div className="h-full flex flex-col items-center justify-center text-gray-400">
                           <div className="w-16 h-16 rounded-2xl bg-white border border-gray-200 flex items-center justify-center mb-3 dark:bg-gray-900 dark:border-white/10">
                           <ImageIcon size={28} className="text-gray-300" />
@@ -1305,7 +1408,7 @@ export function ChatTopTools({
                     )}
                   </div>
 
-                  {assetTab === "mine" && <AssetPagination page={assetPage} total={assetTotal} loading={assetLoading} onChange={setAssetPage} />}
+                  {assetTab === "mine" ? <AssetPagination page={assetPage} total={assetTotal} loading={assetLoading} pageSize={ASSET_PAGE_SIZE} onChange={setAssetPage} /> : galleryMode === "reference" ? <AssetPagination page={referencePage} total={filteredReferenceItems.length} loading={referenceLoading} pageSize={ASSET_PAGE_SIZE} onChange={setReferencePage} /> : <AssetPagination page={galleryPage} total={galleryTotal} loading={galleryLoading} pageSize={ASSET_PAGE_SIZE} onChange={setGalleryPage} />}
                   {pickedRefs.length > 0 && (
                     <div className="mt-2 flex shrink-0 items-center gap-2 overflow-x-auto">
                       <div className="shrink-0 text-xs text-gray-500">{t("asset.selectedReferences")}</div>

@@ -162,6 +162,9 @@ func layoutDetailModule(img image.Image, section map[string]interface{}, typefac
 	if w < 64 || w > 4096 || b.Dy() < 1 || b.Dy() > 8192 {
 		return nil, fmt.Errorf("详情模块尺寸超出排版范围")
 	}
+	if layers, ok := section["text_layers"]; ok {
+		return layoutDetailTextLayers(img, layers, typeface)
+	}
 	kind := strings.ToLower(strings.TrimSpace(stringAny(section["type"])))
 	centered := kind == "hero" || kind == "closing"
 	placement := detailCopyPlacement(section)
@@ -210,16 +213,38 @@ func layoutDetailModule(img image.Image, section map[string]interface{}, typefac
 		}
 		bodyLines = append(bodyLines, lines...)
 	}
-	if len(titleLines) > 3 || len(bodyLines) > 6 {
+	free := boolAny(section["_free_creation"])
+	if !free && (len(titleLines) > 3 || len(bodyLines) > 6) {
 		return nil, fmt.Errorf("详情文案过长，请缩短标题和说明后重试")
 	}
 	titleHeight, bodyHeight := int(titleSize*1.4), int(bodySize*1.6)
 	contentHeight := padding*2 + len(titleLines)*titleHeight + len(bodyLines)*bodyHeight
+	if contentHeight > b.Dy()-2*margin {
+		return nil, fmt.Errorf("详情文案超出图片排版范围")
+	}
 	card := detailCopyCardRect(w, b.Dy(), contentHeight, placement)
+	if free {
+		contentWidth := 0
+		for _, line := range titleLines {
+			contentWidth = max(contentWidth, font.MeasureString(titleFace, line).Ceil())
+		}
+		for _, line := range bodyLines {
+			contentWidth = max(contentWidth, font.MeasureString(bodyFace, line).Ceil())
+		}
+		width := min(card.Dx(), contentWidth+2*padding)
+		if placement == "right" {
+			card.Min.X = card.Max.X - width
+		} else {
+			card.Max.X = card.Min.X + width
+		}
+	}
 	background, accent := detailPalette(stringAny(section["_style"]))
 	var band color.Color = color.NRGBA{R: background.R, G: background.G, B: background.B, A: 238}
 	titleColor, bodyColor := accent, detailContrastText(background)
-	if centered {
+	if free {
+		band = color.NRGBA{R: background.R, G: background.G, B: background.B, A: 190}
+		titleColor, bodyColor = detailContrastText(background), detailContrastText(background)
+	} else if centered {
 		band = color.NRGBA{R: accent.R, G: accent.G, B: accent.B, A: 238}
 		titleColor = detailContrastText(accent)
 		bodyColor = titleColor
@@ -227,7 +252,7 @@ func layoutDetailModule(img image.Image, section map[string]interface{}, typefac
 	canvas := image.NewRGBA(image.Rect(0, 0, w, b.Dy()))
 	draw.Draw(canvas, canvas.Bounds(), img, b.Min, draw.Src)
 	drawDetailRoundedRect(canvas, card, max(12, w/64), band)
-	if !centered {
+	if !centered && !free {
 		stripe := max(4, w/240)
 		drawDetailRoundedRect(canvas, image.Rect(card.Min.X, card.Min.Y, card.Min.X+stripe, card.Max.Y), stripe/2, accent)
 	}
@@ -256,7 +281,155 @@ func layoutDetailModule(img image.Image, section map[string]interface{}, typefac
 	return canvas, nil
 }
 
+// Free creation supplies an editable layout plan. No card, headline, or bullet
+// treatment is added unless the plan explicitly asks for it.
+func layoutDetailTextLayers(img image.Image, raw interface{}, typeface *opentype.Font) (image.Image, error) {
+	items, ok := raw.([]interface{})
+	if !ok {
+		if typed, yes := raw.([]map[string]interface{}); yes {
+			for _, item := range typed {
+				items = append(items, item)
+			}
+		} else {
+			return nil, fmt.Errorf("详情文字图层格式无效")
+		}
+	}
+	if len(items) > 24 {
+		return nil, fmt.Errorf("详情文字图层过多")
+	}
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	canvas := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.Draw(canvas, canvas.Bounds(), img, b.Min, draw.Src)
+	occupied := []image.Rectangle{}
+	for _, rawLayer := range items {
+		layer, ok := mapAny(rawLayer)
+		if !ok {
+			return nil, fmt.Errorf("详情文字图层格式无效")
+		}
+		value := strings.TrimSpace(stringAny(layer["text"]))
+		if value == "" {
+			continue
+		}
+		if len([]rune(value)) > 1000 {
+			return nil, fmt.Errorf("详情文字图层过长")
+		}
+		x := min(w-1, max(0, int(floatAny(layer["x"])*float64(w))))
+		y := min(h-1, max(0, int(floatAny(layer["y"])*float64(h))))
+		maxWidth := min(w-x, max(1, int(floatAny(layer["width"])*float64(w))))
+		if maxWidth < 4 {
+			return nil, fmt.Errorf("详情文字图层宽度不足")
+		}
+		size := math.Max(12, math.Min(float64(w)*0.18, floatAny(layer["font_size"])*float64(w)))
+		if floatAny(layer["font_size"]) <= 0 {
+			size = math.Max(18, float64(w)*0.045)
+		}
+		var face font.Face
+		var lines []string
+		var err error
+		for size >= 12 {
+			if face != nil {
+				_ = face.Close()
+			}
+			face, err = opentype.NewFace(typeface, &opentype.FaceOptions{Size: size, DPI: 72, Hinting: font.HintingFull})
+			if err != nil {
+				return nil, err
+			}
+			lines, err = detailTextLines(face, value, maxWidth)
+			if err != nil {
+				_ = face.Close()
+				return nil, err
+			}
+			if int(float64(len(lines))*size*1.3) <= h {
+				break
+			}
+			size *= 0.9
+		}
+		if size < 12 {
+			_ = face.Close()
+			return nil, fmt.Errorf("详情文字图层超出画面")
+		}
+		lineHeight := int(size * 1.3)
+		y = min(y, h-lineHeight*len(lines))
+		bg := strings.TrimSpace(stringAny(layer["background"]))
+		padding := 0
+		if detailHexColor.MatchString(bg) {
+			padding = max(8, int(float64(w)*0.012))
+		}
+		placedY, fits := chooseDetailLayerTop(x, y, maxWidth, lineHeight*len(lines), padding, w, h, occupied)
+		if !fits {
+			_ = face.Close()
+			return nil, fmt.Errorf("详情文字图层空间不足，请调整排版")
+		}
+		y = placedY
+		occupied = append(occupied, image.Rect(max(0, x-padding), max(0, y-padding), min(w, x+maxWidth+padding), min(h, y+lineHeight*len(lines)+padding)))
+		lineXs := make([]int, len(lines))
+		textLeft, textRight := w, 0
+		for i, line := range lines {
+			lineXs[i] = x
+			lineWidth := font.MeasureString(face, line).Ceil()
+			switch stringAny(layer["align"]) {
+			case "center":
+				lineXs[i] += (maxWidth - lineWidth) / 2
+			case "right":
+				lineXs[i] += maxWidth - lineWidth
+			}
+			textLeft = min(textLeft, lineXs[i])
+			textRight = max(textRight, lineXs[i]+lineWidth)
+		}
+		if detailHexColor.MatchString(bg) {
+			background := parseDetailColor(bg, color.RGBA{})
+			rect := image.Rect(max(0, textLeft-padding), max(0, y-padding), min(w, textRight+padding), min(h, y+lineHeight*len(lines)+padding))
+			drawDetailRoundedRect(canvas, rect, max(4, w/100), color.NRGBA{R: background.R, G: background.G, B: background.B, A: 94})
+		}
+		ink := parseDetailColor(stringAny(layer["color"]), color.RGBA{255, 255, 255, 255})
+		d := font.Drawer{Dst: canvas, Src: image.NewUniform(color.NRGBA{R: ink.R, G: ink.G, B: ink.B, A: 235}), Face: face}
+		for i, line := range lines {
+			d.Dot = fixed.P(lineXs[i], y+i*lineHeight+face.Metrics().Ascent.Ceil())
+			d.DrawString(line)
+			if stringAny(layer["weight"]) == "bold" {
+				d.Dot = fixed.P(lineXs[i]+max(1, w/1000), y+i*lineHeight+face.Metrics().Ascent.Ceil())
+				d.DrawString(line)
+			}
+		}
+		_ = face.Close()
+	}
+	return canvas, nil
+}
+
+func chooseDetailLayerTop(x, wantedY, width, height, padding, imageWidth, imageHeight int, occupied []image.Rectangle) (int, bool) {
+	maxTop := imageHeight - height
+	if maxTop < 0 {
+		return 0, false
+	}
+	bestY, bestDistance, found := 0, imageHeight+1, false
+	for top := 0; top <= maxTop; top++ {
+		rect := image.Rect(max(0, x-padding), max(0, top-padding), min(imageWidth, x+width+padding), min(imageHeight, top+height+padding)).Inset(-max(4, imageWidth/200))
+		clear := true
+		for _, other := range occupied {
+			if rect.Overlaps(other) {
+				clear = false
+				break
+			}
+		}
+		if !clear {
+			continue
+		}
+		distance := top - wantedY
+		if distance < 0 {
+			distance = -distance
+		}
+		if !found || distance < bestDistance {
+			bestY, bestDistance, found = top, distance, true
+		}
+	}
+	return bestY, found
+}
+
 func typesetDetailSection(ctx context.Context, publicID, sourceURL string, section map[string]interface{}, typeface *opentype.Font) (string, error) {
+	if layers, ok := section["text_layers"].([]interface{}); ok && len(layers) == 0 {
+		return sourceURL, nil
+	}
 	if objectStore == nil {
 		return "", fmt.Errorf("详情排版对象存储未初始化")
 	}

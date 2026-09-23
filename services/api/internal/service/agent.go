@@ -2250,9 +2250,21 @@ func pruneWorkflowOutputsForRetry(outputs map[string]interface{}, nodeID string)
 		}
 		outputs["current_step"] = "compose"
 	case "generate":
-		delete(outputs, "media_tasks")
+		outputs["media_tasks"] = successfulAgentMediaItems(outputs["media_tasks"])
 		outputs["current_step"] = "generate"
 	}
+}
+
+func successfulAgentMediaItems(raw interface{}) []interface{} {
+	items, _ := raw.([]interface{})
+	result := make([]interface{}, 0, len(items))
+	for _, value := range items {
+		item, ok := value.(map[string]interface{})
+		if ok && stringValue(item["status"]) == "succeeded" {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 func successfulComicStageItems(raw interface{}, outputKey string) []interface{} {

@@ -58,6 +58,7 @@ const VIDEO_REMAKE_CODE = "video_remake";
 const CONTENT_IMAGE_POST_CODE = "content_image_post";
 const VIDEO_CREATION_CODE = "video_creation";
 const VIDEO_CREATION_V2_CODE = "video_creation_v2";
+const ECOMMERCE_VIDEO_CODE = "ecommerce_video";
 const GENERAL_CREATIVE_AGENT_CODE = "general_creative_agent";
 const CANVAS_WORKFLOW_CODES = new Set([
   INFINITE_CANVAS_CODE,
@@ -67,6 +68,7 @@ const CANVAS_WORKFLOW_CODES = new Set([
   CONTENT_IMAGE_POST_CODE,
   VIDEO_CREATION_CODE,
   VIDEO_CREATION_V2_CODE,
+  ECOMMERCE_VIDEO_CODE,
 ]);
 
 const MOBILE_SUBPAGE_LINKS = [
@@ -1143,6 +1145,14 @@ export function AppShell({ children, selectedModelCode, selectedAgentCode, initi
                     authenticated={Boolean(user)}
                     workflowCode={VIDEO_CREATION_V2_CODE}
                     initialTemplateID="story-short-video-v2"
+                  />
+                ) : activeAgentCode === ECOMMERCE_VIDEO_CODE ? (
+                  <InfiniteCanvasWorkspace
+                    key={activeAgentCode}
+                    authenticated={Boolean(user)}
+                    workflowCode={ECOMMERCE_VIDEO_CODE}
+                    initialTemplateID="story-short-video-v2"
+                    compactCommerce
                   />
                 ) : activeAgentCode === GENERAL_CREATIVE_AGENT_CODE ? (
                   <CreativeAgentWorkspace key={activeAgentCode} />

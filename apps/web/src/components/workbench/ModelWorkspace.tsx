@@ -19,7 +19,6 @@ import {
   Menu,
   Plus,
   Settings2,
-  Upload,
   X,
 } from "lucide-react";
 import { api, apiCached, API_URL, hasUserSession, legacyAuthHeaders, uploadAsset } from "@/lib/api";
@@ -2337,7 +2336,7 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
               <div className="px-3 sm:px-4 py-2 border-b border-gray-50">
                 <div className="flex items-center gap-2 sm:gap-3">
                   <div className="flex-1 min-w-0 flex flex-wrap items-center gap-1.5 sm:gap-2">
-                    <ChatTopTools value={bottom} onChange={setBottom} />
+                    <ChatTopTools value={bottom} onChange={setBottom} showUpload={false} />
                     <SchemaForm schema={workbenchInputSchema} values={params} onChange={setParams} placement="top" />
                     {isMultiCollab && (
                       <div className="flex lg:hidden items-center gap-1 h-9 shrink-0">
@@ -2380,45 +2379,6 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                         costHint={estimatedCost != null ? `Est. ${estimatedCost.toFixed(2)}/run` : null}
                       />
                     </div>
-                    {maxRefImages > 0 ? (
-                      <div className="scroll-x-only flex flex-nowrap items-center gap-2 w-full h-16">
-                        {refImages.map((img, i) => (
-                          <div key={img.url} className="relative w-16 h-16 rounded-2xl overflow-hidden border-2 border-white shadow-lg bg-gray-100 shrink-0">
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img loading="lazy" decoding="async" src={img.url} alt={img.name} className="w-full h-full object-cover" />
-                            <button
-                              type="button"
-                              onClick={() => setRefImages((prev) => prev.filter((_, idx) => idx !== i))}
-                              className="absolute right-0.5 top-0.5 w-5 h-5 rounded-full bg-black/70 text-white flex items-center justify-center"
-                              title="Remove reference"
-                            >
-                              <X size={12} />
-                            </button>
-                          </div>
-                        ))}
-                        {refImages.length < maxRefImages && (
-                          <label className="relative w-20 h-16 rounded-2xl border border-dashed border-gray-200 bg-white shadow-sm flex flex-col items-center justify-center gap-1 cursor-pointer hover:border-primary/40 hover:bg-primary/5 transition shrink-0">
-                            <Plus size={18} className="text-gray-400" />
-                            <span className="text-[10px] text-gray-400 whitespace-nowrap">{t("common.reference")} {refImages.length}/{maxRefImages}</span>
-                            <input
-                              type="file"
-                              accept="image/png,image/jpeg,image/webp,image/gif"
-                              multiple
-                              className="hidden"
-                              disabled={uploading}
-                              onChange={(e) => {
-                                handleUpload(e.target.files);
-                                e.target.value = "";
-                              }}
-                            />
-                          </label>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="h-9 px-3 rounded-xl bg-gray-50 border border-gray-100 text-xs text-gray-400 flex items-center">
-                        {t("model.referenceUnsupported")}
-                      </div>
-                    )}
                   </div>
                 ) : isVideo ? (
                   <div className="flex flex-col gap-2.5">
@@ -2534,14 +2494,6 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                         costHint={estimatedCost != null ? `Est. ${estimatedCost.toFixed(2)}/run` : null}
                       />
                     </div>
-                    {!isEnhancedVideoMaterial && (
-                      <VideoUploadArea
-                        config={videoUploadConfig}
-                        media={videoMedia}
-                        onChange={setVideoMedia}
-                        mode={videoMaterialMode}
-                      />
-                    )}
                   </div>
                 ) : isAudio ? (
                   <div className="flex items-center gap-2 sm:gap-3">
@@ -2552,13 +2504,6 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                         onChange={setParams}
                         audioConfig={audioConfig}
                       />
-                      {audioConfig.show_upload && (
-                        <AudioUploadButton
-                          url={audioRef?.url}
-                          name={audioRef?.name}
-                          onChange={setAudioRef}
-                        />
-                      )}
                     </div>
                     <InputToolbarMeta
                       onPricing={() => setPricingOpen(true)}
@@ -2578,43 +2523,30 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                     {hasSchemaFields && (
                       <SchemaForm schema={workbenchInputSchema} values={params} onChange={setParams} placement="default" />
                     )}
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {refImages.map((img, i) => (
-                        <div key={img.url} className="relative w-12 h-12 rounded-lg overflow-hidden border border-gray-200">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img loading="lazy" decoding="async" src={img.url} alt={img.name} className="w-full h-full object-cover" />
-                          <button
-                            onClick={() => setRefImages((prev) => prev.filter((_, idx) => idx !== i))}
-                            className="absolute top-0 right-0 w-4 h-4 bg-black/60 text-white flex items-center justify-center rounded-bl"
-                          >
-                            <X size={10} />
-                          </button>
-                        </div>
-                      ))}
-                      {refImages.length < maxRefImages && (
-                        <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 text-gray-600 text-xs hover:bg-gray-100 transition cursor-pointer">
-                          <Upload size={14} />
-                          {uploading ? "Uploading..." : "Upload"}
-                          <span className="text-gray-400">{refImages.length}/{maxRefImages}</span>
-                          <input
-                            type="file"
-                            accept="image/png,image/jpeg,image/webp,image/gif"
-                            multiple
-                            className="hidden"
-                            disabled={uploading}
-                            onChange={(e) => {
-                              handleUpload(e.target.files);
-                              e.target.value = "";
-                            }}
-                          />
-                        </label>
-                      )}
-                    </div>
                   </>
                 )}
               </div>
             )}
-            {isSeedance2 && videoMaterialMode === "draft_task" ? (
+            {isChat ? (
+              <div className="flex flex-col">
+                <div className="px-3 pt-3 sm:px-4">
+                  <ChatTopTools value={bottom} onChange={setBottom} showAssets={false} showRole={false} uploadVariant="card" />
+                </div>
+                <textarea
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder={promptPlaceholder}
+                  rows={3}
+                  className="w-full resize-none bg-transparent px-4 py-3 text-sm placeholder:text-gray-400 focus:outline-none"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+                      e.preventDefault();
+                      submit();
+                    }
+                  }}
+                />
+              </div>
+            ) : isSeedance2 && videoMaterialMode === "draft_task" ? (
               <div className="px-3 py-3 sm:px-4">
                 <VideoUploadArea
                   config={videoUploadConfig}
@@ -2653,8 +2585,52 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                   }}
                 />
               </div>
+            ) : isVideo ? (
+              <div className="flex flex-col">
+                <div className="px-3 pt-3 sm:px-4">
+                  <VideoUploadArea config={videoUploadConfig} media={videoMedia} onChange={setVideoMedia} mode={videoMaterialMode} />
+                </div>
+                <textarea
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder={promptPlaceholder}
+                  rows={4}
+                  className="w-full resize-none bg-transparent px-4 py-3 text-sm placeholder:text-gray-400 focus:outline-none"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); submit(); }
+                  }}
+                />
+              </div>
+            ) : isImage ? (
+              <div className="flex flex-col">
+                <div className="scroll-x-only flex h-16 w-full flex-nowrap items-center gap-2 px-3 pt-2 sm:px-4">
+                  {refImages.map((img, i) => (
+                    <div key={img.url} className="relative h-14 w-14 shrink-0 overflow-hidden rounded-xl border border-gray-200 bg-gray-100">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img loading="lazy" decoding="async" src={img.url} alt={img.name} className="h-full w-full object-cover" />
+                      <button type="button" onClick={() => setRefImages((prev) => prev.filter((_, idx) => idx !== i))} className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/70 text-white" title={t("common.remove")}><X size={12} /></button>
+                    </div>
+                  ))}
+                  {maxRefImages > 0 && refImages.length < maxRefImages ? (
+                    <label className="flex h-14 min-w-20 shrink-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-gray-200 bg-gray-50 px-2 text-gray-400 transition hover:border-primary/40 hover:bg-primary/5 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-primary/10">
+                      <Plus size={17} /><span className="text-[10px] whitespace-nowrap">{t("common.reference")} {refImages.length}/{maxRefImages}</span>
+                      <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple className="hidden" disabled={uploading} onChange={(e) => { handleUpload(e.target.files); e.target.value = ""; }} />
+                    </label>
+                  ) : maxRefImages <= 0 ? <span className="text-xs text-gray-400">{t("model.referenceUnsupported")}</span> : null}
+                </div>
+                <textarea
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder={promptPlaceholder}
+                  rows={3}
+                  className="w-full resize-none bg-transparent px-4 py-3 text-sm placeholder:text-gray-400 focus:outline-none"
+                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); submit(); } }}
+                />
+              </div>
             ) : isAudio && audioConfig.input_layout === "dual" ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-gray-50">
+              <div className="flex flex-col">
+                {audioConfig.show_upload && <div className="px-3 pt-3 sm:px-4"><AudioUploadButton url={audioRef?.url} name={audioRef?.name} onChange={setAudioRef} /></div>}
+              <div className="grid grid-cols-1 divide-y divide-gray-50 md:grid-cols-2 md:divide-x md:divide-y-0">
                 <textarea
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
@@ -2684,20 +2660,34 @@ export function ModelWorkspace({ model, initialPrompt, onOpenModelPicker, onOpen
                   }}
                 />
               </div>
+              </div>
+            ) : isAudio ? (
+              <div className="flex flex-col">
+                {audioConfig.show_upload && <div className="px-3 pt-3 sm:px-4"><AudioUploadButton url={audioRef?.url} name={audioRef?.name} onChange={setAudioRef} /></div>}
+                <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder={promptPlaceholder} rows={4} className="w-full resize-none bg-transparent px-4 py-3 text-sm placeholder:text-gray-400 focus:outline-none" onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); submit(); } }} />
+              </div>
             ) : (
-              <textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder={promptPlaceholder}
-                rows={isVideo || isAudio ? 4 : 3}
-                className="w-full px-4 py-3 text-sm resize-none focus:outline-none bg-transparent placeholder:text-gray-400"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
-                    e.preventDefault();
-                    submit();
-                  }
-                }}
-              />
+              <div className="flex flex-col">
+                {maxRefImages > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 px-3 pt-3 sm:px-4">
+                    {refImages.map((img, i) => <div key={img.url} className="relative h-14 w-14 overflow-hidden rounded-xl border border-gray-200">{/* eslint-disable-next-line @next/next/no-img-element */}<img loading="lazy" decoding="async" src={img.url} alt={img.name} className="h-full w-full object-cover" /><button type="button" onClick={() => setRefImages((prev) => prev.filter((_, idx) => idx !== i))} className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/70 text-white"><X size={11} /></button></div>)}
+                    {refImages.length < maxRefImages && <label className="flex h-14 min-w-20 shrink-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-gray-200 bg-gray-50 px-2 text-gray-400 transition hover:border-primary/40 hover:bg-primary/5 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-primary/10"><Plus size={17}/><span className="whitespace-nowrap text-[10px]">{uploading ? t("common.uploading") : t("common.reference")} {refImages.length}/{maxRefImages}</span><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple className="hidden" disabled={uploading} onChange={(e) => { handleUpload(e.target.files); e.target.value = ""; }} /></label>}
+                  </div>
+                )}
+                <textarea
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder={promptPlaceholder}
+                  rows={3}
+                  className="w-full resize-none bg-transparent px-4 py-3 text-sm placeholder:text-gray-400 focus:outline-none"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+                      e.preventDefault();
+                      submit();
+                    }
+                  }}
+                />
+              </div>
             )}
             <div
               className={

@@ -5,10 +5,13 @@ import (
 	"unicode"
 )
 
-// Visual references establish appearance, not performance or fabric composition.
-// Keep uncertain sales claims only when every factual token is supported by user input.
+// Precise mode keeps uncertain sales claims only when supported by user input.
 func groundedDetailAnalysis(analysis, inputs map[string]interface{}) map[string]interface{} {
 	out := copyMap(analysis)
+	if commerceFreeCreation(inputs) {
+		// Free mode keeps the AI's editable concept copy, including invented specs and benefits.
+		return out
+	}
 	sections, ok := analysis["detail_sections"].([]interface{})
 	if !ok {
 		return out
@@ -21,7 +24,7 @@ func groundedDetailAnalysis(analysis, inputs map[string]interface{}) map[string]
 				return ""
 			}
 		}
-		for _, claim := range []string{"柔软", "舒适", "亲肤", "透气", "轻盈", "轻便", "无负担", "方便", "便捷", "实用", "环保", "安全", "无异味", "保暖", "弹性", "弹力", "不紧绷", "防风", "防水", "防雨", "防护", "保护", "活动自如", "一甩即干", "牢固", "耐用", "耐磨", "防滑", "抗菌", "防晒", "防皱", "不起球", "塑料", "纯棉", "羊毛", "羊绒", "新款", "销量", "认证", "售后", "首选", "必备", "春秋", "冬季", "技术", "科技", "专利", "专业"} {
+		for _, claim := range []string{"柔软", "舒适", "亲肤", "透气", "轻盈", "轻便", "无负担", "方便", "便捷", "实用", "环保", "安全", "无异味", "保暖", "弹性", "弹力", "不紧绷", "防风", "防水", "防雨", "防护", "保护", "活动自如", "一甩即干", "牢固", "耐用", "耐磨", "防滑", "抗菌", "防晒", "防皱", "不起球", "塑料", "纯棉", "羊毛", "羊绒", "新款", "销量", "认证", "售后", "首选", "必备", "春秋", "冬季", "技术", "科技", "专利", "专业", "高密度", "空气流通", "长时间", "保持干爽", "不闷脚", "吸湿", "速干", "缓震", "减震"} {
 			if strings.Contains(text, claim) && !strings.Contains(userFacts, claim) {
 				return ""
 			}

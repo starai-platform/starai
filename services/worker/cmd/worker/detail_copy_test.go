@@ -104,3 +104,29 @@ func TestDetailCopyDropsInventedTechnologyAndUsesSafeSectionLabel(t *testing.T) 
 		t.Fatalf("invented technology was retained or safe fallback was lost: %#v", section)
 	}
 }
+
+func TestFreeDetailCopyPreservesAIDraftWithoutAddingPlaceholder(t *testing.T) {
+	analysis := map[string]interface{}{"detail_sections": []interface{}{
+		map[string]interface{}{"type": "material", "title": "可见细节", "copy_title": "Hyperlite鞋底技术"},
+		map[string]interface{}{"type": "usage", "title": "一起奔向清晨", "copy_title": ""},
+	}}
+	clean := groundedDetailAnalysis(analysis, map[string]interface{}{"creative_mode": "free", "user_prompt": "运动鞋，舒爽透气"})
+	sections := clean["detail_sections"].([]interface{})
+	if got := stringAny(sections[0].(map[string]interface{})["copy_title"]); got != "Hyperlite鞋底技术" {
+		t.Fatalf("AI-created technology was removed: %q", got)
+	}
+	if got := stringAny(sections[1].(map[string]interface{})["copy_title"]); got != "" {
+		t.Fatalf("an unwanted placeholder was inserted: %q", got)
+	}
+}
+
+func TestFreeDetailCopyKeepsAIMaterialsTechnologyAndBenefits(t *testing.T) {
+	analysis := map[string]interface{}{"detail_sections": []interface{}{
+		map[string]interface{}{"type": "benefit", "title": "追风一刻", "copy_title": "一起奔向清晨", "copy_points": []interface{}{"高密度针织网孔，提升空气流通", "让风景跟上脚步", "长时间穿着，保持干爽"}},
+	}}
+	clean := groundedDetailAnalysis(analysis, map[string]interface{}{"creative_mode": "free", "user_prompt": "运动鞋，舒爽透气"})
+	section := clean["detail_sections"].([]interface{})[0].(map[string]interface{})
+	if section["copy_title"] != "一起奔向清晨" || !reflect.DeepEqual(stringSlice(section["copy_points"]), []string{"高密度针织网孔，提升空气流通", "让风景跟上脚步", "长时间穿着，保持干爽"}) {
+		t.Fatalf("AI's editable concept copy was filtered: %#v", section)
+	}
+}

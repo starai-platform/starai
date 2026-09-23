@@ -16,6 +16,7 @@ function loader(file, name, extra = {}) {
   const state = { items: [], page: 1, total: 0, loading: false };
   const context = {
     useCallback: fn => fn, authenticated: true, t: key => key,
+    ASSET_PAGE_SIZE: 18,
     assetKind: "all", assetType: "all", assetQuery: "", assetPage: 1, referencePickMode: false,
     assetTargetKind: "image", assetAppliedQuery: { current: "" },
     assetRequest: { current: 0 }, assetFilterKey: { current: "" }, assetCache: { current: new Map() },
@@ -35,25 +36,25 @@ test("library sends real page queries, resets filters, retains selected metadata
   await run();
   context.assetPage = 2;
   await run();
-  assert.deepEqual(requests.map(r => [r.page, r.page_size]), [[1, 20], [2, 20]]);
+  assert.deepEqual(requests.map(r => [r.page, r.page_size]), [[1, 18], [2, 18]]);
   assert.equal(context.assetCache.current.get("a1").name, "Page 1");
   context.assetQuery = "lesson";
   await run();
   assert.equal(requests.at(-1).page, 1);
   assert.equal(requests.at(-1).q, "lesson");
   context.assetPage = 3;
-  context.listAssets = async () => ({ items: [], total: 40 });
+  context.listAssets = async () => ({ items: [], total: 36 });
   await run();
   assert.equal(state.page, 2);
-  assert.equal(state.total, 40);
+  assert.equal(state.total, 36);
 });
 
-for (const [file, name] of [["./BottomBar.tsx", "loadAssets"], ["./InfiniteCanvasWorkspace.tsx", "loadAssetLibrary"]]) {
+for (const [file, name] of [["./BottomBar.tsx", "loadAssets"]]) {
   test(`${name} ignores stale responses and reports failures`, async () => {
     const pending = [];
     const { context, state, run } = loader(file, name, { listAssets: params => new Promise(resolve => pending.push({ params, resolve })) });
     const first = run();
-    const second = name === "loadAssets" ? run({ q: "new" }) : run("new", "image", 2);
+    const second = run({ q: "new" });
     pending[1].resolve({ items: [{ public_id: "new" }], total: 45 });
     await second;
     pending[0].resolve({ items: [{ public_id: "old" }], total: 1 });
@@ -61,11 +62,7 @@ for (const [file, name] of [["./BottomBar.tsx", "loadAssets"], ["./InfiniteCanva
     assert.equal(state.items[0].public_id, "new");
     assert.equal(state.total, 45);
     assert.equal(state.loading, false);
-    assert.equal(pending[1].params.page_size, 20);
-    if (name === "loadAssetLibrary") {
-      assert.equal(state.page, 2);
-      assert.equal(context.assetAppliedQuery.current, "new");
-    }
+    assert.equal(pending[1].params.page_size, 18);
     context.listAssets = async () => { throw new Error("network error"); };
     await run();
     assert.equal(state.items.length, 0);

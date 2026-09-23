@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowUp, BookMarked, Bot, FileText, HelpCircle, History, ListChecks, Plus, Ruler, Sparkles } from "lucide-react";
+import { ArrowUp, BookMarked, BookOpen, Bot, FileText, HelpCircle, History, ListChecks, Plus, Ruler, Sparkles } from "lucide-react";
 import { api, apiCached } from "@/lib/api";
 import { NovelPlayGuide } from "./NovelPlayGuide";
 import { DEFAULT_GENERATION_LANGUAGES, GenerationLanguageMenu } from "./GenerationLanguageMenu";
 import { MediaMenuOption, MediaOptionMenu } from "./MediaOptionMenu";
 import { useI18n } from "@/i18n/I18nProvider";
+import { SystemAssetLibraryDialog, type SystemAssetPick } from "./SystemAssetLibraryDialog";
 
 type HistoryItem = { public_id: string; title?: string; workflow_name?: string; status: string; created_at: string };
 type Props = { workflowCode: string; workflowName: string; workflowDescription: string; roles: any[]; defaultModelCode?: string; error?: string; onSubmit: (inputs: Record<string, any>) => void | Promise<void>; onLoadHistory?: (id: string) => void | Promise<void> };
@@ -17,7 +18,7 @@ const LENGTHS = [["short", "短篇 · 3万字内", "短篇·3万字内"], ["medi
 export function NovelWorkshopLanding({ workflowCode, workflowName, workflowDescription, roles, defaultModelCode, error, onSubmit, onLoadHistory }: Props) {
   const { t, ts } = useI18n();
   const [mode, setMode] = useState<"auto" | "step">("auto");
-  const [prompt, setPrompt] = useState("请帮我从头创作一部小说"); const [intent, setIntent] = useState("new"); const [genre, setGenre] = useState("玄幻"); const [length, setLength] = useState("short"); const [language, setLanguage] = useState("zh-CN"); const [guideOpen, setGuideOpen] = useState(false); const [submitting, setSubmitting] = useState(false); const [models, setModels] = useState<{ code: string; display_name?: string; category?: string }[]>([]); const [model, setModel] = useState(defaultModelCode || ""); const [fileName, setFileName] = useState(""); const [historyOpen, setHistoryOpen] = useState(false); const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]); const [historyError, setHistoryError] = useState("");
+  const [prompt, setPrompt] = useState("请帮我从头创作一部小说"); const [intent, setIntent] = useState("new"); const [genre, setGenre] = useState("玄幻"); const [length, setLength] = useState("short"); const [language, setLanguage] = useState("zh-CN"); const [guideOpen, setGuideOpen] = useState(false); const [assetOpen, setAssetOpen] = useState(false); const [assets, setAssets] = useState<SystemAssetPick[]>([]); const [submitting, setSubmitting] = useState(false); const [models, setModels] = useState<{ code: string; display_name?: string; category?: string }[]>([]); const [model, setModel] = useState(defaultModelCode || ""); const [fileName, setFileName] = useState(""); const [historyOpen, setHistoryOpen] = useState(false); const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]); const [historyError, setHistoryError] = useState("");
   useEffect(() => { apiCached<{ code: string; display_name?: string; category?: string }[]>("/api/models?category=chat").then((items) => { const list = (items || []).filter((item) => item.category !== "multi_collab" && item.code !== "multi_collab_chat" && !/多模型协作|multi.?collab/i.test(`${item.code} ${item.display_name || ""}`)); setModels(list); setModel((old) => list.some((item) => item.code === old) ? old : list[0]?.code || ""); }).catch(() => setModels([])); }, [defaultModelCode]);
   const chooseIntent = (id: string, text: string) => { setIntent((old) => old === id ? "" : id); setPrompt((old) => old === text ? "" : old && !old.startsWith(text) ? `${text}\n\n${old}` : text); };
   const attach = (file?: File) => { if (!file) return; setFileName(file.name); setPrompt((old) => `${old}${old ? "\n\n" : ""}[文档：${file.name}]`); };
@@ -32,10 +33,11 @@ export function NovelWorkshopLanding({ workflowCode, workflowName, workflowDescr
         style: "轻松幽默", language,
         ...(languageItem ? { language_label: languageItem.prompt_label || languageItem.name } : {}),
         _mode: mode, ...(model ? { model_code: model } : {}),
+        ...(assets.some((item) => item.public_id) ? { asset_ids: assets.map((item) => item.public_id).filter(Boolean) } : {}),
       });
     } finally { setSubmitting(false); }
   };
-  const reset = () => { setPrompt("请帮我从头创作一部小说"); setIntent("new"); setGenre("玄幻"); setLength("short"); setMode("auto"); setFileName(""); };
+  const reset = () => { setPrompt("请帮我从头创作一部小说"); setIntent("new"); setGenre("玄幻"); setLength("short"); setMode("auto"); setFileName(""); setAssets([]); };
   const toggleHistory = async () => { const next = !historyOpen; setHistoryOpen(next); if (!next) return; setHistoryError(""); try { const result = await api<{ items: HistoryItem[] }>(`/api/agent-projects?workflow_code=${encodeURIComponent(workflowCode)}&page=1&page_size=20`); setHistoryItems(result.items || []); } catch (e) { setHistoryItems([]); setHistoryError(e instanceof Error ? e.message : "历史记录加载失败"); } };
 
   const intentLabel = INTENTS.find((item) => item[0] === intent)?.[1] || "创作意图";
@@ -75,6 +77,7 @@ export function NovelWorkshopLanding({ workflowCode, workflowName, workflowDescr
           <div className="soft-input overflow-hidden">
             {/* 输入区上方工具参数栏：创作意图 / 题材类型 /（PC）智能托管切换 / 玩法说明 */}
             <div className="flex items-center gap-2 overflow-x-auto border-b border-gray-50 px-3 py-2 dark:border-white/10">
+              <button type="button" onClick={() => setAssetOpen(true)} className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-xl border px-2.5 text-xs transition ${assets.length ? "border-primary/35 bg-primary/10 text-primary" : "border-gray-200 bg-white text-gray-600 hover:border-primary/30 dark:border-white/10 dark:bg-white/5 dark:text-gray-300"}`}><BookOpen size={15} />{ts("资产库")}{assets.length ? ` (${assets.length})` : ""}</button>
               <MediaOptionMenu icon={<Sparkles size={15} />} activeLabel={ts(intentLabel)} title={t("创作意图")} subtitle={t("选择本次任务想要的创作方式，会自动带入对应的提示语")} compactOnMobile>
                 {(close) => (
                   <div className="space-y-2">
@@ -132,6 +135,16 @@ export function NovelWorkshopLanding({ workflowCode, workflowName, workflowDescr
         </div>
       </div>
       <NovelPlayGuide open={guideOpen} onClose={() => setGuideOpen(false)} />
+      <SystemAssetLibraryDialog
+        open={assetOpen}
+        kind="all"
+        title={ts("选择小说参考资产")}
+        description={ts("可选择角色、道具、场景、图片、视频、音频或文档，作为本次创作的参考资料")}
+        selected={assets}
+        maxSelected={12}
+        onClose={() => setAssetOpen(false)}
+        onConfirm={(items) => { setAssets(items); setAssetOpen(false); }}
+      />
     </div>
   );
 }

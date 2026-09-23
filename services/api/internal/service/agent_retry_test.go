@@ -82,6 +82,21 @@ func TestPruneWorkflowOutputsForRetry(t *testing.T) {
 	}
 }
 
+func TestGenerateRetryKeepsSuccessfulMediaOnly(t *testing.T) {
+	outputs := map[string]interface{}{
+		"media_tasks": []interface{}{
+			map[string]interface{}{"task_no": "ok", "batch_index": 0, "status": "succeeded"},
+			map[string]interface{}{"task_no": "bad", "batch_index": 1, "status": "failed"},
+		},
+		"current_step": "result",
+	}
+	pruneWorkflowOutputsForRetry(outputs, "generate")
+	items, _ := outputs["media_tasks"].([]interface{})
+	if len(items) != 1 || stringValue(items[0].(map[string]interface{})["task_no"]) != "ok" || outputs["current_step"] != "generate" {
+		t.Fatalf("generate retry did not preserve only successful slots: %#v", outputs)
+	}
+}
+
 func TestRefreshComicRetryModels(t *testing.T) {
 	runtimeCfg := map[string]interface{}{
 		"agent_mode":           "comic_drama",

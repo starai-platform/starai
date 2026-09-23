@@ -139,6 +139,48 @@ func TestGPTImage25TransportOptions(t *testing.T) {
 	}
 }
 
+func TestGPTImage25AutoRatioKeepsAutoAndResolution(t *testing.T) {
+	input := map[string]interface{}{
+		"aspect_ratio": "auto",
+		"image_size":   "4K",
+		"size":         nil,
+	}
+	rule := map[string]interface{}{"image": map[string]interface{}{"supported_size_tiers": []interface{}{"1K", "2K", "4K"}}}
+
+	resolveImageGenerationInput(input, rule, "/v1/videos", "gpt-image-2.5-flare")
+	payload := buildVideoImagePayload(context.Background(), rule, "/v1/videos", "gpt-image-2.5-flare", "", "prompt", input)
+
+	if input["aspect_ratio"] != "auto" || input["image_size"] != "4K" {
+		t.Fatalf("auto selection was rewritten: %#v", input)
+	}
+	if _, exists := input["size"]; exists {
+		t.Fatalf("auto selection must not resolve to a fixed size: %#v", input)
+	}
+	if payload["aspect_ratio"] != "auto" || payload["image_size"] != "4K" {
+		t.Fatalf("payload lost auto ratio or tier: %#v", payload)
+	}
+}
+
+func TestGPTImageAsyncKeepsEightReferences(t *testing.T) {
+	refs := []string{"1", "2", "3", "4", "5", "6", "7", "8", "9"}
+	payload := buildVideoImagePayload(context.Background(), nil, "/v1/videos", "gpt-image-2.5-sunburst", "", "prompt", map[string]interface{}{"reference_images": refs})
+	images, ok := payload["images"].([]string)
+	if !ok || len(images) != 8 {
+		t.Fatalf("images = %#v, want first 8 references", payload["images"])
+	}
+}
+
+func TestOtuapiSyncReferenceUsesEditsEndpoint(t *testing.T) {
+	rule := map[string]interface{}{"upstream": map[string]interface{}{"adapter": "otuapi_image", "edit_endpoint": "/v1/images/edits"}}
+	endpoint, err := resolveImageRequestEndpoint(rule, "/v1/images/generations", "gpt-image2", map[string]interface{}{"reference_images": []string{"https://example.com/ref.png"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint != "/v1/images/edits" {
+		t.Fatalf("endpoint = %s, want /v1/images/edits", endpoint)
+	}
+}
+
 func TestBuildVideoImagePayloadFallsBackToImageURL(t *testing.T) {
 	input := map[string]interface{}{
 		"image_url": "data:image/png;base64,cGhvbmU=",

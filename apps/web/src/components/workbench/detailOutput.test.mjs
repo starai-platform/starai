@@ -55,15 +55,17 @@ test("fresh agent images bypass the Next image proxy", () => {
   assert.match(card, /<Image unoptimized src=\{url\}/, "result image still depends on the delayed image optimizer");
 });
 
-test("detail results prioritize the artifact over workflow chrome", () => {
+test("detail results keep modules visible and compose only on request", () => {
   const source = readFileSync(new URL("./AgentWorkspace.tsx", import.meta.url), "utf8");
   const panel = source.slice(source.indexOf("function DetailPagePanel"), source.indexOf("function MediaTaskGrid"));
   const result = source.slice(source.indexOf('project && ('), source.indexOf('<div className="relative z-10 shrink-0 px-3 pb-2 pt-1'));
   assert.match(source, /成品已就绪，可继续核对或下载/);
   assert.doesNotMatch(result, /grid grid-cols-4 gap-2/, "the completed result should not be buried under four stage pills");
-  assert.match(panel, /AI 已完成商品详情页/);
+  assert.match(panel, /商品详情图已生成/);
   assert.match(panel, /查看模块规划与文案/);
-  assert.match(panel, /open=\{!longURL\}/, "module planning should collapse once the final artifact exists");
+  assert.match(panel, /一键合成长图/);
+  assert.match(panel, /composeDetailPage\(imageURLs\)/);
   assert.doesNotMatch(panel, /max-h-\[620px\] overflow-y-auto/, "the long image should scroll with the result page instead of inside a nested viewport");
-  assert.match(result, /!\(detailPage && textOf\(detailPage\.long_image_url\)\)/, "raw module cards should not duplicate a finished long image");
+  assert.match(result, /mediaTasks\.length > 0 && <MediaTaskGrid/, "individual generated images must remain visible");
+  assert.doesNotMatch(result, /!\(detailPage && textOf\(detailPage\.long_image_url\)\)/, "single module cards should remain visible even when a long image exists");
 });

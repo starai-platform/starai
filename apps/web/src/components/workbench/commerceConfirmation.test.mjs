@@ -21,7 +21,7 @@ test("commerce confirmation sends the current image controls; other workflows ke
     const calls = [];
     const ctx = {
       code, project: { public_id: "project" }, confirmPrompt: "坐姿俯拍", selectedCandidateId: "B",
-      count: 3, imageRatio: "9:16", imageSize: "2K", detailSectionCount: 6,
+      count: 3, imageRatio: "9:16", imageSize: "2K", detailSectionCount: 6, detailSectionCountLocked: true,
       setError: message => assert.equal(message, ""), setProject: () => {}, startPolling: () => {},
       buildImageGenerationParams: value => {
         assert.deepEqual(JSON.parse(JSON.stringify(value)), { count: 3, ratio: "9:16", imageSize: "2K" });
@@ -32,7 +32,7 @@ test("commerce confirmation sends the current image controls; other workflows ke
     await callback(confirm, ctx)();
     assert.equal(calls.length, 1);
     assert.equal(calls[0].payload.prompt, "坐姿俯拍");
-    if (code === "ecommerce_image") assert.deepEqual(calls[0].payload.params, { count: 3, n: 3, aspect_ratio: "9:16", image_size: "2K", size: "1440x2560", detail_section_count: 6 });
+    if (code === "ecommerce_image") assert.deepEqual(calls[0].payload.params, { count: 3, n: 3, aspect_ratio: "9:16", image_size: "2K", size: "1440x2560", detail_section_count: 6, detail_section_count_locked: true });
     else assert.equal(calls[0].payload.params, undefined);
   }
 });
@@ -41,18 +41,20 @@ test("opening history restores saved confirmation controls without resetting liv
   const values = {};
   const ctx = {
     code: "ecommerce_image",
-    project: { public_id: "history", inputs: { count: 4, aspect_ratio: "1:1", image_size: "1K" }, outputs: { confirmation_payload: { params: { count: 2, aspect_ratio: "9:16", image_size: "2K", detail_section_count: 6 } } } },
+    project: { public_id: "history", inputs: { count: 4, aspect_ratio: "1:1", image_size: "1K", creative_mode: "precise" }, outputs: { confirmation_payload: { params: { count: 2, aspect_ratio: "9:16", image_size: "2K", detail_section_count: 6 } } } },
     commerceParamsProjectRef: { current: "" },
     setCount: value => { values.count = value; }, setImageRatio: value => { values.ratio = value; },
     setImageSize: value => { values.tier = value; }, setDetailSectionCount: value => { values.sections = value; },
+    setDetailSectionCountLocked: value => { values.sectionsLocked = value; },
+    setCreativeMode: value => { values.creativeMode = value; },
   };
   const run = callback(restore, ctx);
   run();
-  assert.deepEqual(values, { count: 2, ratio: "9:16", tier: "2K", sections: 6 });
+  assert.deepEqual(values, { count: 2, ratio: "9:16", tier: "2K", sections: 6, sectionsLocked: false, creativeMode: "precise" });
   values.ratio = "16:9";
   run();
   assert.equal(values.ratio, "16:9");
   ctx.project = { public_id: "other", inputs: { count: 3, aspect_ratio: "4:3", image_size: "4K" } };
   run();
-  assert.deepEqual(values, { count: 3, ratio: "4:3", tier: "4K", sections: 5 });
+  assert.deepEqual(values, { count: 3, ratio: "4:3", tier: "4K", sections: 5, sectionsLocked: false, creativeMode: "free" });
 });

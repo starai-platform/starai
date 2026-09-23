@@ -2,12 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, X, Loader2, CheckCircle2, AlertCircle, Square, ImagePlus, ArrowUp, SlidersHorizontal, FolderOpen, Check, ChevronDown, Eye, Download } from "lucide-react";
-import { importAssetFromURL, listAssets, uploadAsset } from "@/lib/api";
+import { importAssetFromURL, uploadAsset } from "@/lib/api";
 import type { Model } from "@starai/shared-types";
 import { PhotoStudioTopBar } from "./PhotoStudioLanding";
 import { ProductRegionEditor, type ProductRegion } from "./ProductRegionEditor";
 import { useI18n } from "@/i18n/I18nProvider";
 import { pollAsync } from "@/lib/pollAsync";
+import { SystemAssetLibraryDialog, type SystemAssetPick } from "./SystemAssetLibraryDialog";
 
 type Reference = { asset_id: string; url: string; role: "repair" | "product" | "pose" | "style"; edit_regions?: ProductRegion[] | null; protected_regions?: ProductRegion[] | null };
 type ProductPreset = "auto_showcase" | "local_repair" | "wear" | "hold_use" | "background" | "detail" | "custom";
@@ -16,7 +17,6 @@ type Attempt = { status: string; image_url?: string; mask_url?: string; issues?:
 type Result = { title: string; status: string; image_url?: string; attempts: Attempt[] };
 type Plan = { product_type?: string; interaction_mode?: string; summary?: string; keep?: string[]; change?: string[]; missing_information?: string[]; shots?: { title: string; prompt: string; source: number; edit_regions?: number[][]; protected_regions?: number[][]; checks: Check[] }[] };
 type Project = { public_id: string; status: string; inputs: Record<string, any>; outputs: Record<string, any>; estimated_cost: number; actual_cost: number; error_message?: string | null };
-type LibraryAsset = { public_id: string; url: string; name?: string };
 type ProcessRecord = { id: string; stage?: string; status: string; message: string; detail?: string; created_at?: string; updated_at?: string };
 type QualitySummary = { product_type?: string; interaction_mode?: string; product_preset?: string; generation_quality?: string; review_mode?: string; first_pass?: boolean; attempts?: number; repairs_used?: number; passed?: number; delivered?: number; strict_verifications?: number };
 const MAX_PRODUCT_REFERENCES = 2;
@@ -88,22 +88,6 @@ async function downloadProductImage(url: string, filename: string) {
   window.setTimeout(() => URL.revokeObjectURL(objectURL), 1000);
 }
 
-function ProductAssetLibrary({ items, selected, existing, loading, onToggle, onClose, onConfirm }: {
-  items: LibraryAsset[]; selected: string[]; existing: Set<string>; loading: boolean;
-  onToggle: (id: string) => void; onClose: () => void; onConfirm: () => void;
-}) {
-  const { t, ts } = useI18n();
-  return <div className="fixed inset-0 z-[85] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" onClick={onClose}>
-    <div role="dialog" aria-modal="true" aria-labelledby="product-asset-library-title" className="w-full max-w-4xl overflow-hidden rounded-3xl bg-white shadow-2xl dark:border dark:border-white/10 dark:bg-gray-900" onClick={event => event.stopPropagation()}>
-      <header className="flex items-center justify-between border-b border-gray-100 p-5 dark:border-white/10"><div><h2 id="product-asset-library-title" className="text-lg font-bold">{ts("从资产库选择图片")}</h2><p className="mt-1 text-xs text-gray-400">{ts("最多选择 2 张：商品图 + 可选的姿态或风格参考图")}</p></div><button type="button" aria-label={t("关闭资产库")} onClick={onClose} className="rounded-xl bg-gray-100 p-2 text-gray-500 dark:bg-white/10 dark:text-gray-300"><X size={18} /></button></header>
-      <div className="max-h-[62vh] min-h-[320px] overflow-y-auto p-5">
-        {loading ? <div className="flex h-72 items-center justify-center text-cyan-500"><Loader2 className="animate-spin" /></div> : items.length === 0 ? <div className="flex h-72 flex-col items-center justify-center gap-3 text-gray-400"><ImagePlus size={36} /><span>{ts("资产库暂无图片")}</span></div> : <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">{items.map(asset => { const added = existing.has(asset.public_id); const active = selected.includes(asset.public_id); return <button key={asset.public_id} type="button" disabled={added} onClick={() => onToggle(asset.public_id)} className={`overflow-hidden rounded-2xl border text-left transition disabled:cursor-default ${added ? "border-gray-200 opacity-55 dark:border-white/10" : active ? "border-cyan-400 ring-2 ring-cyan-300/40" : "border-gray-100 hover:border-cyan-200 dark:border-white/10"}`}><div className="relative aspect-square bg-gray-100 dark:bg-white/5"><img loading="lazy" decoding="async" src={asset.url} alt={asset.name || "资产图片"} className="h-full w-full object-cover" />{active ? <span className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-cyan-500 text-white"><Check size={14} /></span> : null}{added ? <span className="absolute inset-x-2 bottom-2 rounded-full bg-black/65 px-2 py-1 text-center text-[10px] text-white">{ts("已添加")}</span> : null}</div><div className="truncate px-3 py-2 text-xs font-medium text-gray-700 dark:text-gray-200">{asset.name || asset.public_id}</div></button>; })}</div>}
-      </div>
-      <footer className="flex items-center justify-between border-t border-gray-100 p-5 dark:border-white/10"><span className="text-sm text-gray-400">{ts("已选择")} {selected.length}  {ts("张")}</span><div className="flex gap-2"><button type="button" onClick={onClose} className="rounded-xl border border-gray-200 px-5 py-2 text-sm text-gray-600 dark:border-white/10 dark:text-gray-300">{ts("取消")}</button><button type="button" disabled={selected.length === 0} onClick={onConfirm} className="rounded-xl bg-primary px-5 py-2 text-sm font-semibold text-dark disabled:opacity-40">{ts("导入所选图片")}</button></div></footer>
-    </div>
-  </div>;
-}
-
 function ProcessIcon({ status }: { status: string }) {
   if (["passed", "succeeded"].includes(status)) return <CheckCircle2 size={17} className="text-emerald-500" />;
   if (["failed", "uncertain"].includes(status)) return <AlertCircle size={17} className="text-amber-500" />;
@@ -142,9 +126,6 @@ export function ProductRefineWorkspace({ workflowCode, workflowName, project, pr
   const [showRegions, setShowRegions] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
-  const [libraryLoading, setLibraryLoading] = useState(false);
-  const [libraryItems, setLibraryItems] = useState<LibraryAsset[]>([]);
-  const [librarySelected, setLibrarySelected] = useState<string[]>([]);
   const [localError, setLocalError] = useState("");
   const [selected, setSelected] = useState(0);
   const [version, setVersion] = useState(-1);
@@ -278,27 +259,16 @@ export function ProductRefineWorkspace({ workflowCode, workflowName, project, pr
     finally { setUploading(false); }
   }
 
-  async function openLibrary() {
+  function openLibrary() {
     if (busy || refs.length >= MAX_PRODUCT_REFERENCES) return;
-    setLocalError(""); setLibrarySelected([]); setLibraryOpen(true); setLibraryLoading(true);
-    try {
-      const result = await listAssets({ kind: "image", page: 1, page_size: 100 });
-      setLibraryItems((result.items || []).filter((item): item is LibraryAsset => !!item?.public_id && !!item?.url));
-    } catch (e) {
-      setLibraryItems([]); setLocalError(e instanceof Error ? e.message : "资产库加载失败");
-    } finally { setLibraryLoading(false); }
+    setLocalError(""); setLibraryOpen(true);
   }
 
-  function toggleLibraryAsset(id: string) {
-    setLibrarySelected(current => current.includes(id) ? current.filter(item => item !== id) : current.length < MAX_PRODUCT_REFERENCES - refs.length ? [...current, id] : current);
-  }
-
-  function importLibraryAssets() {
-	const chosen = new Set(librarySelected);
+  function importLibraryAssets(items: SystemAssetPick[]) {
 	setRefs(current => {
 	  let hasProduct = current.some(ref => ref.role === "product");
 	  let hasRepair = current.some(ref => ref.role === "repair");
-	  const additions = libraryItems.filter(item => chosen.has(item.public_id) && !current.some(ref => ref.asset_id === item.public_id)).map(item => {
+	  const additions = items.filter((item): item is SystemAssetPick & { public_id: string } => !!item.public_id && !current.some(ref => ref.asset_id === item.public_id)).map(item => {
 		const role: Reference["role"] = localRepair ? hasRepair ? "product" : "repair" : hasProduct ? "pose" : "product";
 		if (role === "repair") hasRepair = true;
 		if (role === "product") hasProduct = true;
@@ -306,7 +276,7 @@ export function ProductRefineWorkspace({ workflowCode, workflowName, project, pr
 	  });
 	  return [...current, ...additions].slice(0, MAX_PRODUCT_REFERENCES);
 	});
-	setLibraryOpen(false); setLibrarySelected([]);
+	setLibraryOpen(false);
   }
 
   function selectProductPreset(nextPreset: ProductPreset) {
@@ -388,7 +358,7 @@ export function ProductRefineWorkspace({ workflowCode, workflowName, project, pr
             <div className="mt-2 grid grid-cols-2 gap-2"><label className={`flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 p-3 text-xs ${busy || refs.length >= MAX_PRODUCT_REFERENCES ? "pointer-events-none opacity-50" : "hover:border-orange-400"}`}>
               {uploading ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}{ts("本地上传")}
               <input type="file" multiple accept="image/jpeg,image/png,image/webp" disabled={busy || refs.length >= MAX_PRODUCT_REFERENCES} className="sr-only" onChange={e => { void upload(e.target.files); e.target.value = ""; }} />
-            </label><button type="button" disabled={busy || refs.length >= MAX_PRODUCT_REFERENCES || libraryLoading} onClick={() => void openLibrary()} className="flex items-center justify-center gap-2 rounded-lg border border-gray-200 p-3 text-xs hover:border-cyan-400 disabled:opacity-50 dark:border-white/10"><FolderOpen size={16} />{ts("资产库导入")}</button></div><p className="mt-2 text-[11px] leading-5 text-gray-500 dark:text-gray-400">{ts("最多2张 ·")} {localRepair ? t("第一张默认为待修图片，第二张可补充商品结构参考。") : t("第1张是商品图；第2张可选，用于人物姿态或背景风格，不会替代商品本身。")}{ts("本地图片每张不超过10MB。")}</p>
+            </label><button type="button" disabled={busy || refs.length >= MAX_PRODUCT_REFERENCES} onClick={openLibrary} className="flex items-center justify-center gap-2 rounded-lg border border-gray-200 p-3 text-xs hover:border-cyan-400 disabled:opacity-50 dark:border-white/10"><FolderOpen size={16} />{ts("资产库导入")}</button></div><p className="mt-2 text-[11px] leading-5 text-gray-500 dark:text-gray-400">{ts("最多2张 ·")} {localRepair ? t("第一张默认为待修图片，第二张可补充商品结构参考。") : t("第1张是商品图；第2张可选，用于人物姿态或背景风格，不会替代商品本身。")}{ts("本地图片每张不超过10MB。")}</p>
           </section>
           <section><div className="flex items-end justify-between gap-3"><div><h3 className="text-sm font-semibold">{ts("展示方式")}</h3><p className="mt-1 text-[11px] leading-5 text-gray-500 dark:text-gray-400">{ts("系统会识别商品品类并自动补齐结构、交互和验收规则")}</p></div></div><div className="mt-2 grid grid-cols-2 gap-2">{productPresets.map(item => <button key={item.code} type="button" aria-pressed={productPreset === item.code} onClick={() => selectProductPreset(item.code)} className={`rounded-xl border px-3 py-2.5 text-left transition ${productPreset === item.code ? "border-cyan-400 bg-cyan-50 text-cyan-900 ring-1 ring-cyan-200 dark:bg-cyan-400/10 dark:text-cyan-100" : "border-gray-200 bg-white/70 text-gray-600 hover:border-cyan-200 dark:border-white/10 dark:bg-white/5 dark:text-gray-300"}`}><span className="block text-xs font-semibold">{ts(item.label)}</span><span className="mt-1 block text-[10px] leading-4 opacity-70">{ts(item.description)}</span></button>)}</div></section>
           <label className="block text-sm font-semibold">{localRepair ? t("修复要求") : t("补充你的要求")} <span className="font-normal text-gray-400">{ts("（可选）")}</span><textarea value={prompt} onChange={e => setPrompt(e.target.value)} rows={3} maxLength={4000} className={`${field} mt-2 resize-y font-normal leading-6`} placeholder={localRepair ? t("例如：移除红圈；修复提手与衣服之间的穿透和粘连；保留提手纹理、衣服车线、人物手指及原有光影。") : t("只写你特别在意的内容，例如：保持鞋子后视角，增加穿鞋小腿，穿黑色长裤。未说明的细节由商品规则自动补全。")} /><span className="mt-1 block text-[11px] leading-5 text-gray-500 dark:text-gray-400">{localRepair ? t("写清勾选区要修复的问题、期待结果和必须保留的细节。") : t("你的明确要求优先于预设；预设只补充没有说明的部分。")}</span></label>
@@ -435,7 +405,7 @@ export function ProductRefineWorkspace({ workflowCode, workflowName, project, pr
         </div>
       </main>
     </div>
-    {libraryOpen && <ProductAssetLibrary items={libraryItems} selected={librarySelected} existing={new Set(refs.map(ref => ref.asset_id))} loading={libraryLoading} onToggle={toggleLibraryAsset} onClose={() => { setLibraryOpen(false); setLibrarySelected([]); }} onConfirm={importLibraryAssets} />}
+    <SystemAssetLibraryDialog open={libraryOpen} kind="image" title={ts("从资产库选择图片")} description={ts("最多选择 2 张：商品图 + 可选的姿态或风格参考图")} disabledIds={refs.map(ref => ref.asset_id)} maxSelected={Math.max(1, MAX_PRODUCT_REFERENCES - refs.length)} onClose={() => setLibraryOpen(false)} onConfirm={importLibraryAssets} />
     {previewURL && <div role="dialog" aria-modal="true" aria-label={t("查看商品精修原图")} className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-3 backdrop-blur-sm sm:p-6" onClick={() => setPreviewURL("")}><div className="relative flex max-h-[92vh] max-w-[94vw] items-center justify-center overflow-hidden rounded-2xl bg-black shadow-2xl" onClick={event => event.stopPropagation()}><div className="absolute right-3 top-3 z-10 flex gap-2"><button type="button" title={t("下载原图")} aria-label={t("下载原图")} disabled={downloading} onClick={() => void downloadCurrentImage(previewURL)} className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/20 bg-black/70 text-white hover:bg-black/90 disabled:opacity-50">{downloading ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}</button><button type="button" title={t("关闭")} aria-label={t("关闭")} onClick={() => setPreviewURL("")} className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/20 bg-black/70 text-white hover:bg-black/90"><X size={16} /></button></div><img loading="lazy" decoding="async" src={previewURL} alt={t("商品精修原图预览")} className="h-auto max-h-[92vh] w-auto max-w-[94vw] object-contain" /></div></div>}
   </div>;
 }

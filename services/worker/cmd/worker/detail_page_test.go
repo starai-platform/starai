@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -63,6 +64,46 @@ func TestDetailSectionPromptDoesNotReserveBlankCopyCard(t *testing.T) {
 	}
 }
 
+func TestFreeDetailPlanKeepsCreativeLayoutAndSkipsTemplatePadding(t *testing.T) {
+	analysisPrompt := buildAgentAnalysisSystemPrompt("image", "ecommerce_image", 3, "detail_image", true)
+	if strings.Contains(analysisPrompt, "%!") {
+		t.Fatal("free detail prompt contains a formatting error")
+	}
+	if !strings.Contains(analysisPrompt, "文案不是从用户提示词逐句改写") || !strings.Contains(analysisPrompt, "主动提出更具体的材质、技术、使用体验和功效卖点") || !strings.Contains(analysisPrompt, "不因用户没有提供依据就删除或留空") {
+		t.Fatal("free detail planning must ask the AI to create original copy beyond sparse user input")
+	}
+	if strings.Contains(analysisPrompt, "不可把未提供的材质结构") || strings.Contains(analysisPrompt, "须有用户原话支持") {
+		t.Fatal("free detail planning still blocks editable AI-created product concepts")
+	}
+	if !strings.Contains(analysisPrompt, "先确定整页唯一的design_system") || !strings.Contains(analysisPrompt, "不允许第2张起另换色板或艺术风格") || strings.Contains(analysisPrompt, "成图标题尽量12字内") {
+		t.Fatal("free detail planning must share one visual direction without copy limits")
+	}
+	inputs := map[string]interface{}{"creative_scene": "detail_image", "creative_mode": "free", "detail_section_count": 5}
+	sections := []interface{}{}
+	for i := 0; i < 4; i++ {
+		sections = append(sections, map[string]interface{}{"id": fmt.Sprintf("detail_%02d", i+1), "type": "feature", "layout": "不对称杂志跨页构图", "image_prompt": "以逆光展示商品"})
+	}
+	analysis := map[string]interface{}{"detail_sections": sections, "candidates": []interface{}{map[string]interface{}{"prompt": "逆光运动视觉"}}}
+	if err := validateCommerceAnalysis(analysis, inputs); err != nil {
+		t.Fatal(err)
+	}
+	planned := agentDetailSections(analysis, inputs, "")
+	if len(planned) != 4 || planned[0]["layout"] != "不对称杂志跨页构图" {
+		t.Fatalf("free plan was forced into the five-section template: %#v", planned)
+	}
+	prompt := detailSectionGenerationPrompt("", planned[0], 0, len(planned), inputs)
+	if !strings.Contains(prompt, "不对称杂志跨页构图") || strings.Contains(prompt, "25%–35%") || strings.Contains(prompt, "6%–8%") || !strings.Contains(prompt, "不要按草稿文字坐标预留固定卡片") {
+		t.Fatalf("free image prompt still contains fixed visual constraints: %s", prompt)
+	}
+	if !strings.Contains(prompt, "所有模块必须沿用上面的同一主题、主辅色与视觉母题") {
+		t.Fatal("free modules may drift to unrelated themes and colors")
+	}
+	inputs["detail_section_count_locked"] = true
+	if validateCommerceAnalysis(analysis, inputs) == nil {
+		t.Fatal("manual module count must remain exact")
+	}
+}
+
 func TestReusableDetailSectionRequiresExactSignature(t *testing.T) {
 	taskInput := map[string]interface{}{"prompt": "模块提示", "reference_images": []string{"https://example.com/product.jpg"}}
 	signature := detailSectionSignature("image-model", taskInput)
@@ -97,7 +138,7 @@ func TestAgentContentImageCardsKeepsPlanAndFillsRequestedCount(t *testing.T) {
 }
 
 func TestContentImageAnalysisPromptRequiresPublishableStructure(t *testing.T) {
-	prompt := buildAgentAnalysisSystemPrompt("image", "content_image_post", 1, "content_image_post")
+	prompt := buildAgentAnalysisSystemPrompt("image", "content_image_post", 1, "content_image_post", false)
 	for _, expected := range []string{"content_task", "objective", "deliverables", "content_post", "title", "body", "hashtags", "cards 数量必须严格等于", "不得把标题、正文、标签直接画进图片"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("content image prompt missing %q: %s", expected, prompt)
@@ -180,7 +221,7 @@ func TestDetailFallbackHasUniqueEvidenceBasedModules(t *testing.T) {
 }
 
 func TestCommerceAnalysisRequiresGroundedClaimsAndDetailCopy(t *testing.T) {
-	prompt := buildAgentAnalysisSystemPrompt("image", "ecommerce_image", 3, "detail_image")
+	prompt := buildAgentAnalysisSystemPrompt("image", "ecommerce_image", 3, "detail_image", false)
 	for _, want := range []string{"missing_information", "不能改变商品事实", "detail_section_count", "design_system", "page_flow", "copy_placement", "空白信息卡片", "无字功能图标", "连续长页", "2–3个局部近景", "不制作空参数表", "无依据时留空"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("missing %s", want)
@@ -215,7 +256,7 @@ func TestCommerceReferencesPreserveAllViews(t *testing.T) {
 }
 
 func TestCommerceVideoPromptIsExecutableAndGrounded(t *testing.T) {
-	prompt := buildAgentAnalysisSystemPrompt("video", "product_showcase_video", 2, "product_video")
+	prompt := buildAgentAnalysisSystemPrompt("video", "product_showcase_video", 2, "product_video", false)
 	for _, want := range []string{"商品视频导演", "起始姿态", "结束状态", "独立配音", "不强制三秒钩子", "内部结构", "2条"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("missing %s", want)

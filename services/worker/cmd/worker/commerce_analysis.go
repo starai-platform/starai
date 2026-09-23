@@ -14,9 +14,9 @@ import (
 const commerceResolutionInstruction = `当前是生图前最终校对，不是重新构思多个方案。只返回1个候选A及其generation_prompt；已合规的正文沿用，只修改冲突部分。
 优先级：用户最新确认的明确修改 > 用户原始需求 > 已选方案补充 > 默认角色与场景建议。当前生成参数是即将提交接口的实际参数，不得自行改动，候选params返回{}。若用户明确文字要求与实际参数冲突，不能静默改写用户需求，返回{"error":"指出冲突的具体要求和参数"}；普通风格建议与用户需求冲突时直接删除或修正建议，不要求用户处理。
 把原始需求、最新修改、参考依据、拍摄要求和参数整理为一份可直接执行的完整prompt，移除相反要求、重复说明及角色自述；negative_prompt也要同步清理，不能禁止用户明确要求出现的内容。不得把批量数量写成一张图里重复多个商品；每次图像请求只生成一张，数量由系统控制。
-参考图继续以实际附件为准，不补写看不清的结构，不增加未经确认的卖点；用户明确要求修改商品设计时只改指定部位。不声称已完成实图质量验收。
-详情页必须同步校对所有detail_sections，数量与当前detail_section_count一致，并原样保留同一份design_system。所有模块共享其色板、渐变、卡片材质、图标语言、装饰母题、商品处理和光线，只改变信息职责、景别和版式节奏，不能各自发明风格。每个image_prompt需独立包含本模块的商品依据、构图、穿戴关系、光线与禁止事项，不写“同上”，不把整页需求机械重复到每一张。
-详情模块生成可直接衔接成长页的完整视觉底图，不是无设计的裸摄影照：允许与design_system一致的渐变、留白卡片、无字功能图标、光斑、线条和几何装饰；只使用与已确认卖点有关的视觉符号。copy_placement必须与画面留出的干净文字安全区一致。底图不绘制新增文字、字母和数字，copy_title/copy_points由后期准确排版。`
+精准还原以实际附件和用户确认信息为依据，不补写看不清的结构或未经确认的卖点；自由创作则保留用户明确要求，并继续补全可修改的虚拟商品设定、材质、技术与功效文案，不以缺少依据为由删除。品牌标识冲突时不要在同一画面混用。不声称已完成实图质量验收。
+详情页必须同步校对所有detail_sections，保留草稿的模块数量和用户明确指定的内容。先统一design_system中的主题、主辅色和视觉母题，再让每个image_prompt落实同一套视觉系统；不允许模块之间换色板或换主题，但允许不同景别、人物、场景和构图。选定方案的视觉方向优先于草稿默认风格；若两者不一致，连同design_system与各模块image_prompt一起调整。每个image_prompt独立描述本模块，不写“同上”。
+详情模块生成可直接衔接成长页的完整视觉底图，不是无设计的裸摄影照。自由创作时，选定方案可以重新构思每屏的文字、层级和位置，不得把草稿text_layers当成必须保留的文案或固定坐标；只保留用户明确指定的内容与整页主题。image_prompt和layout只写可见商品、镜头、场景、光线及无字装饰；不要写“技术参数并列展示”“购买按钮和价格信息突出”等会诱导图片模型画字的指令，相关内容交给text_layers。最终文案与排版会在看到实际底图后再由AI决定。精准模式仍按copy_title/copy_points排版。底图不绘制新增文字，文字由后期准确排版。`
 
 func isCommerceScene(scene string) bool {
 	return scene == "main_image" || scene == "scene_image" || scene == "detail_image" || scene == "marketing_poster"
@@ -34,6 +34,14 @@ func validateCommerceResolution(analysis, inputs map[string]interface{}) error {
 	}
 	if len(analysisCandidates(analysis)) != 1 {
 		return fmt.Errorf("最终校对必须返回一个可执行方案")
+	}
+	if draft, ok := mapAny(inputs["_commerce_resolution"]); ok {
+		if original, ok := draft["detail_sections"].([]map[string]interface{}); ok {
+			resolved, _ := analysis["detail_sections"].([]interface{})
+			if len(resolved) != len(original) {
+				return fmt.Errorf("最终校对改变了已规划的详情模块数量")
+			}
+		}
 	}
 	return validateCommerceAnalysis(analysis, inputs)
 }
@@ -135,6 +143,38 @@ const commerceTransformationInstruction = `创作优先级：用户当前明确�
 多图依据：商品图只决定商品身份与结构，人物或姿态图只约束用户指定的人物、动作和构图，不能把姿态参考中的鞋服替换成目标商品。用户未要求换角度时，优先采用已有商品图能证明细节的视角；只有正面图时不擅自设计背面或内部特写。用户要求的新角度涉及不可见关键细节时，分析阶段明确列入 missing_information，不声称精确还原。
 局部修正时只改用户指出的缺陷：已正确的商品结构、角度、姿态、裁切和背景保持不变；仍以原始商品图确认款式，不能将上一张错误生成图当作新的商品真值。`
 
+const commerceFreeCreationInstruction = `当前为自由创作模式：目标是用很少的输入快速产出有吸引力、可继续修改的电商视觉。用户明确写出的要求仍是硬要求；没有明确指定的商品细节、人物、场景、构图、氛围、虚拟品牌名和概念文案可以合理补全，参考图默认是创作参考而不是必须逐像素复刻的实物凭证。允许把真实或虚构素材继续改造成新的虚拟商品和广告概念，不因信息不足反复追问或停止生成。
+如果用户明确说“保持商品不变、严格还原、Logo/包装/人物不能改、只换背景、只改局部”等，则该项自动转为精准约束，优先于自由创作。未给出的材质、技术、功效、规格、卖点和广告文案可以由AI主动构思成完整的虚拟商品方案，供用户挑选和修改；不要因为用户没有逐项提供就删掉、留空或反复追问。候选方案应在视觉方向和文案思路上有明显差异，不生成多张近似重复结果。`
+
+func commercePrecisionRequested(inputs map[string]interface{}) bool {
+	mode := strings.ToLower(strings.TrimSpace(stringAny(inputs["creative_mode"])))
+	if mode == "precise" || mode == "faithful" || mode == "strict" {
+		return true
+	}
+	brief := strings.ToLower(firstNonEmpty(stringAny(inputs["user_prompt"]), firstUserPrompt(inputs)))
+	for _, marker := range []string{
+		"保持商品不变", "商品不要改", "严格还原", "精准还原", "只换背景", "只改局部",
+		"preserve the product", "keep the product", "exact match", "background only", "faithful",
+	} {
+		if strings.Contains(brief, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func commerceFreeCreation(inputs map[string]interface{}) bool {
+	return strings.EqualFold(strings.TrimSpace(stringAny(inputs["creative_mode"])), "free") && !commercePrecisionRequested(inputs)
+}
+
+func detailSectionMinimum(inputs map[string]interface{}) int {
+	target := detailSectionCount(inputs)
+	if commerceFreeCreation(inputs) && !boolAny(inputs["detail_section_count_locked"]) && explicitDetailSectionCount(inputs) == 0 && target > 4 {
+		return target - 1
+	}
+	return target
+}
+
 func resolveCommerceScene(analysis, inputs map[string]interface{}) string {
 	if scene := stringAny(inputs["creative_scene"]); scene != "" && scene != "auto" {
 		return scene
@@ -161,10 +201,30 @@ func resolveCommerceScene(analysis, inputs map[string]interface{}) string {
 	return "main_image"
 }
 
+func resolveCommerceAutoAspect(inputs map[string]interface{}) {
+	ratio := firstNonEmpty(stringAny(inputs["aspect_ratio"]), stringAny(inputs["ratio"]))
+	if ratio != "auto" {
+		return
+	}
+	brief := strings.ToLower(firstNonEmpty(stringAny(inputs["user_prompt"]), firstUserPrompt(inputs)))
+	resolved := "1:1"
+	switch {
+	case strings.Contains(brief, "抖音") || strings.Contains(brief, "tiktok") || strings.Contains(brief, "竖版") || strings.Contains(brief, "竖屏"):
+		resolved = "9:16"
+	case strings.Contains(brief, "小红书") || stringAny(inputs["creative_scene"]) == "marketing_poster" || stringAny(inputs["creative_scene"]) == "detail_image":
+		resolved = "3:4"
+	case strings.Contains(brief, "横版") || strings.Contains(brief, "横屏"):
+		resolved = "16:9"
+	}
+	inputs["aspect_ratio"] = resolved
+	inputs["ratio"] = resolved
+	delete(inputs, "size")
+}
+
 // Reject incomplete planning instead of sending an explanation or generic
 // fallback to the image model as if it were an optimized product prompt.
 func validateCommerceAnalysis(analysis, inputs map[string]interface{}) error {
-	if len(referenceImageURLs(inputs)) > 0 {
+	if len(referenceImageURLs(inputs)) > 0 && !commerceFreeCreation(inputs) {
 		notes := strings.ToLower(stringAny(analysis["asset_notes"]))
 		for _, unavailable := range []string{"无法直接读取", "无法读取", "无法查看", "无法识别图片", "未能读取", "未提供可读视觉描述", "沿用用户确认描述", "看不到", "cannot view", "cannot access", "unable to view", "unable to access"} {
 			if strings.Contains(notes, unavailable) {
@@ -188,8 +248,8 @@ func validateCommerceAnalysis(analysis, inputs map[string]interface{}) error {
 	}
 	if scene == "detail_image" {
 		sections, _ := analysis["detail_sections"].([]interface{})
-		if len(sections) != detailSectionCount(inputs) {
-			return fmt.Errorf("AI详情模块数量不完整，请重试需求分析")
+		if len(sections) < detailSectionMinimum(inputs) || len(sections) > detailSectionCount(inputs) {
+			return fmt.Errorf("AI详情模块数量与当前设置不符，请重试需求分析")
 		}
 		for _, raw := range sections {
 			section, _ := raw.(map[string]interface{})

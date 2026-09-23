@@ -4,11 +4,12 @@ import { pollAsync } from "@/lib/pollAsync";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, CheckCircle2, Download, Film, FolderOpen, History, Image as ImageIcon, Loader2, RefreshCw, Sparkles, Upload, X } from "lucide-react";
-import { api, listAssets, uploadAsset } from "@/lib/api";
+import { api, uploadAsset } from "@/lib/api";
 import { useI18n } from "@/i18n/I18nProvider";
 import { AGENT_THEMES } from "./categoryMeta";
 import { AgentLanding } from "./AgentLanding";
 import { MediaMenuOption, MediaOptionMenu } from "./MediaOptionMenu";
+import { SystemAssetLibraryDialog, type SystemAssetPick } from "./SystemAssetLibraryDialog";
 
 type WorkflowLike = {
   code: string;
@@ -53,7 +54,6 @@ type Project = {
   media_tasks?: MediaTask[];
 };
 type HistoryItem = { public_id: string; workflow_name?: string; status: string; created_at: string };
-type AssetItem = { public_id: string; url: string; name?: string; size_bytes?: number; metadata?: Record<string, any> };
 type UtilityFeature = { icon?: string; title: string; subtitle?: string; tags?: string[] };
 
 function outputURL(task?: MediaTask) {
@@ -212,9 +212,7 @@ export function VideoUpscaleWorkspace({ workflow }: { workflow: WorkflowLike }) 
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState("");
   const [assetOpen, setAssetOpen] = useState(false);
-  const [assets, setAssets] = useState<AssetItem[]>([]);
   const [styleAssetOpen, setStyleAssetOpen] = useState(false);
-  const [styleAssets, setStyleAssets] = useState<AssetItem[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [activeFeature, setActiveFeature] = useState(0);
@@ -358,27 +356,13 @@ export function VideoUpscaleWorkspace({ workflow }: { workflow: WorkflowLike }) 
     }
   };
 
-  const openStyleAssets = async () => {
+  const openStyleAssets = () => {
     setStyleAssetOpen(true);
-    try {
-      const result = await listAssets({ kind: "image", page: 1, page_size: 60 });
-      setStyleAssets((result.items || []) as AssetItem[]);
-    } catch (err) {
-      setStyleAssets([]);
-      setError(err instanceof Error ? err.message : ts("图片资产库加载失败"));
-    }
   };
 
-  const openAssets = async () => {
+  const openAssets = () => {
     setAssetOpen(true);
     setError("");
-    try {
-      const result = await listAssets({ kind: "video", page: 1, page_size: 60 });
-      setAssets((result.items || []) as AssetItem[]);
-    } catch (err) {
-      setAssets([]);
-      setError(err instanceof Error ? err.message : ts("资产库加载失败"));
-    }
   };
 
   const run = async () => {
@@ -723,46 +707,30 @@ export function VideoUpscaleWorkspace({ workflow }: { workflow: WorkflowLike }) 
       </div>
       </div>
 
-      {assetOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setAssetOpen(false)}>
-          <div className="w-full max-w-3xl rounded-2xl bg-white p-4 shadow-2xl dark:border dark:border-white/10 dark:bg-gray-900" onClick={(event) => event.stopPropagation()}>
-            <div className="flex items-center justify-between"><div><div className="font-semibold">{t("upscale.selectAsset")}</div><div className="mt-1 text-xs text-gray-400">{t("upscale.assetOnly")}</div></div><button onClick={() => setAssetOpen(false)} className="flex h-9 w-9 items-center justify-center rounded-xl bg-gray-100 dark:bg-white/10"><X size={16} /></button></div>
-            <div className="mt-4 grid max-h-[60vh] grid-cols-2 gap-3 overflow-y-auto pr-1 sm:grid-cols-3">
-              {assets.map((asset) => <button key={asset.public_id} type="button" onClick={() => {
-                const maxBytes = Math.max(1, Number(config.max_input_size_mb || 500)) * 1024 * 1024;
-                if (asset.size_bytes && asset.size_bytes > maxBytes) {
-                  setError(td("videoUpscale.maxSize", "Video must not exceed {size} MB", { size: config.max_input_size_mb || 500 }));
-                  setAssetOpen(false);
-                  return;
-                }
-                setSource({ url: asset.url, name: asset.name || "视频资产", public_id: asset.public_id, size_bytes: asset.size_bytes, duration: Number(asset.metadata?.duration || 0) });
-                setProject(null);
-                window.localStorage.removeItem(activeProjectKey);
-                setAssetOpen(false);
-              }} className="overflow-hidden rounded-xl border border-gray-100 bg-gray-50 text-left transition hover:border-cyan-300 dark:border-white/10 dark:bg-white/5">
-                <video src={asset.url} preload="metadata" muted className="aspect-video w-full bg-black object-cover" />
-                <div className="truncate px-3 py-2 text-xs font-medium">{asset.name || "视频资产"}</div>
-              </button>)}
-              {assets.length === 0 && <div className="col-span-full py-16 text-center text-sm text-gray-400">{t("upscale.noAssets")}</div>}
-            </div>
-          </div>
-        </div>
-      )}
+      <SystemAssetLibraryDialog
+        open={assetOpen}
+        kind="video"
+        title={t("upscale.selectAsset")}
+        description={t("upscale.assetOnly")}
+        maxSelected={1}
+        onClose={() => setAssetOpen(false)}
+        onConfirm={(items: SystemAssetPick[]) => {
+          const asset = items[0];
+          if (!asset?.public_id) return;
+          const maxBytes = Math.max(1, Number(config.max_input_size_mb || 500)) * 1024 * 1024;
+          if (asset.size_bytes && asset.size_bytes > maxBytes) {
+            setError(td("videoUpscale.maxSize", "Video must not exceed {size} MB", { size: config.max_input_size_mb || 500 }));
+            setAssetOpen(false);
+            return;
+          }
+          setSource({ url: asset.url, name: asset.name || "视频资产", public_id: asset.public_id, size_bytes: asset.size_bytes, duration: Number(asset.metadata?.duration || 0) });
+          setProject(null);
+          window.localStorage.removeItem(activeProjectKey);
+          setAssetOpen(false);
+        }}
+      />
 
-      {styleAssetOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setStyleAssetOpen(false)}>
-          <div className="w-full max-w-3xl rounded-2xl bg-white p-4 shadow-2xl dark:border dark:border-white/10 dark:bg-gray-900" onClick={(event) => event.stopPropagation()}>
-                <div className="flex items-center justify-between"><div><div className="font-semibold">{ts("选择风格参考图")}</div><div className="mt-1 text-xs text-gray-400">{ts("只显示当前账号可访问的图片资产")}</div></div><button onClick={() => setStyleAssetOpen(false)} className="flex h-9 w-9 items-center justify-center rounded-xl bg-gray-100 dark:bg-white/10"><X size={16} /></button></div>
-            <div className="mt-4 grid max-h-[60vh] grid-cols-2 gap-3 overflow-y-auto pr-1 sm:grid-cols-4">
-              {styleAssets.map((asset) => <button key={asset.public_id} type="button" onClick={() => { setStyleReference({ url: asset.url, name: asset.name || "风格参考图", public_id: asset.public_id }); setStyleAssetOpen(false); }} className="overflow-hidden rounded-xl border border-gray-100 bg-gray-50 text-left hover:border-violet-300 dark:border-white/10 dark:bg-white/5">
-                <img loading="lazy" decoding="async" src={asset.url} alt="" className="aspect-square w-full object-cover" />
-                <div className="truncate px-3 py-2 text-xs font-medium">{asset.name || "图片资产"}</div>
-              </button>)}
-              {styleAssets.length === 0 && <div className="col-span-full py-16 text-center text-sm text-gray-400">{ts("暂无可用图片资产")}</div>}
-            </div>
-          </div>
-        </div>
-      )}
+      <SystemAssetLibraryDialog open={styleAssetOpen} kind="image" title={ts("选择风格参考图")} description={ts("只显示当前账号可访问的图片资产")} maxSelected={1} onClose={() => setStyleAssetOpen(false)} onConfirm={(items: SystemAssetPick[]) => { const asset = items[0]; if (!asset?.public_id) return; setStyleReference({ url: asset.url, name: asset.name || "风格参考图", public_id: asset.public_id }); setStyleAssetOpen(false); }} />
 
       {historyOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setHistoryOpen(false)}>

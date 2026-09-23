@@ -57,6 +57,11 @@ func workerMediaCapability(rule map[string]interface{}, keys ...string) (bool, b
 }
 
 func detailSectionCount(inputs map[string]interface{}) int {
+	if !boolAny(inputs["detail_section_count_locked"]) {
+		if n := explicitDetailSectionCount(inputs); n != 0 {
+			return n
+		}
+	}
 	if n := intAny(inputs["detail_section_count"]); n >= 4 && n <= 8 {
 		return n
 	}
@@ -64,6 +69,24 @@ func detailSectionCount(inputs map[string]interface{}) int {
 		return n
 	}
 	return 5
+}
+
+func explicitDetailSectionCount(inputs map[string]interface{}) int {
+	brief := firstNonEmpty(stringAny(inputs["user_prompt"]), firstUserPrompt(inputs))
+	first, count := len(brief)+1, 0
+	for index, chinese := range []string{"四", "五", "六", "七", "八"} {
+		n := index + 4
+		for _, phrase := range []string{fmt.Sprintf("%d个模块", n), fmt.Sprintf("%d 个模块", n), chinese + "个模块", fmt.Sprintf("%d张详情图", n), chinese + "张详情图"} {
+			if pos := strings.Index(brief, phrase); pos >= 0 && pos < first {
+				prefix := brief[:pos]
+				if strings.HasSuffix(prefix, "不要") || strings.HasSuffix(prefix, "不是") || strings.HasSuffix(prefix, "避免") {
+					continue
+				}
+				first, count = pos, n
+			}
+		}
+	}
+	return count
 }
 
 func workerStringList(value interface{}) []string {

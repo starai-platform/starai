@@ -205,7 +205,10 @@ export type CanvasWorkflow = {
     default_segment_count?: number;
     default_segment_duration?: number;
     default_story_review_required?: boolean;
+    default_story_use_audio_model?: boolean;
     default_story_subtitle_mode?: StorySubtitleMode;
+    default_story_creation_type?: StoryCreationType;
+    preset_code?: string;
     pipeline_version?: number;
     analysis_model_code?: string;
     generation_model_code?: string;

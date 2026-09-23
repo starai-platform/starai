@@ -106,6 +106,30 @@ func (h *Handler) GetAgentProject(c *gin.Context) {
 	util.OK(c, project)
 }
 
+func (h *Handler) ReviseAgentDetailSection(c *gin.Context) {
+	index, err := strconv.Atoi(c.Param("index"))
+	if err != nil || index < 0 || index > 7 {
+		util.BadRequest(c, "详情图序号无效")
+		return
+	}
+	var req struct {
+		ImageURL   string                   `json:"image_url"`
+		TextLayers []map[string]interface{} `json:"text_layers"`
+	}
+	if c.ShouldBindJSON(&req) != nil || strings.TrimSpace(req.ImageURL) == "" || req.TextLayers == nil {
+		util.BadRequest(c, "详情图修订参数错误")
+		return
+	}
+	if !h.enforceContentSafety(c, c.GetInt64("user_id"), "agent_detail_revision", req.TextLayers) {
+		return
+	}
+	if err := h.agents.ReviseDetailSection(c.Request.Context(), c.GetInt64("user_id"), c.Param("id"), index, req.ImageURL, req.TextLayers); err != nil {
+		util.BadRequest(c, err.Error())
+		return
+	}
+	util.OK(c, map[string]interface{}{"image_url": req.ImageURL, "text_layers": req.TextLayers})
+}
+
 func (h *Handler) RecordCreativeAgentFeedback(c *gin.Context) {
 	var req struct {
 		ConversationID string `json:"conversation_id"`

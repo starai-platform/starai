@@ -53,6 +53,70 @@ func TestDetailPaletteUsesNamedDesignSystemColors(t *testing.T) {
 	}
 }
 
+func TestFreeDetailTypographyUsesOnlyNeededSpace(t *testing.T) {
+	typeface, err := opentype.Parse(goregular.TTF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	photo := image.NewRGBA(image.Rect(0, 0, 800, 600))
+	section := map[string]interface{}{"copy_title": "Morning run", "copy_placement": "top", "_free_creation": true, "_style": `{"palette":{"background":"#F2F5F9"}}`}
+	result, err := layoutDetailModule(photo, section, typeface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.At(60, 50) == photo.At(60, 50) || result.At(700, 50) != photo.At(700, 50) {
+		t.Fatal("free typography still paints a full-width template card")
+	}
+}
+
+func TestFreeDetailTypographyAllowsLongerCreativeCopyWhenItFits(t *testing.T) {
+	typeface, err := opentype.Parse(goregular.TTF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	photo := image.NewRGBA(image.Rect(0, 0, 800, 900))
+	section := map[string]interface{}{"copy_title": "Concept story", "copy_points": []string{"First idea", "Second idea", "Third idea", "Fourth idea", "Fifth idea", "Sixth idea", "Seventh idea"}, "_free_creation": true}
+	if _, err := layoutDetailModule(photo, section, typeface); err != nil {
+		t.Fatalf("free-mode copy was rejected by an arbitrary line limit: %v", err)
+	}
+	delete(section, "_free_creation")
+	if _, err := layoutDetailModule(photo, section, typeface); err == nil {
+		t.Fatal("precise-mode copy limit unexpectedly changed")
+	}
+}
+
+func TestDetailTextLayersDoNotInventCards(t *testing.T) {
+	typeface, err := opentype.Parse(goregular.TTF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	photo := image.NewRGBA(image.Rect(0, 0, 800, 600))
+	blank, err := layoutDetailModule(photo, map[string]interface{}{"text_layers": []interface{}{}}, typeface)
+	if err != nil || blank.At(50, 50) != photo.At(50, 50) {
+		t.Fatal("empty text plan added decoration", err)
+	}
+	section := map[string]interface{}{"copy_title": "legacy title must not render", "text_layers": []interface{}{map[string]interface{}{"text": "A new idea", "x": 0.1, "y": 0.7, "width": 0.6, "font_size": 0.06, "color": "#FFFFFF"}}}
+	result, err := layoutDetailModule(photo, section, typeface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.At(50, 50) != photo.At(50, 50) {
+		t.Fatal("text layer painted the old fixed card")
+	}
+	changed := false
+	for y := 420; y < 500 && !changed; y++ {
+		for x := 80; x < 600; x++ {
+			if result.At(x, y) != photo.At(x, y) {
+				changed = true
+				break
+			}
+		}
+	}
+	if !changed {
+		t.Fatal("AI text layer was not drawn")
+	}
+}
+
 func TestDetailLayoutLocalChinesePreview(t *testing.T) {
 	input, output := os.Getenv("DETAIL_LAYOUT_PREVIEW_INPUT"), os.Getenv("DETAIL_LAYOUT_PREVIEW_OUTPUT")
 	if input == "" || output == "" {

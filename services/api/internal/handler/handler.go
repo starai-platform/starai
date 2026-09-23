@@ -210,6 +210,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			auth.POST("/agents/:code/projects", h.CreateAgentProject)
 			auth.GET("/agent-projects", h.ListAgentProjects)
 			auth.GET("/agent-projects/:id", h.GetAgentProject)
+			auth.PATCH("/agent-projects/:id/detail-sections/:index", h.ReviseAgentDetailSection)
 			auth.POST("/agent-projects/:id/retry", h.RetryAgentProject)
 			auth.POST("/agent-projects/:id/cancel", h.CancelAgentProject)
 			auth.POST("/agent-projects/:id/retry-node", h.RetryAgentProjectNode)

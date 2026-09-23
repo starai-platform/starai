@@ -34,4 +34,19 @@ func TestCanvasEnhanceContext(t *testing.T) {
 			t.Fatalf("%s enhancement context is not scene-specific", target)
 		}
 	}
+	if detail := canvasEnhanceContext("ecommerce_image", "detail_image"); !strings.Contains(detail, "不强加固定章节") || strings.Contains(detail, "统一色板、渐变、卡片") {
+		t.Fatal("detail prompt enhancement still bakes in the old visual template")
+	}
+}
+
+func TestFreeCommerceEnhanceContextKeepsEditableConcepts(t *testing.T) {
+	for _, target := range []string{"detail_image", "main_image", "scene_image", "marketing_poster", "auto"} {
+		context := freeCommerceEnhanceContext(target)
+		if !strings.Contains(context, "AI") || strings.Contains(context, "不编造可验证的商品事实") {
+			t.Fatalf("%s still uses precise-mode constraints: %s", target, context)
+		}
+	}
+	if !strings.Contains(freeCommerceEnhanceContext("detail_image"), "主动补全未提供的材质、技术、功效与卖点") || !strings.Contains(freeCommerceEnhanceContext("detail_image"), "整页统一的主题、主辅色和视觉母题") {
+		t.Fatal("free detail enhancement lost the editable concept-copy requirement")
+	}
 }

@@ -60,6 +60,28 @@ func TestCommerceParameterConflictsStopBeforeGeneration(t *testing.T) {
 	}
 }
 
+func TestCommerceAutoAspectFollowsChannelAndScene(t *testing.T) {
+	for _, tc := range []struct {
+		input map[string]interface{}
+		want  string
+	}{
+		{map[string]interface{}{"aspect_ratio": "auto", "creative_scene": "main_image", "user_prompt": "淘宝商品主图"}, "1:1"},
+		{map[string]interface{}{"aspect_ratio": "auto", "creative_scene": "scene_image", "user_prompt": "发布渠道：抖音电商"}, "9:16"},
+		{map[string]interface{}{"aspect_ratio": "auto", "creative_scene": "scene_image", "user_prompt": "做一张小红书种草图"}, "3:4"},
+		{map[string]interface{}{"aspect_ratio": "auto", "creative_scene": "detail_image"}, "3:4"},
+		{map[string]interface{}{"aspect_ratio": "16:9", "creative_scene": "main_image", "user_prompt": "抖音"}, "16:9"},
+	} {
+		wasAuto := tc.input["aspect_ratio"] == "auto"
+		resolveCommerceAutoAspect(tc.input)
+		if tc.input["aspect_ratio"] != tc.want || wasAuto && tc.input["ratio"] != tc.want {
+			t.Fatalf("auto ratio=%#v want %s", tc.input, tc.want)
+		}
+		if _, ok := tc.input["size"]; ok {
+			t.Fatalf("stale size survived auto ratio: %#v", tc.input)
+		}
+	}
+}
+
 func TestCommerceResolutionRejectsConflictAndDoesNotReappendOldRules(t *testing.T) {
 	inputs := map[string]interface{}{"creative_scene": "main_image", "user_prompt": "旧需求站姿", "_commerce_resolved": true}
 	for _, raw := range []string{`{"error":"用户要求竖图，但参数为横图"}`, `{}`, `{"candidates":[{"prompt":"A"},{"prompt":"B"}]}`} {
@@ -110,7 +132,7 @@ func TestCommerceResolutionCacheTracksRequirementsParametersReferencesAndModels(
 }
 
 func TestCommerceAnalysisRejectsExplicitlyUnreadProductReference(t *testing.T) {
-	inputs := map[string]interface{}{"creative_scene": "auto", "reference_images": []string{"https://example.com/product.jpg"}}
+	inputs := map[string]interface{}{"creative_scene": "auto", "creative_mode": "precise", "reference_images": []string{"https://example.com/product.jpg"}}
 	for _, notes := range []string{"无法直接读取URL内容，沿用用户确认描述：大疆无人机", "参考图1张附上；未提供可读视觉描述，沿用用户确认描述"} {
 		analysis := parseJSONish(`{"creative_scene":"main_image","asset_notes":"` + notes + `","candidates":[{"prompt":"商品白底图"}]}`)
 		if err := validateCommerceAnalysis(analysis, inputs); err == nil {
@@ -121,6 +143,11 @@ func TestCommerceAnalysisRejectsExplicitlyUnreadProductReference(t *testing.T) {
 	if err := validateCommerceAnalysis(analysis, inputs); err != nil {
 		t.Fatal(err)
 	}
+	inputs["creative_mode"] = "free"
+	analysis["asset_notes"] = "参考图暂时无法识别，按用户文字自由创作概念商品"
+	if err := validateCommerceAnalysis(analysis, inputs); err != nil {
+		t.Fatal("free creation should not block on an unread creative reference:", err)
+	}
 	delete(inputs, "reference_images")
 	analysis["asset_notes"] = "没有参考图，无法查看实物，按用户文字制作概念图"
 	if err := validateCommerceAnalysis(analysis, inputs); err != nil {
@@ -128,10 +155,88 @@ func TestCommerceAnalysisRejectsExplicitlyUnreadProductReference(t *testing.T) {
 	}
 }
 
+func TestCommerceFreeCreationOnlyLocksExplicitRequirements(t *testing.T) {
+	inputs := map[string]interface{}{"creative_mode": "free", "creative_scene": "scene_image", "user_prompt": "做一张夏日卖鞋的图", "reference_images": []string{"https://example.com/shoes.jpg"}}
+	if !commerceFreeCreation(inputs) {
+		t.Fatal("free mode should allow creative completion")
+	}
+	prompt := agentPromptWithScene("海边活力广告", inputs)
+	if !strings.Contains(prompt, "FREE CREATION REFERENCE GUIDANCE") || strings.Contains(prompt, "REFERENCE ROLE REQUIREMENT:") {
+		t.Fatalf("free prompt still carries strict reference locks: %s", prompt)
+	}
+	if !strings.Contains(prompt, "remove or replace the old marking") || strings.Contains(prompt, "Preserve only genuine markings") {
+		t.Fatalf("free prompt can still mix conflicting brand identities: %s", prompt)
+	}
+	inputs["user_prompt"] = "Logo不变，场景和人物大胆创作"
+	if !commerceFreeCreation(inputs) {
+		t.Fatal("locking one detail should not disable all free creation")
+	}
+	inputs["user_prompt"] = "保持商品不变，只换背景"
+	if commerceFreeCreation(inputs) {
+		t.Fatal("explicit preservation request must switch to precise behavior")
+	}
+}
+
+func TestFreeDetailCountRespectsBriefAndResolutionKeepsPlan(t *testing.T) {
+	inputs := map[string]interface{}{"creative_scene": "detail_image", "creative_mode": "free", "detail_section_count": 5, "user_prompt": "请做四个模块的鞋子详情图"}
+	if got := detailSectionCount(inputs); got != 4 || detailSectionMinimum(inputs) != 4 {
+		t.Fatalf("explicit brief count was ignored: %d", got)
+	}
+	inputs["user_prompt"] = "给我5个模块，不要4个模块"
+	if got := detailSectionCount(inputs); got != 5 {
+		t.Fatalf("negated later count overrode the requested one: %d", got)
+	}
+	inputs["user_prompt"] = "请做四个模块的鞋子详情图"
+	freePrompt := buildAgentAnalysisSystemPrompt("image", "ecommerce_image", 3, "detail_image", true)
+	if !strings.Contains(freePrompt, "主动构思购买理由、技术与规格概念") || strings.Contains(freePrompt, "每个模块上下边缘约6%–8%") || strings.Contains(freePrompt, "参考商品的形状、结构、颜色、包装文字和Logo必须保真") {
+		t.Fatal("free planning still uses the rigid detail template")
+	}
+	if !strings.Contains(freePrompt, "主动补全材质、技术、功效") || strings.Contains(freePrompt, "仅填写有依据的卖点") {
+		t.Fatal("free planning still suppresses AI-created product concepts")
+	}
+	if !strings.Contains(commerceResolutionInstruction, "不允许模块之间换色板或换主题") {
+		t.Fatal("final resolution can split a detail page into unrelated visual styles")
+	}
+	inputs["_commerce_resolution"] = map[string]interface{}{"detail_sections": []map[string]interface{}{{}, {}, {}, {}}}
+	sections := []interface{}{}
+	for i := 0; i < 5; i++ {
+		sections = append(sections, map[string]interface{}{"image_prompt": "画面"})
+	}
+	resolved := map[string]interface{}{"candidates": []interface{}{map[string]interface{}{"prompt": "广告概念"}}, "detail_sections": sections}
+	if validateCommerceResolution(resolved, inputs) == nil {
+		t.Fatal("resolution unexpectedly changed the selected plan's module count")
+	}
+}
+
+func TestReusableAgentMediaTasksKeepOnlySuccessfulBatchSlots(t *testing.T) {
+	raw := []interface{}{
+		map[string]interface{}{"task_no": "ok", "batch_index": 0, "status": "succeeded"},
+		map[string]interface{}{"task_no": "failed", "batch_index": 1, "status": "failed"},
+		map[string]interface{}{"task_no": "outside", "batch_index": 9, "status": "succeeded"},
+	}
+	items := reusableAgentMediaTasks(raw, 3)
+	if len(items) != 1 || stringAny(items[0]["task_no"]) != "ok" {
+		t.Fatalf("unexpected reusable tasks: %#v", items)
+	}
+}
+
+func TestAgentVariantPromptCyclesDistinctCreativeDirections(t *testing.T) {
+	inputs := map[string]interface{}{"_variant_prompts": []string{"真实主图", "人物场景", "创意海报"}}
+	if got := agentVariantPrompt(inputs, "默认", 1); got != "人物场景" {
+		t.Fatalf("variant=%q", got)
+	}
+	if got := agentVariantPrompt(inputs, "默认", 4); got != "人物场景" {
+		t.Fatalf("cycled variant=%q", got)
+	}
+	if got := agentVariantPrompt(nil, "默认", 0); got != "默认" {
+		t.Fatalf("fallback=%q", got)
+	}
+}
+
 func TestCommerceShoeWearRequestSurvivesPlanningAndImageTask(t *testing.T) {
 	brief := "用参考图这双鞋，加一双人物的脚穿着鞋，只拍脚踝以下"
 	inputs := map[string]interface{}{"creative_scene": "scene_image", "user_prompt": brief, "image_url": "https://example.com/shoes.jpg", "count": 1}
-	system := buildAgentAnalysisSystemPrompt("image", "ecommerce_image", 3, "auto")
+	system := buildAgentAnalysisSystemPrompt("image", "ecommerce_image", 3, "auto", false)
 	if !strings.Contains(system, "按 scene_image 策划") || !strings.Contains(system, "不能因为参考图没有人物就省略人物") {
 		t.Fatal("analysis is missing the requested transformation rules")
 	}
@@ -197,7 +302,7 @@ func TestCommerceFidelityRulesReachPlanningAndEveryImageEntry(t *testing.T) {
 			t.Fatalf("detail %s lost fidelity rules or its shot requirements", kind)
 		}
 	}
-	if !strings.Contains(buildAgentAnalysisSystemPrompt("image", "ecommerce_image", 3, "auto"), commerceTransformationInstruction) {
+	if !strings.Contains(buildAgentAnalysisSystemPrompt("image", "ecommerce_image", 3, "auto", false), commerceTransformationInstruction) {
 		t.Fatal("planning and generation use different fidelity rules")
 	}
 }
@@ -242,7 +347,7 @@ func TestCommerceAnalysisRejectsUnusablePlans(t *testing.T) {
 			t.Fatalf("accepted unusable plan: %s", raw)
 		}
 	}
-	prompt := buildAgentAnalysisSystemPrompt("image", "ecommerce_image", 3, "auto")
+	prompt := buildAgentAnalysisSystemPrompt("image", "ecommerce_image", 3, "auto", false)
 	for _, required := range []string{"creative_scene", "main_image", "scene_image", "detail_image", "marketing_poster", "仅在 creative_scene=detail_image", "逐项保留到候选 prompt"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("analysis instruction missing %s", required)

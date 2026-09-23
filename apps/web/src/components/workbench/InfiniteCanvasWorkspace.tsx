@@ -1,6 +1,4 @@
 "use client";
-import { AssetPagination } from "./AssetPagination";
-
 import { createsCycle, hasGraphCycle, validCanvasDocument, orderedGeneratorNodes, collectUpstreamNodes, collectDownstreamIDs } from "./canvasGraph";
 import type { FramePairShot, FramePairShotState } from "./framePairWorkflow";
 
@@ -26,6 +24,7 @@ import {
 } from "@xyflow/react";
 import {
   AlignCenter,
+  ArrowUp,
   Boxes,
   Check,
   ChevronDown,
@@ -66,7 +65,7 @@ import {
   parseAudioRuntime,
   parseVideoRuntime,
 } from "@starai/shared-types";
-import { api, apiForLocale, apiForLocaleCached, importAssetFromURL, listAssets, uploadAsset } from "@/lib/api";
+import { api, apiBlob, apiForLocale, apiForLocaleCached, importAssetFromURL, listAssets, uploadAsset } from "@/lib/api";
 import { canvasImageReferenceLimit, canvasVisionImages, createCanvasReferenceSheet, referenceSheetPrompt } from "./canvasReferenceSheet";
 import { useI18n } from "@/i18n/I18nProvider";
 import { socialPublishHTML, socialPublishText, contentImageMarkersValid } from "./contentCreationResult";
@@ -80,6 +79,11 @@ import { canvasQualityModel, storyAssetPlan, storyReviewBlockForMode, storyWhole
 import { canvasRoles, canvasRolePrompt, canvasMediaPrompt, canvasAudioRoleParams, canvasRoleCompatible, canvasInputConstraints, legacyCanvasTaskRole, resolvedCanvasRole, normalizeCanvasRoleData, canvasRoleText, canvasNodeMedium, canvasAudioModeForModel } from "./canvasRoles";
 
 import { CanvasTextArea } from "./CanvasTextArea";
+import { AgentLanding } from "./AgentLanding";
+import { AGENT_THEMES } from "./categoryMeta";
+import { MediaMenuOption, MediaOptionMenu } from "./MediaOptionMenu";
+import { ChatTopTools, type BottomBarState, type ReferenceImagePick } from "./BottomBar";
+import { SystemAssetLibraryDialog, type SystemAssetPick } from "./SystemAssetLibraryDialog";
 import { VIRAL_SOURCE_INSTRUCTION, STORY_AUDIO_REFERENCE_INSTRUCTION, canvasChatMediaParams, viralShotContext, stampViralSource } from "./videoCreationWorkflow";
 import { framePairSegmentCount, framePairTaskParams, framePairVideoSize, normalizeFramePairShots, supportsFramePair, validateFramePairShots } from "./framePairWorkflow";
 
@@ -2866,12 +2870,217 @@ const nodeTypes = {
   contentResult: ContentResultNode,
 };
 
+function EcommerceVideoCompact({
+  input,
+  state,
+  nodes,
+  running,
+  onPromptChange,
+  onUpload,
+  onRemoveReference,
+  onRun,
+  onNew,
+  onOpenHistory,
+  onReferencesChange,
+  onFormatChange,
+  onSegmentCountChange,
+  onAudioModeChange,
+  onProfessional,
+}: {
+  input?: CanvasNode;
+  state: CanvasAgentState;
+  nodes: CanvasNode[];
+  running: boolean;
+  onPromptChange: (value: string) => void;
+  onUpload: (file: File) => Promise<void>;
+  onRemoveReference: (index: number) => void;
+  onRun: () => Promise<void>;
+  onNew: () => void;
+  onOpenHistory: () => void;
+  onReferencesChange: (items: ReferenceImagePick[]) => void;
+  onFormatChange: (platform: StoryPlatform, aspectRatio: StoryAspectRatio) => void;
+  onSegmentCountChange: (count: number) => void;
+  onAudioModeChange: (mode: "voice_subtitles" | "voice_only" | "subtitles_only" | "silent") => void;
+  onProfessional: () => void;
+}) {
+  const { ts } = useI18n();
+  const uploadRef = useRef<HTMLInputElement>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [activeFeature, setActiveFeature] = useState(0);
+  const references = Array.isArray(input?.data.referenceImageUrls) ? input.data.referenceImageUrls.map(String) : [];
+  const referenceIDs = Array.isArray(input?.data.referenceImageIds) ? input.data.referenceImageIds.map(String) : [];
+  const assetToolState: BottomBarState = { channel_key: "success_first", fallback_enabled: true, web_search: false, timeout_sec: 30, asset_ids: [], files: [] };
+  const executable = nodes.filter(node => node.type === "generator" || node.type === "compositor");
+  const completed = executable.filter(node => node.data.status === "succeeded" && !node.data.dirty).length;
+  const script = String(nodes.find(node => node.data.storyRole === "script")?.data.outputText || "");
+  const videos = state.media?.videos || [];
+  const ready = Boolean(input);
+  const canStart = ready && (String(input?.data.prompt || "").trim() !== "" || references.length > 0);
+  const started = running || executable.some(node =>
+    ["pending", "running", "succeeded", "failed", "blocked"].includes(String(node.data.status || ""))
+    || Boolean(node.data.taskNo)
+    || (Array.isArray(node.data.taskNos) && node.data.taskNos.length > 0)
+    || Boolean(node.data.outputUrl)
+    || Boolean(node.data.outputText)
+  );
+  const segmentCount = Number(input?.data.storySegmentCount || 1);
+  const platform = normalizeStoryPlatform(input?.data.storyPlatform);
+  const aspectRatio = normalizeStoryAspectRatio(input?.data.storyAspectRatio);
+  const useAudio = input?.data.useAudioModel === true;
+  const subtitleMode: StorySubtitleMode = input?.data.storySubtitleMode === "none" ? "none" : "auto";
+  const audioMode = useAudio
+    ? subtitleMode === "auto" ? "voice_subtitles" : "voice_only"
+    : subtitleMode === "auto" ? "subtitles_only" : "silent";
+  const audioLabel = audioMode === "voice_subtitles" ? ts("自动配音字幕")
+    : audioMode === "voice_only" ? ts("仅自动配音")
+    : audioMode === "subtitles_only" ? ts("仅自动字幕")
+    : ts("无配音和字幕");
+  const formats: Array<{ platform: StoryPlatform; aspectRatio: StoryAspectRatio; label: string }> = [
+    { platform: "douyin", aspectRatio: "9:16", label: ts("抖音竖屏 9:16") },
+    { platform: "wechat_channels", aspectRatio: "9:16", label: ts("视频号竖屏 9:16") },
+    { platform: "xiaohongshu", aspectRatio: "1:1", label: ts("小红书方屏 1:1") },
+    { platform: "tiktok", aspectRatio: "9:16", label: ts("TikTok 竖屏 9:16") },
+    { platform: "youtube", aspectRatio: "16:9", label: ts("YouTube 横屏 16:9") },
+  ];
+  const formatLabel = formats.find(item => item.platform === platform && item.aspectRatio === aspectRatio)?.label || `${platform} · ${aspectRatio}`;
+
+  return <div className="absolute inset-0 z-30 overflow-hidden bg-[#eaf7fb] text-gray-900 dark:bg-[#05080f] dark:text-white">
+    <div className="pointer-events-none absolute inset-0 opacity-80 [background-image:linear-gradient(rgba(15,23,42,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,.08)_1px,transparent_1px)] [background-size:40px_40px] dark:opacity-60 dark:[background-image:linear-gradient(rgba(34,211,238,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(34,211,238,.08)_1px,transparent_1px)]" />
+    <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_70%_10%,rgba(34,211,238,.22),transparent_28%),radial-gradient(circle_at_12%_84%,rgba(20,184,166,.16),transparent_22%)] dark:bg-[radial-gradient(circle_at_76%_10%,rgba(20,184,166,.2),transparent_28%),radial-gradient(circle_at_14%_82%,rgba(6,182,212,.12),transparent_22%)]" />
+    <div className="relative z-10 flex h-full min-h-0 flex-col">
+      <header className="flex shrink-0 items-center gap-3 px-4 py-3 sm:px-6">
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={onNew} disabled={running} className="flex h-9 items-center gap-1.5 rounded-xl bg-primary px-3 text-sm font-semibold text-dark disabled:opacity-40"><Plus size={15}/>{ts("新任务")}</button>
+          <button type="button" onClick={onOpenHistory} className="flex h-9 items-center gap-1.5 rounded-xl border border-gray-100 bg-white px-3 text-sm text-gray-600 transition hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"><RotateCcw size={14}/>{ts("历史")}</button>
+        </div>
+      </header>
+
+      <main className="mx-auto flex min-h-0 w-full max-w-[1280px] flex-1 flex-col overflow-y-auto px-3 sm:px-5 lg:px-8">
+        {!started && <AgentLanding
+          workflowIcon="🛍️"
+          workflowName={ts("电商带货短视频")}
+          workflowDescription={ts("一句话或一组商品素材，自动完成带货脚本、商品分镜、视频片段、配音字幕与成片。")}
+          heroTags={[ts("一句话成片"), ts("自动脚本分镜"), ts("字幕配音") ]}
+          features={[
+            { icon: "📝", title: ts("自动脚本"), subtitle: ts("补全钩子、卖点、口播和行动引导") },
+            { icon: "🎞️", title: ts("商品分镜"), subtitle: ts("默认直接生成，也可进入专业编辑逐镜调整") },
+            { icon: "🎨", title: ts("逐镜制作"), subtitle: ts("生成关键帧、视频片段与自动配音") },
+            { icon: "🎬", title: ts("交付成片"), subtitle: ts("合成视频、字幕和发布内容") },
+          ]}
+          activeIndex={activeFeature}
+          onSelect={setActiveFeature}
+          theme={AGENT_THEMES.sky}
+          generationType="video"
+          compactOnMobile
+        />}
+
+        {started && <div className="mx-auto w-full max-w-[1040px] pb-4">
+          <section className="soft-card p-4 sm:p-5">
+            <div className="flex items-center justify-between gap-3"><h2 className="text-sm font-bold">{ts("生成结果")}</h2><span className="text-xs text-gray-400">{`${completed}/${executable.length}`}</span></div>
+            {videos.length > 0 ? <div className="mt-4 space-y-4">
+              <video src={videos[0]} controls playsInline className="max-h-[58vh] w-full rounded-2xl bg-black object-contain" />
+              <p className="rounded-xl bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200">{state.content}</p>
+            </div> : <div className="mt-4 flex min-h-64 flex-col items-center justify-center rounded-2xl border border-dashed border-gray-200 bg-gray-50/60 px-6 text-center dark:border-white/10 dark:bg-black/10">
+              {running ? <LoaderCircle size={28} className="animate-spin text-cyan-500" /> : <Film size={30} className="text-gray-300" />}
+              <p className="mt-3 text-sm font-medium text-gray-600 dark:text-gray-200">{state.content}</p>
+              {executable.length > 0 && <div className="mt-4 h-1.5 w-full max-w-xs overflow-hidden rounded-full bg-gray-200 dark:bg-white/10"><div className="h-full rounded-full bg-cyan-500 transition-all" style={{ width: `${Math.round(completed / executable.length * 100)}%` }} /></div>}
+            </div>}
+            {script && <details className="mt-4 rounded-2xl border border-gray-100 bg-gray-50/70 p-3 text-xs dark:border-white/10 dark:bg-white/5"><summary className="cursor-pointer font-semibold">{ts("查看视频文案")}</summary><div className="mt-3 whitespace-pre-wrap leading-6 text-gray-600 dark:text-gray-300">{script}</div></details>}
+          </section>
+        </div>}
+      </main>
+
+      <div className="relative z-10 shrink-0 px-3 pb-2 pt-1 sm:px-6 sm:pb-3">
+        <div className="mx-auto w-full max-w-[1040px]">
+          <section className="soft-input overflow-hidden">
+            <div className="border-b border-gray-50 px-3 py-2 dark:border-white/10 sm:px-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <div className={running || !ready || references.length >= 8 ? "pointer-events-none opacity-40" : ""}>
+                    <ChatTopTools value={assetToolState} onChange={() => {}} showUpload={false} showRole={false} referencePickMode referenceImages={references.map((url, index) => ({ url, name: `${ts("商品参考图")} ${index + 1}`, public_id: referenceIDs[index] || undefined }))} onReferenceImagesChange={onReferencesChange} maxReferenceImages={8} assetLibraryLabel={ts("资产库")}/>
+                  </div>
+                  <div className="flex items-center rounded-xl bg-gray-100 p-0.5 dark:bg-white/10">
+                    <button type="button" aria-pressed="true" className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 shadow-sm dark:bg-gray-950 dark:text-white">{ts("自动创作")}</button>
+                    <button type="button" onClick={onProfessional} disabled={running} className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-gray-500 transition hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-400 dark:hover:text-white"><Settings2 size={13}/>{ts("专业编辑")}</button>
+                  </div>
+                </div>
+                <div className="ml-auto">
+                  <button type="button" aria-expanded={helpOpen} onClick={() => setHelpOpen(value => !value)} className="flex h-9 items-center gap-1.5 rounded-xl border border-gray-100 bg-gray-50 px-3 text-sm text-gray-600 transition hover:bg-white dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"><CircleHelp size={15}/>{ts("帮助")}</button>
+                </div>
+              </div>
+            </div>
+
+            <div className="relative flex min-w-0 items-start">
+              <div className="scroll-x-only flex max-w-[52%] shrink-0 items-center gap-2 overflow-x-auto py-3 pl-3 pr-1">
+                {references.map((url, index) => <div key={`${url}-${index}`} className="group relative h-16 w-16 shrink-0 overflow-hidden rounded-xl border border-gray-200 bg-gray-100 shadow-sm dark:border-white/10 dark:bg-white/5">
+                  <CanvasImagePreview url={url} title={`${ts("商品参考图")} ${index + 1}`} />
+                  <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-black/65 py-0.5 text-center text-[9px] leading-4 text-white">{index === 0 ? ts("主体") : index + 1}</span>
+                  <button type="button" aria-label={`${ts("移除参考图")} ${index + 1}`} onClick={() => onRemoveReference(index)} disabled={running} className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/70 text-white opacity-90 transition sm:opacity-0 sm:group-hover:opacity-100"><X size={11}/></button>
+                </div>)}
+                {references.length < 8 && <button type="button" onClick={() => uploadRef.current?.click()} disabled={!ready || running} title={ts("上传商品素材，首图作为主体参考")} className="flex h-16 w-20 shrink-0 flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-gray-200 bg-gray-50 text-gray-500 shadow-sm transition hover:border-primary/50 hover:bg-primary/5 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/15 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-primary/10">
+                  <Upload size={18}/><span className="text-[10px] leading-none">{ts("商品素材")} {references.length}/8</span>
+                </button>}
+                <input ref={uploadRef} type="file" multiple accept="image/png,image/jpeg,image/webp" className="hidden" onChange={event => { const files = Array.from(event.target.files || []).slice(0, Math.max(0, 8 - references.length)); void files.reduce((previous, file) => previous.then(() => onUpload(file)), Promise.resolve()); event.target.value = ""; }} />
+              </div>
+              <textarea
+                value={String(input?.data.prompt || "")}
+                onChange={event => onPromptChange(event.target.value)}
+                disabled={!ready || running}
+                rows={3}
+                placeholder={ts("告诉 AI 你想做什么\n描述很少也可以，没有明确要求的部分会自动补全。\n例如：给这款咖啡杯做一条抖音带货短视频，突出通勤便携和简约质感。")}
+                className="min-h-[88px] min-w-0 flex-1 resize-none bg-transparent px-4 pb-10 pt-3 pr-14 text-sm leading-relaxed text-gray-700 outline-none placeholder:text-gray-400 disabled:opacity-60 dark:text-gray-100 dark:placeholder:text-gray-500"
+              />
+            </div>
+
+            <div className="flex items-center gap-2 border-t border-gray-50 px-3 py-3 dark:border-white/10 sm:px-4">
+              <div className={`scroll-x-only flex min-w-0 flex-1 flex-nowrap items-center gap-2 overflow-x-auto pb-1 ${running ? "pointer-events-none opacity-60" : ""}`}>
+                <MediaOptionMenu icon={<Film size={14}/>} activeLabel={formatLabel} title={ts("发布平台与画幅")} subtitle={ts("画幅会同步到分镜和视频生成参数")} compactOnMobile menuWidth={280}>
+                  {close => <div className="space-y-1.5">{formats.map(item => <MediaMenuOption key={`${item.platform}-${item.aspectRatio}`} selected={platform === item.platform && aspectRatio === item.aspectRatio} onClick={() => { onFormatChange(item.platform, item.aspectRatio); close(); }}>{item.label}</MediaMenuOption>)}</div>}
+                </MediaOptionMenu>
+                <MediaOptionMenu icon={<Boxes size={14}/>} activeLabel={ts(`${segmentCount} 段`)} title={ts("视频段数")} subtitle={ts("段数越多，镜头更丰富，生成时间和费用也会增加")} compactOnMobile>
+                  {close => <div className="space-y-1.5">{STORY_SEGMENT_COUNT_OPTIONS.map(count => <MediaMenuOption key={count} selected={segmentCount === count} onClick={() => { onSegmentCountChange(count); close(); }}>{ts(`${count} 段`)}</MediaMenuOption>)}</div>}
+                </MediaOptionMenu>
+                <MediaOptionMenu icon={<Mic size={14}/>} activeLabel={audioLabel} title={ts("声音与字幕")} subtitle={ts("配音和字幕设置会进入最终合成链路")} compactOnMobile menuWidth={260}>
+                  {close => <div className="space-y-1.5">{([
+                    ["voice_subtitles", ts("自动配音 + 自动字幕")],
+                    ["voice_only", ts("仅自动配音")],
+                    ["subtitles_only", ts("仅自动字幕")],
+                    ["silent", ts("无配音和字幕")],
+                  ] as const).map(([mode, label]) => <MediaMenuOption key={mode} selected={audioMode === mode} onClick={() => { onAudioModeChange(mode); close(); }}>{label}</MediaMenuOption>)}</div>}
+                </MediaOptionMenu>
+              </div>
+              <button type="button" onClick={() => void onRun()} disabled={!running && !canStart} aria-label={running ? ts("停止并保留已完成内容") : started && state.canContinue ? ts("继续生成") : videos.length ? ts("按当前修改重新生成") : ts("直接生成成片")} title={running ? ts("停止并保留已完成内容") : started && state.canContinue ? ts("继续生成") : videos.length ? ts("按当前修改重新生成") : ts("直接生成成片")} className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-white shadow-md transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40 ${running ? "bg-red-500 hover:bg-red-600" : "bg-secondary hover:bg-secondary/90"}`}>
+                {running ? <X size={20}/> : <ArrowUp size={20}/>}
+              </button>
+            </div>
+          </section>
+        </div>
+      </div>
+      {helpOpen && typeof document !== "undefined" && createPortal(<div role="dialog" aria-modal="true" aria-label={ts("电商带货短视频帮助")} className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm" onMouseDown={event => { if (event.currentTarget === event.target) setHelpOpen(false); }}>
+        <div className="w-full max-w-xl overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-white/10 dark:bg-gray-900">
+          <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4 dark:border-white/10"><div><h2 className="font-bold text-gray-900 dark:text-white">{ts("电商带货短视频使用帮助")}</h2><p className="mt-1 text-xs text-gray-400">{ts("一句话或一组商品素材都能开始，明确要求优先执行。")}</p></div><button type="button" aria-label={ts("关闭帮助")} onClick={() => setHelpOpen(false)} className="flex h-8 w-8 items-center justify-center rounded-xl bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-300"><X size={16}/></button></div>
+          <div className="max-h-[70dvh] space-y-4 overflow-y-auto p-5 text-sm leading-6 text-gray-600 dark:text-gray-300">
+            <section><h3 className="font-semibold text-gray-900 dark:text-white">{ts("最快开始")}</h3><p>{ts("可以只写一句话，也可以只上传商品图。AI 会补全受众、卖点、场景、脚本、镜头和行动引导。素材首图默认作为商品主体参考。")}</p></section>
+            <section><h3 className="font-semibold text-gray-900 dark:text-white">{ts("默认设置")}</h3><p>{ts("默认按抖音竖屏 9:16、1 段视频、无配音和字幕生成，先用较低成本验证方向；需要更完整的节奏时再增加段数或开启配音字幕。")}</p></section>
+            <section><h3 className="font-semibold text-gray-900 dark:text-white">{ts("怎样控制结果")}</h3><p>{ts("需要保留的商品外观、Logo、包装、人物和文案请直接写明；不允许出现的内容也要明确写出。未说明的部分允许 AI 合理创作。")}</p></section>
+            <section><h3 className="font-semibold text-gray-900 dark:text-white">{ts("资产库和参考案例")}</h3><p>{ts("资产库默认展示我的资产；进入灵感广场后默认展示参考案例，也可切换查看社区作品。每页按需加载 18 项，选中的图片会作为商品参考素材加入本次创作。")}</p></section>
+            <section><h3 className="font-semibold text-gray-900 dark:text-white">{ts("何时进入专业编辑")}</h3><p>{ts("需要指定模型、逐镜修改、调整关键帧、配音角色或单独重跑某一步时，再进入专业编辑。当前描述和素材会继续保留。")}</p></section>
+            <section><h3 className="font-semibold text-gray-900 dark:text-white">{ts("修改建议")}</h3><p>{ts("第一次结果不理想时，先补充最重要的一两条差异，例如商品不要变形、镜头更快或不要人物，再重新生成，避免没有新增要求地连续重试。")}</p></section>
+          </div>
+          <div className="flex justify-end border-t border-gray-100 px-5 py-3 dark:border-white/10"><button type="button" onClick={() => setHelpOpen(false)} className="h-9 rounded-xl bg-primary px-5 text-sm font-semibold text-gray-950">{ts("我知道了")}</button></div>
+        </div>
+      </div>, document.body)}
+    </div>
+  </div>;
+}
+
 function CanvasEditor({
   authenticated,
   workflowCode = "infinite_canvas",
   initialTemplateID = "",
   initialCanvasID = "",
   keyboardEnabled = true,
+  compactCommerce = false,
   onResult,
   onAgentState,
 }: {
@@ -2880,6 +3089,7 @@ function CanvasEditor({
   initialTemplateID?: string;
   initialCanvasID?: string;
   keyboardEnabled?: boolean;
+  compactCommerce?: boolean;
   onResult?: (media: { images: string[]; videos: string[]; audios: string[]; text?: string }) => void;
   onAgentState?: (state: CanvasAgentState, continueRun: (action?: "continue" | "stop") => Promise<void>) => void;
 }) {
@@ -2925,6 +3135,7 @@ function CanvasEditor({
   const [notice, setNotice] = useState("");
   const [helpOpen, setHelpOpen] = useState(false);
   const [showMiniMap, setShowMiniMap] = useState(true);
+  const [professionalView, setProfessionalView] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importTab, setImportTab] = useState<"templates" | "history" | "code">("templates");
   const [importCode, setImportCode] = useState("");
@@ -2938,13 +3149,6 @@ function CanvasEditor({
   const [assetTargetID, setAssetTargetID] = useState("");
   const [assetTargetKind, setAssetTargetKind] = useState<GeneratorKind>("image");
   const [assetTargetFrameSlot, setAssetTargetFrameSlot] = useState<FramePairSlot | "">("");
-  const [assetItems, setAssetItems] = useState<CanvasAsset[]>([]);
-  const [assetQuery, setAssetQuery] = useState("");
-  const [assetLoading, setAssetLoading] = useState(false);
-  const [assetPage, setAssetPage] = useState(1);
-  const [assetTotal, setAssetTotal] = useState(0);
-  const assetRequest = useRef(0);
-  const assetAppliedQuery = useRef("");
   const [resultPreview, setResultPreview] = useState<CanvasResultPreview | null>(null);
   const [touchNavigation, setTouchNavigation] = useState(false);
   const [flowColorMode, setFlowColorMode] = useState<"light" | "dark">("light");
@@ -3372,27 +3576,6 @@ function CanvasEditor({
     }
   }, [authenticated, detectOneClickVideoDuration, t, update]);
 
-  const loadAssetLibrary = useCallback(async (query = "", kind = assetTargetKind, page = 1) => {
-    if (!authenticated) return;
-    const request = ++assetRequest.current;
-    setAssetLoading(true);
-    try {
-      const result = await listAssets({ q: query.trim() || undefined, kind, page, page_size: 20 });
-      if (request !== assetRequest.current) return;
-      setAssetPage(page);
-      setAssetTotal(Number(result.total || 0));
-      assetAppliedQuery.current = query;
-      setAssetItems(Array.isArray(result.items) ? result.items : []);
-    } catch (error) {
-      if (request !== assetRequest.current) return;
-      setAssetItems([]);
-      setAssetTotal(0);
-      setNotice(error instanceof Error ? error.message : t("canvas.assetLibraryLoadFailed"));
-    } finally {
-      if (request === assetRequest.current) setAssetLoading(false);
-    }
-  }, [assetTargetKind, authenticated, t]);
-
   const openAssetLibrary = useCallback((id: string, kind: GeneratorKind, frameSlot?: FramePairSlot) => {
     if (!authenticated) {
       setNotice(t("canvas.loginRequiredToUseAssets"));
@@ -3401,10 +3584,8 @@ function CanvasEditor({
     setAssetTargetID(id);
     setAssetTargetKind(kind);
     setAssetTargetFrameSlot(frameSlot || "");
-    setAssetQuery("");
     setAssetLibraryOpen(true);
-    void loadAssetLibrary("", kind);
-  }, [authenticated, loadAssetLibrary, t]);
+  }, [authenticated, t]);
 
   const selectAsset = useCallback((asset: CanvasAsset) => {
     const targetNode = nodesRef.current.find((node) => node.id === assetTargetID);
@@ -6854,14 +7035,15 @@ function CanvasEditor({
       const storyVideoModel = compatibleVideoModels.find((model) => model.code === workspaceRuntime.video_model_code) || preferredVideoModel(compatibleVideoModels);
       const narrationModel = audioModels.find((model) => model.code === workspaceRuntime.audio_model_code) || preferredNarrationAudioModel(audioModels);
       const durationOptions = storyDurationOptions(storyVideoModel);
-      const configuredCount = Number(workspaceRuntime.default_segment_count || 4);
-      const segmentCount = STORY_SEGMENT_COUNT_OPTIONS.includes(configuredCount as (typeof STORY_SEGMENT_COUNT_OPTIONS)[number]) ? configuredCount : 4;
+      const fallbackCount = workspaceRuntime.preset_code === "ecommerce_video" ? 1 : 4;
+      const configuredCount = Number(workspaceRuntime.default_segment_count || fallbackCount);
+      const segmentCount = STORY_SEGMENT_COUNT_OPTIONS.includes(configuredCount as (typeof STORY_SEGMENT_COUNT_OPTIONS)[number]) ? configuredCount : fallbackCount;
       const configuredDuration = Number(workspaceRuntime.default_segment_duration || 0);
       const segmentDuration = durationOptions.includes(configuredDuration) ? configuredDuration : preferredStoryDuration(storyVideoModel);
       const narrationMode: StoryNarrationMode = "smart";
       const subtitleMode: StorySubtitleMode = workspaceRuntime.default_story_subtitle_mode === "none" ? "none" : "auto";
       const reviewRequired = workspaceRuntime.default_story_review_required !== false;
-      const creationType: StoryCreationType = "story";
+      const creationType: StoryCreationType = workspaceRuntime.default_story_creation_type === "product" ? "product" : "story";
       const platform: StoryPlatform = "douyin";
       const aspectRatio: StoryAspectRatio = "9:16";
       const narrationModeLabel = t(`canvas.story.narrationMode.${narrationMode}`);
@@ -6890,6 +7072,8 @@ function CanvasEditor({
         storyImageModelCode: storyImageModel?.code || "",
         storyVideoModelCode: storyVideoModel?.code || "",
         storyAudioModelCode: narrationModel?.code || "",
+        useAudioModel: workspaceRuntime.default_story_use_audio_model === true,
+        commerceSettingsVersion: workspaceRuntime.preset_code === "ecommerce_video" ? 1 : undefined,
       };
       const scriptNode = generator("text", 0, t("canvas.node.storyScript"));
       scriptNode.data = {
@@ -7678,10 +7862,75 @@ function CanvasEditor({
       data: { ...node.data, outputText: copyNode?.data.outputText || "", outputUrls: imageURLs },
     };
   }), [nodes]);
+  const commerceInput = compactCommerce ? nodes.find(node => node.data.storyRole === "input") : undefined;
+  const commerceState = compactCommerce
+    ? canvasAgentState(nodes, edges, runningAll || reconcilingTasks, notice, executionPaused, executionMode)
+    : null;
 
   return (
     <CanvasNodeActions.Provider value={actions}>
       <div ref={editorRef} className="relative min-h-0 w-full flex-1 overflow-hidden overscroll-none bg-[#eef3f8] dark:bg-[#080d14]">
+        {compactCommerce && !professionalView && commerceState && <EcommerceVideoCompact
+          input={commerceInput}
+          state={commerceState}
+          nodes={nodes}
+          running={runningAll || reconcilingTasks}
+          onPromptChange={value => commerceInput && update(commerceInput.id, { prompt: value })}
+          onUpload={file => commerceInput ? uploadReference(commerceInput.id, "image", file) : Promise.resolve()}
+          onRemoveReference={index => commerceInput && update(commerceInput.id, {
+            referenceImageUrls: (commerceInput.data.referenceImageUrls || []).filter((_, itemIndex) => itemIndex !== index),
+            referenceImageIds: (commerceInput.data.referenceImageIds || []).filter((_, itemIndex) => itemIndex !== index),
+          })}
+          onRun={runAll}
+          onNew={newCanvas}
+          onOpenHistory={() => {
+            setImportTab("history");
+            setImportOpen(true);
+            void refreshHistory();
+          }}
+          onReferencesChange={items => commerceInput && update(commerceInput.id, {
+            referenceImageUrls: items.map(item => item.url),
+            referenceImageIds: items.map(item => item.public_id || ""),
+          })}
+          onFormatChange={(platform, aspectRatio) => {
+            if (!commerceInput) return;
+            configureStory(
+              commerceInput.id,
+              Number(commerceInput.data.storySegmentCount || 1),
+              Number(commerceInput.data.storySegmentDuration || 8),
+              normalizeStoryNarrationMode(commerceInput.data.storyNarrationMode),
+              {},
+              { platform, aspectRatio },
+            );
+          }}
+          onSegmentCountChange={count => {
+            if (!commerceInput) return;
+            const duration = Number(commerceInput.data.storySegmentDuration || 8);
+            configureStory(
+              commerceInput.id,
+              count,
+              duration,
+              normalizeStoryNarrationMode(commerceInput.data.storyNarrationMode),
+              {},
+              { targetDuration: count * duration },
+            );
+          }}
+          onAudioModeChange={mode => {
+            if (!commerceInput) return;
+            const narrationMode: StoryNarrationMode = mode === "subtitles_only" || mode === "silent" ? "none" : "smart";
+            const subtitleMode: StorySubtitleMode = mode === "voice_only" || mode === "silent" ? "none" : "auto";
+            configureStory(
+              commerceInput.id,
+              Number(commerceInput.data.storySegmentCount || 1),
+              Number(commerceInput.data.storySegmentDuration || 8),
+              narrationMode,
+              {},
+              { useAudioModel: mode === "voice_subtitles" || mode === "voice_only", subtitleMode },
+            );
+          }}
+          onProfessional={() => setProfessionalView(true)}
+        />}
+        {compactCommerce && professionalView && <button type="button" onClick={() => setProfessionalView(false)} className="absolute right-4 top-16 z-50 rounded-xl border border-cyan-300 bg-white/95 px-3 py-2 text-xs font-semibold text-cyan-700 shadow-lg backdrop-blur dark:border-cyan-400/30 dark:bg-gray-900/95 dark:text-cyan-200">{ts("返回简洁模式")}</button>}
         <input
           ref={importRef}
           type="file"
@@ -7726,7 +7975,7 @@ function CanvasEditor({
           preventScrolling
           colorMode={flowColorMode}
           defaultEdgeOptions={{ type: "smoothstep", animated: true }}
-          className="infinite-canvas-flow"
+          className={`infinite-canvas-flow ${compactCommerce && !professionalView ? "invisible" : ""}`}
         >
           <Background variant={BackgroundVariant.Lines} gap={44} size={1} color="rgba(100,116,139,0.14)" />
           {showMiniMap && nodes.length > 0 && (
@@ -8041,56 +8290,19 @@ function CanvasEditor({
           </div>
         )}
 
-        {assetLibraryOpen && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm" onClick={() => setAssetLibraryOpen(false)}>
-            <div className="flex max-h-[76vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-white shadow-2xl dark:bg-[#151b25]" onClick={(event) => event.stopPropagation()}>
-              <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4 dark:border-white/10">
-                <div>
-                  <div className="flex items-center gap-2 font-semibold text-gray-900 dark:text-gray-100"><FolderOpen size={17} />{t("canvas.assetLibrary")}</div>
-                  <div className="mt-1 text-[10px] text-gray-400">
-                    {assetTargetKind === "video"
-                      ? t("canvas.assetLibraryVideoHint")
-                      : assetTargetKind === "audio"
-                        ? t("canvas.assetLibraryAudioHint")
-                        : t("canvas.assetLibraryImageHint")}
-                  </div>
-                </div>
-                <button type="button" onClick={() => setAssetLibraryOpen(false)} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-white/10"><X size={15} /></button>
-              </div>
-              <form className="flex gap-2 px-4 py-3" onSubmit={(event) => { event.preventDefault(); void loadAssetLibrary(assetQuery, assetTargetKind); }}>
-                <div className="flex h-9 flex-1 items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 dark:border-white/10 dark:bg-white/5">
-                  <Search size={14} className="text-gray-400" />
-                  <input value={assetQuery} onChange={(event) => setAssetQuery(event.target.value)} placeholder={t("canvas.assetLibrarySearch")} className="min-w-0 flex-1 bg-transparent text-xs outline-none dark:text-gray-100" />
-                </div>
-                <button type="submit" className="h-9 rounded-xl bg-cyan-500 px-4 text-xs font-semibold text-white hover:bg-cyan-600">{t("common.search")}</button>
-              </form>
-              <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
-                {assetLoading ? (
-                  <div className="flex h-72 items-center justify-center text-sm text-gray-400"><LoaderCircle size={20} className="mr-2 animate-spin" />{t("canvas.assetLibraryLoading")}</div>
-                ) : assetItems.length ? (
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
-                    {assetItems.map((asset) => (
-                      <button key={asset.public_id} type="button" onClick={() => selectAsset(asset)} className="group overflow-hidden rounded-xl border border-gray-200 bg-gray-50 text-left transition hover:border-cyan-400 hover:shadow-md dark:border-white/10 dark:bg-white/5">
-                        <div className="aspect-square overflow-hidden bg-gray-100 dark:bg-gray-950/40">
-                          {assetTargetKind === "video"
-                            ? <video src={asset.url} muted preload="metadata" className="h-full w-full object-cover" />
-                            : assetTargetKind === "audio"
-                              ? <div className="flex h-full items-center justify-center p-2"><audio preload="none" src={asset.url} controls className="w-full" /></div>
-                            // eslint-disable-next-line @next/next/no-img-element
-                            : <img loading="lazy" decoding="async" src={asset.url} alt="" className="h-full w-full object-cover transition group-hover:scale-105" />}
-                        </div>
-                        <div className="truncate px-2.5 py-2 text-[11px] font-medium text-gray-700 dark:text-gray-200">{asset.name || asset.public_id}</div>
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="flex h-72 flex-col items-center justify-center text-xs text-gray-400"><FolderOpen size={28} className="mb-2 opacity-50" />{t("canvas.assetLibraryEmpty")}</div>
-                )}
-              </div>
-              <AssetPagination page={assetPage} total={assetTotal} loading={assetLoading} onChange={(page) => void loadAssetLibrary(assetAppliedQuery.current, assetTargetKind, page)} />
-            </div>
-          </div>
-        )}
+        <SystemAssetLibraryDialog
+          open={assetLibraryOpen}
+          kind={assetTargetKind === "video" || assetTargetKind === "audio" ? assetTargetKind : "image"}
+          title={t("canvas.assetLibrary")}
+          description={assetTargetKind === "video" ? t("canvas.assetLibraryVideoHint") : assetTargetKind === "audio" ? t("canvas.assetLibraryAudioHint") : t("canvas.assetLibraryImageHint")}
+          maxSelected={1}
+          onClose={() => setAssetLibraryOpen(false)}
+          onConfirm={(items: SystemAssetPick[]) => {
+            const asset = items[0];
+            if (!asset?.public_id) return;
+            selectAsset(asset as CanvasAsset);
+          }}
+        />
       </div>
     </CanvasNodeActions.Provider>
   );
@@ -8102,6 +8314,7 @@ export function InfiniteCanvasWorkspace({
   initialTemplateID = "",
   initialCanvasID = "",
   keyboardEnabled = true,
+  compactCommerce = false,
   onResult,
   onAgentState,
 }: {
@@ -8110,12 +8323,13 @@ export function InfiniteCanvasWorkspace({
   initialTemplateID?: string;
   initialCanvasID?: string;
   keyboardEnabled?: boolean;
+  compactCommerce?: boolean;
   onResult?: (media: { images: string[]; videos: string[]; audios: string[]; text?: string }) => void;
   onAgentState?: (state: CanvasAgentState, continueRun: (action?: "continue" | "stop") => Promise<void>) => void;
 }) {
   return (
     <ReactFlowProvider>
-      <CanvasEditor authenticated={authenticated} workflowCode={workflowCode} initialTemplateID={initialTemplateID} initialCanvasID={initialCanvasID} keyboardEnabled={keyboardEnabled} onResult={onResult} onAgentState={onAgentState} />
+      <CanvasEditor authenticated={authenticated} workflowCode={workflowCode} initialTemplateID={initialTemplateID} initialCanvasID={initialCanvasID} keyboardEnabled={keyboardEnabled} compactCommerce={compactCommerce} onResult={onResult} onAgentState={onAgentState} />
     </ReactFlowProvider>
   );
 }

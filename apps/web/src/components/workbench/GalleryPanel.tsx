@@ -19,6 +19,7 @@ import {
   type ReferenceGalleryItem,
   type ReferenceGalleryManifest,
 } from "./galleryReference";
+import { AssetPagination } from "./AssetPagination";
 
 interface GalleryItem {
   public_id: string;
@@ -51,7 +52,7 @@ type GalleryDetail =
   | { kind: "reference"; item: ReferenceGalleryItem }
   | { kind: "community"; item: GalleryItem };
 
-const REFERENCE_BATCH_SIZE = 24;
+const GALLERY_PAGE_SIZE = 18;
 
 export function GalleryPanel({
   activeTag,
@@ -101,12 +102,13 @@ export function GalleryPanel({
   const [communityError, setCommunityError] = useState("");
   const [communityReload, setCommunityReload] = useState(0);
   const [communityQuery, setCommunityQuery] = useState("");
+  const [communityPage, setCommunityPage] = useState(1);
   const [communityLanguage, setCommunityLanguage] = useState<GalleryLanguage | "all">("all");
   const [manifest, setManifest] = useState<ReferenceGalleryManifest | null>(null);
   const [referenceLoading, setReferenceLoading] = useState(true);
   const [referenceError, setReferenceError] = useState("");
   const [referenceReload, setReferenceReload] = useState(0);
-  const [referenceVisibleCount, setReferenceVisibleCount] = useState(REFERENCE_BATCH_SIZE);
+  const [referencePage, setReferencePage] = useState(1);
   const [referenceQuery, setReferenceQuery] = useState("");
   const [category, setCategory] = useState("all");
   const [style, setStyle] = useState("all");
@@ -119,6 +121,7 @@ export function GalleryPanel({
 
   useEffect(() => {
     setCommunityTag(activeTag || "all");
+    setCommunityPage(1);
     if (!galleryMode && activeTag && activeTag !== "all") setInternalMode("community");
   }, [activeTag, galleryMode]);
 
@@ -129,7 +132,10 @@ export function GalleryPanel({
   useEffect(() => setStyle(activeReferenceStyle || "all"), [activeReferenceStyle]);
   useEffect(() => setScene(activeReferenceScene || "all"), [activeReferenceScene]);
   useEffect(() => setReferenceLanguage(activeReferenceLanguage), [activeReferenceLanguage]);
-  useEffect(() => setCommunityLanguage(activeCommunityLanguage), [activeCommunityLanguage]);
+  useEffect(() => {
+    setCommunityLanguage(activeCommunityLanguage);
+    setCommunityPage(1);
+  }, [activeCommunityLanguage]);
 
   useEffect(() => {
     if (mode !== "community") return;
@@ -159,7 +165,7 @@ export function GalleryPanel({
     setCommunityLoading(true);
     setCommunityError("");
     const query = communityTag && communityTag !== "all" ? `&tag=${encodeURIComponent(communityTag)}` : "";
-    api<{ items: GalleryItem[]; total?: number }>(`/api/gallery?page_size=60${query}`)
+    api<{ items: GalleryItem[]; total?: number }>(`/api/gallery?page=${communityPage}&page_size=${GALLERY_PAGE_SIZE}${query}`)
       .then((result) => {
         if (!active) return;
         setCommunityItems(result.items || []);
@@ -168,7 +174,7 @@ export function GalleryPanel({
       .catch(() => { if (active) setCommunityError(t("gallery.loadFailed")); })
       .finally(() => { if (active) setCommunityLoading(false); });
     return () => { active = false; };
-  }, [communityReload, communityTag, mode, t]);
+  }, [communityPage, communityReload, communityTag, mode, t]);
 
   useEffect(() => {
     let active = true;
@@ -188,7 +194,7 @@ export function GalleryPanel({
   }, [referenceReload, t]);
 
   useEffect(() => {
-    setReferenceVisibleCount(REFERENCE_BATCH_SIZE);
+    setReferencePage(1);
   }, [referenceQuery, category, style, scene, referenceLanguage]);
 
   useEffect(() => {
@@ -254,6 +260,7 @@ export function GalleryPanel({
   };
   const selectCommunityTag = (next: string) => {
     setCommunityTag(next);
+    setCommunityPage(1);
     setCommunityLanguage("all");
     onCommunityTagChange?.(next);
     onCommunityLanguageChange?.("all");
@@ -278,6 +285,7 @@ export function GalleryPanel({
   const selectCommunityLanguage = (next: string) => {
     const language = next as GalleryLanguage | "all";
     setCommunityLanguage(language);
+    setCommunityPage(1);
     onCommunityLanguageChange?.(language);
   };
 
@@ -358,17 +366,11 @@ export function GalleryPanel({
             ) : (
               <>
                 <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-                  {referenceItems.slice(0, referenceVisibleCount).map((item) => (
+                  {referenceItems.slice((referencePage - 1) * GALLERY_PAGE_SIZE, referencePage * GALLERY_PAGE_SIZE).map((item) => (
                     <ReferenceCard key={item.id} item={item} onOpen={() => setDetail({ kind: "reference", item })} onCopy={() => copyPrompt(`reference-${item.id}`, item.prompt)} copied={copied === `reference-${item.id}`} taxonomyLabel={taxonomyLabel} t={t} />
                   ))}
                 </div>
-                {referenceItems.length > referenceVisibleCount && (
-                  <div className="mt-7 text-center">
-                    <button type="button" onClick={() => setReferenceVisibleCount((count) => count + REFERENCE_BATCH_SIZE)} className="rounded-xl border border-gray-200 bg-white px-5 py-2.5 text-sm font-semibold text-gray-700 transition hover:border-emerald-400 hover:text-emerald-700 dark:border-white/10 dark:bg-white/5 dark:text-gray-200 dark:hover:border-emerald-300/50 dark:hover:text-emerald-200">
-                      {t("common.more")}
-                    </button>
-                  </div>
-                )}
+                <AssetPagination page={referencePage} total={referenceItems.length} loading={referenceLoading} pageSize={GALLERY_PAGE_SIZE} onChange={setReferencePage} />
               </>
             )}
           </>
@@ -382,7 +384,7 @@ export function GalleryPanel({
                 </div>
                 <label className="relative block w-full lg:max-w-md">
                   <Search className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" size={17} />
-                  <input value={communityQuery} onChange={(event) => setCommunityQuery(event.target.value)} placeholder={t("gallery.searchPlaceholder")} className="h-11 w-full rounded-xl border border-gray-200 bg-gray-50 pl-10 pr-4 text-sm text-gray-900 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/15 dark:border-white/10 dark:bg-white/5 dark:text-white dark:placeholder:text-gray-500" />
+                  <input value={communityQuery} onChange={(event) => { setCommunityQuery(event.target.value); setCommunityPage(1); }} placeholder={t("gallery.searchPlaceholder")} className="h-11 w-full rounded-xl border border-gray-200 bg-gray-50 pl-10 pr-4 text-sm text-gray-900 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/15 dark:border-white/10 dark:bg-white/5 dark:text-white dark:placeholder:text-gray-500" />
                 </label>
               </div>
               <div className="mt-5 space-y-4 border-t border-gray-100 pt-4 dark:border-white/10">
@@ -406,9 +408,12 @@ export function GalleryPanel({
             ) : communityVisible.length === 0 ? (
               <GalleryEmpty title={t("gallery.empty")} description={t("gallery.communityEmptyDesc")} />
             ) : (
-              <div className="columns-1 gap-4 sm:columns-2 lg:columns-3 xl:columns-4">
-                {communityVisible.map((item) => <CommunityCard key={item.public_id} item={item} onOpen={() => setDetail({ kind: "community", item })} featuredLabel={t("gallery.featured")} paidLabel={t("common.compute")} videoLabel={t("asset.video")} />)}
-              </div>
+              <>
+                <div className="columns-1 gap-4 sm:columns-2 lg:columns-3 xl:columns-4">
+                  {communityVisible.map((item) => <CommunityCard key={item.public_id} item={item} onOpen={() => setDetail({ kind: "community", item })} featuredLabel={t("gallery.featured")} paidLabel={t("common.compute")} videoLabel={t("asset.video")} />)}
+                </div>
+                <AssetPagination page={communityPage} total={communityTotal} loading={communityLoading} pageSize={GALLERY_PAGE_SIZE} onChange={setCommunityPage} />
+              </>
             )}
           </>
         )}

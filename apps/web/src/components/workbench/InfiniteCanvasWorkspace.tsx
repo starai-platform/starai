@@ -3070,8 +3070,8 @@ function EcommerceVideoCompact({
                 <MediaOptionMenu icon={<Film size={14}/>} activeLabel={formatLabel} title={ts("发布平台与画幅")} subtitle={ts("画幅会同步到分镜和视频生成参数")} compactOnMobile menuWidth={280}>
                   {close => <div className="space-y-1.5">{formats.map(item => <MediaMenuOption key={`${item.platform}-${item.aspectRatio}`} selected={platform === item.platform && aspectRatio === item.aspectRatio} onClick={() => { onFormatChange(item.platform, item.aspectRatio); close(); }}>{item.label}</MediaMenuOption>)}</div>}
                 </MediaOptionMenu>
-                <MediaOptionMenu icon={<Boxes size={14}/>} activeLabel={ts(`${segmentCount} 段`)} title={ts("视频段数")} subtitle={ts("段数越多，镜头更丰富，生成时间和费用也会增加")} compactOnMobile>
-                  {close => <div className="space-y-1.5">{STORY_SEGMENT_COUNT_OPTIONS.map(count => <MediaMenuOption key={count} selected={segmentCount === count} onClick={() => { onSegmentCountChange(count); close(); }}>{ts(`${count} 段`)}</MediaMenuOption>)}</div>}
+                <MediaOptionMenu icon={<Boxes size={14}/>} activeLabel={`${segmentCount} ${ts("段")}`} title={ts("视频段数")} subtitle={ts("段数越多，镜头更丰富，生成时间和费用也会增加")} compactOnMobile>
+                  {close => <div className="space-y-1.5">{STORY_SEGMENT_COUNT_OPTIONS.map(count => <MediaMenuOption key={count} selected={segmentCount === count} onClick={() => { onSegmentCountChange(count); close(); }}>{count} {ts("段")}</MediaMenuOption>)}</div>}
                 </MediaOptionMenu>
                 <MediaOptionMenu icon={<Mic size={14}/>} activeLabel={audioLabel} title={ts("声音与字幕")} subtitle={ts("配音和字幕设置会进入最终合成链路")} compactOnMobile menuWidth={260}>
                   {close => <div className="space-y-1.5">{([

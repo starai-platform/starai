@@ -12,6 +12,14 @@ import enSource from "./source-locales/en-US.ts";
 import jaSource from "./source-locales/ja-JP.ts";
 import koSource from "./source-locales/ko-KR.ts";
 import viSource from "./source-locales/vi-VN.ts";
+import enAgentWorkspace from "./source-locales/supplements/en-US/agentWorkspace.ts";
+import jaAgentWorkspace from "./source-locales/supplements/ja-JP/agentWorkspace.ts";
+import koAgentWorkspace from "./source-locales/supplements/ko-KR/agentWorkspace.ts";
+import viAgentWorkspace from "./source-locales/supplements/vi-VN/agentWorkspace.ts";
+import enCommerceVideo from "./source-locales/supplements/en-US/commerceVideo.ts";
+import jaCommerceVideo from "./source-locales/supplements/ja-JP/commerceVideo.ts";
+import koCommerceVideo from "./source-locales/supplements/ko-KR/commerceVideo.ts";
+import viCommerceVideo from "./source-locales/supplements/vi-VN/commerceVideo.ts";
 
 test("every locale covers canonical keys and preserves named variables", () => {
   const variables = (text) => [...new Set(text.match(/\{[a-zA-Z_][a-zA-Z0-9_]*\}/g) || [])].sort();
@@ -69,6 +77,19 @@ test("commerce, photo, product, novel and try-on workspaces have direct translat
     for (const key of keys) {
       assert.ok(dictionary[key]?.trim(), `missing ${locale} workspace translation: ${key}`);
       assert.notEqual(dictionary[key], key, `untranslated ${locale} workspace text: ${key}`);
+    }
+  }
+});
+
+test("e-commerce image and video workspace supplements stay in sync", () => {
+  for (const group of [
+    { en: enAgentWorkspace, ja: jaAgentWorkspace, ko: koAgentWorkspace, vi: viAgentWorkspace },
+    { en: enCommerceVideo, ja: jaCommerceVideo, ko: koCommerceVideo, vi: viCommerceVideo },
+  ]) {
+    const expected = Object.keys(group.en).sort();
+    for (const [locale, dictionary] of Object.entries(group)) {
+      assert.deepEqual(Object.keys(dictionary).sort(), expected, `unsynced ${locale} commerce workspace translations`);
+      for (const key of expected) assert.ok(dictionary[key]?.trim(), `empty ${locale} commerce workspace translation: ${key}`);
     }
   }
 });

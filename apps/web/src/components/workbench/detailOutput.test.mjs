@@ -65,6 +65,8 @@ test("detail results keep modules visible and compose only on request", () => {
   assert.match(panel, /查看模块规划与文案/);
   assert.match(panel, /一键合成长图/);
   assert.match(panel, /composeDetailPage\(imageURLs\)/);
+  assert.match(panel, /detailPage\.render_mode === "ai_generated_text_modules"/, "native image text mode should be identifiable in the result UI");
+  assert.match(panel, /!hasAIIntegratedText && section\.status === "succeeded"/, "native image text must not expose the post-typesetting editor");
   assert.doesNotMatch(panel, /max-h-\[620px\] overflow-y-auto/, "the long image should scroll with the result page instead of inside a nested viewport");
   assert.match(result, /mediaTasks\.length > 0 && <MediaTaskGrid/, "individual generated images must remain visible");
   assert.doesNotMatch(result, /!\(detailPage && textOf\(detailPage\.long_image_url\)\)/, "single module cards should remain visible even when a long image exists");

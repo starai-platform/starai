@@ -50,3 +50,17 @@ func TestFreeCommerceEnhanceContextKeepsEditableConcepts(t *testing.T) {
 		t.Fatal("free detail enhancement lost the editable concept-copy requirement")
 	}
 }
+
+func TestCommerceDetailTextModesGiveDifferentEnhancementInstructions(t *testing.T) {
+	free := commerceDetailTextModeGuide("free")
+	rendered := commerceDetailTextModeGuide("render_text")
+	if !strings.Contains(free, "随详情图直接生成") || !strings.Contains(free, "不要改成无字底图或后期叠字") {
+		t.Fatalf("free mode does not request AI-integrated copy: %s", free)
+	}
+	if !strings.Contains(rendered, "无字底图") || !strings.Contains(rendered, "可编辑文字") {
+		t.Fatalf("render-text mode lost the former typesetting path: %s", rendered)
+	}
+	if commerceDetailTextModeGuide("precise") != "" {
+		t.Fatal("precise mode should not receive creative text guidance")
+	}
+}

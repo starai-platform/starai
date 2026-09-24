@@ -1174,7 +1174,7 @@ func executeWorkerGenerationAttempt(ctx context.Context, pool *pgxpool.Pool, p I
 			payload["mask"] = mask
 		}
 	}
-	if isVideo {
+	if isVideo && !isDolaSeedanceAdapter(route.RuntimeRule) {
 		payload = videoparams.SanitizeUpstreamPayload(payload, endpoint)
 	}
 	if err := normalizePayloadMedia(ctx, payload, endpoint); err != nil {
@@ -1196,7 +1196,7 @@ func executeWorkerGenerationAttempt(ctx context.Context, pool *pgxpool.Pool, p I
 		timeout = openAIImagesRequestTimeout(timeout)
 		result.ResponseBody, result.StatusCode, err = postOpenAIImagesUpstream(ctx, route.Connection, endpoint, payload, openAIReferenceImages, route.RuntimeRule, timeout)
 	} else if isVideo {
-		result.ResponseBody, result.StatusCode, err = postVideoUpstream(ctx, route.Connection, endpoint, payload, p.TaskNo)
+		result.ResponseBody, result.StatusCode, err = postVideoUpstream(ctx, route.Connection, endpoint, payload, route.RuntimeRule, p.TaskNo)
 	} else {
 		body, _ = json.Marshal(payload)
 		timeout := upstreamRequestTimeout(route.RuntimeRule, isAudio)
@@ -2471,7 +2471,10 @@ func collapseMediaToString(v interface{}) string {
 }
 
 // postVideoUpstream uses JSON (public image_url) or multipart (local/private reference file).
-func postVideoUpstream(ctx context.Context, conn connectionConfig, endpoint string, payload map[string]interface{}, taskNo string) ([]byte, int, error) {
+func postVideoUpstream(ctx context.Context, conn connectionConfig, endpoint string, payload, runtimeRule map[string]interface{}, taskNo string) ([]byte, int, error) {
+	if isDolaSeedanceAdapter(runtimeRule) {
+		return postDolaVideoUpstream(ctx, conn, endpoint, payload, runtimeRule, taskNo)
+	}
 	target := joinBaseEndpoint(conn.BaseURL, endpoint)
 	refURL := ""
 	if s, ok := payload["image_url"].(string); ok {
@@ -2498,6 +2501,74 @@ func postVideoUpstream(ctx context.Context, conn connectionConfig, endpoint stri
 	log.Printf("Task %s video upstream JSON POST %s body=%s", taskNo, target, truncateText(string(body), 800))
 	respBody, statusCode, err := doJSONRequest(ctx, conn, "POST", target, body, 3*time.Minute)
 	log.Printf("Task %s video upstream JSON response %d: %s", taskNo, statusCode, truncateText(string(respBody), 500))
+	return respBody, statusCode, err
+}
+
+func isDolaSeedanceAdapter(runtimeRule map[string]interface{}) bool {
+	upstream, _ := runtimeRule["upstream"].(map[string]interface{})
+	return strings.EqualFold(strings.TrimSpace(fmt.Sprint(upstream["adapter"])), "dola_seedance_30s")
+}
+
+func postDolaVideoUpstream(ctx context.Context, conn connectionConfig, endpoint string, payload, runtimeRule map[string]interface{}, taskNo string) ([]byte, int, error) {
+	prompt := strings.TrimSpace(fmt.Sprint(payload["prompt"]))
+	if length := len([]rune(prompt)); length < 1 || length > 3000 {
+		return nil, 0, errors.New("Dola 提示词必须为 1～3000 个字符")
+	}
+	ratio := strings.TrimSpace(fmt.Sprint(payload["ratio"]))
+	allowedRatios := map[string]bool{"16:9": true, "9:16": true, "1:1": true, "3:4": true, "4:3": true, "21:9": true}
+	if !allowedRatios[ratio] {
+		return nil, 0, fmt.Errorf("Dola 不支持画面比例 %q", ratio)
+	}
+	if seconds := strings.TrimSpace(fmt.Sprint(payload["seconds"])); seconds != "30" {
+		return nil, 0, errors.New("Dola 视频时长固定为 30 秒")
+	}
+
+	references := referenceImageSources(payload["reference_images"])
+	if len(references) > 9 {
+		return nil, 0, errors.New("Dola 最多支持 9 张参考图")
+	}
+	const maxImageBytes = int64(20 << 20)
+	files := make([]multipartFile, 0, len(references))
+	var totalBytes int64
+	for index, source := range references {
+		remaining := maxImageBytes - totalBytes
+		if remaining <= 0 {
+			return nil, 0, errors.New("Dola 参考图总大小不能超过 20 MiB")
+		}
+		data, _, err := loadMediaBytesLimit(ctx, source, remaining)
+		if err != nil {
+			return nil, 0, fmt.Errorf("Dola 第 %d 张参考图读取失败: %w", index+1, err)
+		}
+		contentType := http.DetectContentType(data)
+		ext := ""
+		switch contentType {
+		case "image/jpeg":
+			ext = ".jpg"
+		case "image/png":
+			ext = ".png"
+		default:
+			return nil, 0, fmt.Errorf("Dola 第 %d 张参考图仅支持 JPEG 或 PNG", index+1)
+		}
+		totalBytes += int64(len(data))
+		files = append(files, multipartFile{Field: "images[]", Name: fmt.Sprintf("reference-%d%s", index+1, ext), ContentType: contentType, Data: data})
+	}
+
+	target := joinBaseEndpoint(conn.BaseURL, endpoint)
+	fields := map[string]interface{}{"prompt": prompt, "ratio": ratio, "seconds": "30"}
+	timeout := upstreamRequestTimeout(runtimeRule, false)
+	log.Printf("Task %s Dola multipart POST %s images=%d bytes=%d", taskNo, target, len(files), totalBytes)
+	respBody, statusCode, err := doMultipartFilesRequest(ctx, conn, target, fields, files, timeout, 2<<20)
+	log.Printf("Task %s Dola response %d: %s", taskNo, statusCode, truncateText(string(respBody), 500))
+	if err == nil && statusCode >= 200 && statusCode < 300 {
+		var body map[string]interface{}
+		if json.Unmarshal(respBody, &body) == nil && strings.TrimSpace(fmt.Sprint(body["code"])) != "1" {
+			message := strings.TrimSpace(fmt.Sprint(body["message"]))
+			if message == "" || message == "<nil>" {
+				message = "Dola 创建视频任务失败"
+			}
+			err = errors.New(message)
+		}
+	}
 	return respBody, statusCode, err
 }
 
@@ -2532,6 +2603,10 @@ func isPrivateMediaURL(raw string) bool {
 }
 
 func loadMediaBytes(ctx context.Context, src string) ([]byte, string, error) {
+	return loadMediaBytesLimit(ctx, src, 15<<20)
+}
+
+func loadMediaBytesLimit(ctx context.Context, src string, maxBytes int64) ([]byte, string, error) {
 	src = strings.TrimSpace(src)
 	if strings.HasPrefix(src, "data:") {
 		comma := strings.Index(src, ",")
@@ -2546,6 +2621,9 @@ func loadMediaBytes(ctx context.Context, src string) ([]byte, string, error) {
 			contentType = meta
 		}
 		raw, err := base64.StdEncoding.DecodeString(src[comma+1:])
+		if err == nil && maxBytes > 0 && int64(len(raw)) > maxBytes {
+			return nil, "", fmt.Errorf("媒体文件超过大小限制(%d MiB)", maxBytes>>20)
+		}
 		return raw, contentType, err
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", src, nil)
@@ -2565,7 +2643,13 @@ func loadMediaBytes(ctx context.Context, src string) ([]byte, string, error) {
 	if contentType == "" {
 		contentType = "image/jpeg"
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 15<<20))
+	if maxBytes <= 0 {
+		maxBytes = 15 << 20
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err == nil && int64(len(data)) > maxBytes {
+		return nil, "", fmt.Errorf("媒体文件超过大小限制(%d MiB)", maxBytes>>20)
+	}
 	return data, contentType, err
 }
 

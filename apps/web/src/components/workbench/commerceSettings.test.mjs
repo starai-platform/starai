@@ -14,7 +14,10 @@ test("commerce channel, audience and visual controls share one settings menu", (
   assert.match(menu, /<MediaMenuOption selected=\{!commerceBrief\[setting.key\]\}/, "automatic option is missing");
   for (const field of ['key:"channel"', 'key:"audience"', 'key:"visual"']) assert.match(menu, new RegExp(field));
   assert.match(menu, /setCreativeMode\("free"\)/, "free creation mode is missing");
+  assert.match(menu, /setCreativeMode\("render_text"\)/, "rendered editable-text mode is missing");
   assert.match(menu, /setCreativeMode\("precise"\)/, "precise creation mode is missing");
+  assert.match(menu, /AI 补全文案并直接画入详情图；不会再后期叠字/, "free mode must describe AI-integrated image text");
+  assert.match(menu, /AI 先生成无字底图，再把可编辑文案准确渲染到图片上/, "render-text mode must preserve the former post-typesetting path");
   assert.ok(source.includes('{isDetailPageScene && <MediaOptionMenu icon={<Settings2 size={14}/>} title={ts("详情页模块数")}'), "detail modules should only appear after choosing detail-page output");
   assert.match(source, /detail_section_count_locked: isDetailPageScene \? detailSectionCountLocked : false/, "manual count choice must be sent to the workflow");
   assert.match(source, /setDetailSectionCountLocked\(true\)/, "explicit module selection must lock the count");

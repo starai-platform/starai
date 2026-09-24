@@ -71,6 +71,9 @@ func BuildUpstreamVideoPayload(
 		}
 	}
 	out = ApplyUpstreamTransforms(out, runtimeRule, params)
+	if strings.EqualFold(upCfg.Adapter, "dola_seedance_30s") {
+		return buildDolaSeedancePayload(params)
+	}
 	if strings.EqualFold(upCfg.Adapter, "volcengine_seedance_2") {
 		out = buildVolcengineSeedancePayload(out, params)
 	}
@@ -119,6 +122,22 @@ func BuildUpstreamVideoPayload(
 		out["_video_upload_profile"] = uploadProfile
 	}
 	return SanitizeUpstreamPayload(out, "")
+}
+
+func buildDolaSeedancePayload(params map[string]interface{}) map[string]interface{} {
+	prompt := strings.TrimSpace(fmt.Sprint(params["prompt"]))
+	if prompt == "<nil>" {
+		prompt = ""
+	}
+	out := map[string]interface{}{
+		"prompt":  prompt,
+		"ratio":   strings.TrimSpace(fmt.Sprint(params["ratio"])),
+		"seconds": "30",
+	}
+	if refs := mediaURLList(params["reference_images"]); len(refs) > 0 {
+		out["reference_images"] = refs
+	}
+	return out
 }
 
 func buildAliyunQwenImagePayload(model string, params map[string]interface{}) map[string]interface{} {

@@ -14,6 +14,26 @@ func TestWaveSpeedLipSyncPayload(t *testing.T) {
 	}
 }
 
+func TestBuildDolaSeedancePayloadUsesFixedThirtySecondContract(t *testing.T) {
+	got := BuildUpstreamVideoPayload(
+		"dola-seedance-30s",
+		"dola-seedance-30s",
+		map[string]interface{}{"upstream": map[string]interface{}{"adapter": "dola_seedance_30s"}},
+		nil,
+		map[string]interface{}{
+			"prompt":           "city sunrise",
+			"duration":         30,
+			"ratio":            "16:9",
+			"reference_images": []interface{}{"https://example.com/1.png", "https://example.com/2.jpg"},
+		},
+	)
+	encoded, _ := json.Marshal(got)
+	expected := `{"prompt":"city sunrise","ratio":"16:9","reference_images":["https://example.com/1.png","https://example.com/2.jpg"],"seconds":"30"}`
+	if string(encoded) != expected {
+		t.Fatalf("unexpected Dola payload: %s", encoded)
+	}
+}
+
 func TestSyncPayloadUsesOnlyLockedMedia(t *testing.T) {
 	input := []interface{}{map[string]interface{}{"type": "video", "url": "https://example.com/v.mp4"}, map[string]interface{}{"type": "audio", "url": "https://example.com/a.wav"}}
 	got := BuildUpstreamVideoPayload("video_sync_lipsync", "sync-3", map[string]interface{}{"upstream": map[string]interface{}{"adapter": "sync_lipsync"}}, nil,

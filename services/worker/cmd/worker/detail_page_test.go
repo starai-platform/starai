@@ -92,10 +92,10 @@ func TestFreeDetailPlanKeepsCreativeLayoutAndSkipsTemplatePadding(t *testing.T) 
 		t.Fatalf("free plan was forced into the five-section template: %#v", planned)
 	}
 	prompt := detailSectionGenerationPrompt("", planned[0], 0, len(planned), inputs)
-	if !strings.Contains(prompt, "不对称杂志跨页构图") || strings.Contains(prompt, "25%–35%") || strings.Contains(prompt, "6%–8%") || !strings.Contains(prompt, "不要按草稿文字坐标预留固定卡片") {
+	if !strings.Contains(prompt, "不对称杂志跨页构图") || strings.Contains(prompt, "25%–35%") || strings.Contains(prompt, "6%–8%") || !strings.Contains(prompt, "文字与画面一次成型") {
 		t.Fatalf("free image prompt still contains fixed visual constraints: %s", prompt)
 	}
-	if !strings.Contains(prompt, "所有模块必须沿用上面的同一主题、主辅色与视觉母题") {
+	if !strings.Contains(prompt, "所有模块沿用同一主题、主辅色和视觉母题") {
 		t.Fatal("free modules may drift to unrelated themes and colors")
 	}
 	inputs["detail_section_count_locked"] = true

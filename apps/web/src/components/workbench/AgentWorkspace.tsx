@@ -102,14 +102,15 @@ type Workflow = {
     preserve_identity?: boolean;
     product_pricing?: { workflow_fee?: number; image_unit_fee?: number };
     default_review_mode?: "standard" | "strict";
-    default_creative_mode?: "free" | "precise";
+    default_creative_mode?: CreativeMode;
     default_subtitle_mode?: string;
     default_subtitle_region?: string;
     protect_watermark?: boolean;
   };
 };
 type NodeRun = { node_id: string; name: string; type: string; status: string; output: Record<string, any>; error?: string };
-type DetailSection = { id?: string; type?: string; title?: string; objective?: string; copy_title?: string; copy_points?: string[]; text_layers?: DetailTextLayer[]; image_prompt?: string; source_image_url?: string; image_url?: string; status?: string };
+type CreativeMode = "free" | "render_text" | "precise";
+type DetailSection = { id?: string; type?: string; title?: string; objective?: string; copy_title?: string; copy_points?: string[]; text_layers?: DetailTextLayer[]; in_image_copy?: string[]; image_prompt?: string; source_image_url?: string; image_url?: string; status?: string };
 type DetailPageOutput = { render_mode?: string; status?: string; compose_status?: string; compose_error?: string; typography_warning?: string; long_image_url?: string; section_count?: number; completed_count?: number; sections?: DetailSection[] };
 type MediaTask = { task_no: string; type?: "image" | "video" | "audio"; status: string; progress: number; output?: Record<string, any>; error_message?: string; detail_section?: DetailSection };
 
@@ -118,7 +119,7 @@ function resolvedAgentMediaTasks(project: Project | null): MediaTask[] {
   const tasks = project?.media_tasks?.length ? project.media_tasks : stored;
   const isDetail = project?.inputs?.creative_scene === "detail_image"
     || project?.outputs?.analysis?.creative_scene === "detail_image"
-    || project?.outputs?.detail_page?.render_mode === "typeset_modules";
+    || ["typeset_modules", "ai_generated_text_modules"].includes(String(project?.outputs?.detail_page?.render_mode || ""));
   if (!isDetail) return tasks;
   const prepared = new Map(stored.map(task => [task.task_no, task]));
   return tasks.map(task => {
@@ -345,13 +346,19 @@ function normalizeCreativeScenes(items: unknown, generationType: "image" | "vide
   return unique.length > 0 ? unique : [fallback];
 }
 
-function clientScenePrompt(code: string, label: string, generationType: "image" | "video", creativeMode: "free" | "precise" = "precise") {
+function normalizeCreativeMode(value: unknown): CreativeMode {
+  return value === "render_text" || value === "precise" ? value : "free";
+}
+
+function clientScenePrompt(code: string, label: string, generationType: "image" | "video", creativeMode: CreativeMode = "precise") {
   if (code === "auto") return "根据用户需求识别商品主图、场景图、详情页或营销海报，再分析商品并优化对应提示词。";
   const rules: Record<string, string> = {
     main_image: "必须生成电商商品主图：商品主体清晰，背景干净或高级简洁，突出材质和卖点，不要做成详情页、场景图或海报。",
     detail_image: creativeMode === "free"
-      ? "生成有阅读顺序的商品详情页，保留用户明确要求；先规划整页统一的主题、主辅色和视觉母题，再让各模块沿用。AI主动补全原创文案以及未提供的材质、技术、功效和卖点，作为用户可修改的虚拟商品初稿；不套固定章节或版式。"
-      : "生成有阅读顺序的商品详情页，按商品与素材规划各模块的不同作用；不套固定章节，不重复拼图，没有依据时不强凑功能和规格。",
+      ? "生成有阅读顺序的商品详情页，保留用户明确要求；AI主动补全视觉主题、虚拟商品卖点和原创文案，并让文案作为画面设计的一部分直接生成，不做后期叠字。整页统一主题、主辅色和视觉母题，不套固定章节或版式。"
+      : creativeMode === "render_text"
+        ? "生成有阅读顺序的商品详情页，保留用户明确要求；AI主动补全视觉主题、虚拟商品卖点和原创文案。先生成无字底图，再由系统把可编辑文案准确渲染到图片上。整页统一主题、主辅色和视觉母题。"
+        : "生成有阅读顺序的商品详情页，按商品与素材规划各模块的不同作用；不套固定章节，不重复拼图，没有依据时不强凑功能和规格。",
     scene_image: "必须生成电商场景图：把商品放入真实使用场景，保留商品主体一致性，强调生活方式、光影和购买欲。",
     marketing_poster: "必须生成营销海报：强调广告构图、活动氛围、传播冲击力、品牌质感和标题留白，不要生成普通商品主图。",
     product_video: "必须生成商品展示短视频：围绕商品主体做展示、运镜、卖点节奏和商业光影，不要生成无关风景或普通素材。",
@@ -375,7 +382,7 @@ export function AgentWorkspace({ code }: { code: string }) {
   const [prompt, setPrompt] = useState("");
   const [comicSourceMode, setComicSourceMode] = useState(false);
   const [commerceBrief, setCommerceBrief] = useState({ channel: "", audience: "", visual: "" });
-  const [creativeMode, setCreativeMode] = useState<"free" | "precise">("free");
+  const [creativeMode, setCreativeMode] = useState<CreativeMode>("free");
   const [count, setCount] = useState(1);
   const [detailSectionCount, setDetailSectionCount] = useState(5);
   const [detailSectionCountLocked, setDetailSectionCountLocked] = useState(false);
@@ -421,7 +428,7 @@ export function AgentWorkspace({ code }: { code: string }) {
     setImageSize(String(saved.image_size || "1K"));
     setDetailSectionCount(Number(saved.detail_section_count || 5));
     setDetailSectionCountLocked(saved.detail_section_count_locked === true);
-    setCreativeMode(saved.creative_mode === "precise" ? "precise" : "free");
+    setCreativeMode(normalizeCreativeMode(saved.creative_mode));
   }, [code, project]);
 
   useEffect(() => {
@@ -444,7 +451,7 @@ export function AgentWorkspace({ code }: { code: string }) {
         if (!active) return;
         setWorkflow(wf);
         setCount(Math.max(1, Number(wf.runtime_config?.default_count || 1)));
-        setCreativeMode(wf.runtime_config?.default_creative_mode === "precise" ? "precise" : "free");
+        setCreativeMode(normalizeCreativeMode(wf.runtime_config?.default_creative_mode));
         const modelCode = wf.runtime_config?.generation_model_code;
         if (modelCode) {
           apiForLocaleCached<Model>(`/api/models/${modelCode}`, locale)
@@ -905,8 +912,10 @@ export function AgentWorkspace({ code }: { code: string }) {
         commerceBrief.visual ? `视觉风格：${commerceBrief.visual}` : "",
         currentComicReferences().length ? `已上传 ${currentComicReferences().length} 张创作参考图。` : "",
         creativeMode === "free"
-          ? "当前为自由创作：保留用户明确要求；AI主动补全商品材质、技术、功效、卖点、人物、场景和原创文案，形成可供用户修改的虚拟商品方案，不因用户未提供依据而留空或删去创意。"
-          : "当前为精准还原：商品、Logo、包装和用户锁定元素以参考图为准，只补充构图、光线和背景。",
+          ? "当前为自由创作：保留用户明确要求；AI主动补全商品材质、技术、功效、卖点、人物、场景和原创文案，并把文案作为画面设计的一部分直接生成，不进行后期叠字。"
+          : creativeMode === "render_text"
+            ? "当前为渲染文字：AI可主动补全商品设定和原创文案；先生成无字底图，再由系统把可编辑文字准确排版到图片上。"
+            : "当前为精准还原：商品、Logo、包装和用户锁定元素以参考图为准，只补充构图、光线和背景。",
       ].filter(Boolean).join("\n");
       const result = await api<{ content: string }>("/api/canvases/enhance-prompt", {
         method: "POST",
@@ -1925,7 +1934,7 @@ export function AgentWorkspace({ code }: { code: string }) {
                 </div>
                 <div className="space-y-3">
                   {isComicDrama && <ComicProjectPanel project={project} />}
-                  {code === "ecommerce_image" && Array.isArray(analysis.missing_information) && analysis.missing_information.length > 0 && <details className="group rounded-xl border border-amber-200/70 bg-amber-50/70 text-xs text-amber-900 dark:border-amber-400/20 dark:bg-amber-500/10 dark:text-amber-100"><summary className="cursor-pointer list-none px-3 py-2.5 font-semibold">{ts(project.inputs?.creative_mode === "free" ? "可继续修改的创意设定与待补充信息" : "尚未确认的信息（不会作为商品事实使用）")} · {analysis.missing_information.length}</summary><div className="border-t border-amber-200/60 px-3 py-2 leading-6 dark:border-amber-400/15">{analysis.missing_information.map((item: unknown, i: number) => <p key={i}>{textOf(item)}</p>)}</div></details>}
+                  {code === "ecommerce_image" && Array.isArray(analysis.missing_information) && analysis.missing_information.length > 0 && <details className="group rounded-xl border border-amber-200/70 bg-amber-50/70 text-xs text-amber-900 dark:border-amber-400/20 dark:bg-amber-500/10 dark:text-amber-100"><summary className="cursor-pointer list-none px-3 py-2.5 font-semibold">{ts(project.inputs?.creative_mode !== "precise" ? "可继续修改的创意设定与待补充信息" : "尚未确认的信息（不会作为商品事实使用）")} · {analysis.missing_information.length}</summary><div className="border-t border-amber-200/60 px-3 py-2 leading-6 dark:border-amber-400/15">{analysis.missing_information.map((item: unknown, i: number) => <p key={i}>{textOf(item)}</p>)}</div></details>}
 
                   {project.status === "waiting_confirm" && (
                     <div className="rounded-2xl border border-amber-100 bg-amber-50 p-4 space-y-3 dark:bg-amber-500/10 dark:border-amber-400/20">
@@ -1999,7 +2008,7 @@ export function AgentWorkspace({ code }: { code: string }) {
                       const resultURL = mediaTasks.map(mediaURL).find(Boolean);
                       if (resultURL) setComicReferences([{ url: resultURL, name: ts("上轮结果") }, ...currentComicReferences()]);
                       setPrompt(instruction);
-                      setCreativeMode(nextMode as "free" | "precise");
+                      setCreativeMode(normalizeCreativeMode(nextMode));
                       setProject(null);
                     }} className="rounded-xl border border-gray-200 bg-white px-3 py-2 font-medium text-gray-600 hover:border-primary hover:bg-primary/5 dark:border-white/10 dark:bg-white/5 dark:text-gray-200">{ts(label)}</button>)}
                   </div>}
@@ -2126,12 +2135,13 @@ export function AgentWorkspace({ code }: { code: string }) {
                   {close => <div className="space-y-3">
                     <div className="grid grid-cols-[64px_minmax(0,1fr)] items-start gap-2">
                       <span className="px-1 pt-2 text-xs font-medium text-gray-500 dark:text-gray-400">{ts("创作方式")}</span>
-                      <div className="grid grid-cols-2 gap-1 rounded-xl bg-gray-100 p-1 dark:bg-white/10">
+                      <div className="grid grid-cols-3 gap-1 rounded-xl bg-gray-100 p-1 dark:bg-white/10">
                         <button type="button" onClick={() => setCreativeMode("free")} className={`rounded-lg px-2 py-2 text-xs font-semibold ${creativeMode === "free" ? "bg-white text-gray-900 shadow-sm dark:bg-gray-800 dark:text-white" : "text-gray-500"}`}>{ts("自由创作")}</button>
+                        <button type="button" onClick={() => setCreativeMode("render_text")} className={`rounded-lg px-2 py-2 text-xs font-semibold ${creativeMode === "render_text" ? "bg-white text-gray-900 shadow-sm dark:bg-gray-800 dark:text-white" : "text-gray-500"}`}>{ts("渲染文字")}</button>
                         <button type="button" onClick={() => setCreativeMode("precise")} className={`rounded-lg px-2 py-2 text-xs font-semibold ${creativeMode === "precise" ? "bg-white text-gray-900 shadow-sm dark:bg-gray-800 dark:text-white" : "text-gray-500"}`}>{ts("精准还原")}</button>
                       </div>
                     </div>
-                    <p className="px-1 text-[11px] leading-5 text-gray-400">{creativeMode === "free" ? ts("默认大胆补充商品、人物、场景和概念文案；明确写出的要求仍会保留。") : ts("尽量保留商品、Logo、包装与人物，只修改你指定的部分。")}</p>
+                    <p className="px-1 text-[11px] leading-5 text-gray-400">{creativeMode === "free" ? ts("AI 补全文案并直接画入详情图；不会再后期叠字，偶尔可能出现错别字。") : creativeMode === "render_text" ? ts("AI 先生成无字底图，再把可编辑文案准确渲染到图片上。") : ts("尽量保留商品、Logo、包装与人物，只修改你指定的部分。")}</p>
                     {([
                       {key:"channel", label:"渠道", options:["淘宝 / 天猫","京东","拼多多","抖音电商","小红书","亚马逊","Shopify / 独立站"]},
                       {key:"audience", label:"受众", options:["大众日常","学生青年","都市通勤","家庭生活","亲子家庭","户外运动","品质消费","礼赠人群"]},
@@ -2165,8 +2175,8 @@ export function AgentWorkspace({ code }: { code: string }) {
                   </>
                 ) : (
                   <>
-                    {isDetailPageScene && <MediaOptionMenu icon={<Settings2 size={14}/>} title={ts("详情页模块数")} activeLabel={`${detailSectionCountLocked || creativeMode === "precise" ? "" : "≤"}${detailSectionCount} ${ts("个模块")}`} subtitle={ts(creativeMode === "precise" ? "默认5个模块；可手动指定数量" : "自由创作默认最多5个模块，由 AI 按内容规划")} compactOnMobile>
-                      {close => <div className="space-y-1"><MediaMenuOption selected={!detailSectionCountLocked} onClick={() => {setDetailSectionCount(5);setDetailSectionCountLocked(false);close();}}>{ts(creativeMode === "precise" ? "默认 5 个模块" : "AI 规划 · 最多 5 个模块")}</MediaMenuOption>{[4,5,6,7,8].map(n => <MediaMenuOption key={n} selected={detailSectionCount === n && detailSectionCountLocked} onClick={() => {setDetailSectionCount(n);setDetailSectionCountLocked(true);close();}}>{n} {ts("个模块")}</MediaMenuOption>)}<p className="px-2 pt-2 text-[11px] leading-5 text-gray-400">{ts("自由创作会按商品与素材规划模块，不强凑固定章节；手动选择后按所选数量生成。文案会在成图后准确排版。")}</p></div>}
+                    {isDetailPageScene && <MediaOptionMenu icon={<Settings2 size={14}/>} title={ts("详情页模块数")} activeLabel={`${detailSectionCountLocked || creativeMode === "precise" ? "" : "≤"}${detailSectionCount} ${ts("个模块")}`} subtitle={ts(creativeMode === "precise" ? "默认5个模块；可手动指定数量" : "AI 默认最多规划5个模块")} compactOnMobile>
+                      {close => <div className="space-y-1"><MediaMenuOption selected={!detailSectionCountLocked} onClick={() => {setDetailSectionCount(5);setDetailSectionCountLocked(false);close();}}>{ts(creativeMode === "precise" ? "默认 5 个模块" : "AI 规划 · 最多 5 个模块")}</MediaMenuOption>{[4,5,6,7,8].map(n => <MediaMenuOption key={n} selected={detailSectionCount === n && detailSectionCountLocked} onClick={() => {setDetailSectionCount(n);setDetailSectionCountLocked(true);close();}}>{n} {ts("个模块")}</MediaMenuOption>)}<p className="px-2 pt-2 text-[11px] leading-5 text-gray-400">{creativeMode === "free" ? ts("自由创作会统一规划整页主题与模块，文案由图片模型和画面一次生成，不再后期叠加。") : creativeMode === "render_text" ? ts("渲染文字会先生成无字底图，再把 AI 规划的文案作为可编辑文字排版。") : ts("精准还原会优先遵循参考图和已确认资料，按所选模块数量生成。")}</p></div>}
                     </MediaOptionMenu>}
                     <ImageGenerationToolbar
                       count={count}
@@ -3009,6 +3019,7 @@ function DetailPagePanel({ detailPage, projectId, modelCode = "", userPrompt = "
   const imageURLKey = imageURLs.join("|");
   useEffect(() => { setLocalLongURL(""); }, [imageURLKey]);
   const isReady = imageURLs.length > 0 && detailPage.status !== "planning";
+  const hasAIIntegratedText = detailPage.render_mode === "ai_generated_text_modules";
   const composeLongImage = async () => {
     setComposing(true);
     setComposeError("");
@@ -3043,7 +3054,7 @@ function DetailPagePanel({ detailPage, projectId, modelCode = "", userPrompt = "
       {longURL && <details className="border-b border-gray-100 dark:border-white/10"><summary className="cursor-pointer px-4 py-3 text-xs font-semibold text-gray-600 dark:text-gray-300">{ts("查看合成长图")}</summary><div className="bg-gray-50 p-2 sm:p-4 dark:bg-gray-950/60"><Image unoptimized src={longURL} alt={ts("商品详情长图")} width={1200} height={6000} sizes="(max-width: 768px) 100vw, 900px" className="mx-auto h-auto w-full max-w-3xl rounded-xl bg-white shadow-sm" /></div></details>}
       {sections.length > 0 && (
         <details className="group border-t border-gray-100 dark:border-white/10">
-          <summary className="cursor-pointer list-none px-4 py-3 text-xs font-semibold text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-white/5">{ts(isReady ? "查看模块文案与调整排版" : "查看模块规划与文案")} · {sections.length}</summary>
+          <summary className="cursor-pointer list-none px-4 py-3 text-xs font-semibold text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-white/5">{ts(isReady ? (hasAIIntegratedText ? "查看模块规划与入图文案" : "查看模块文案与调整排版") : "查看模块规划与文案")} · {sections.length}</summary>
           <div className={`grid gap-2 border-t border-gray-100 bg-gray-50/70 p-3 sm:grid-cols-2 ${isReady ? "" : "lg:grid-cols-3"} dark:border-white/10 dark:bg-black/10`}>
             {sections.map((section, index) => (
               <div key={textOf(section.id || index)} className="rounded-xl border border-gray-100 bg-white p-3 dark:border-white/10 dark:bg-white/5">
@@ -3054,7 +3065,8 @@ function DetailPagePanel({ detailPage, projectId, modelCode = "", userPrompt = "
                 {section.objective && <p className="mt-1 line-clamp-2 text-xs leading-5 text-gray-500 dark:text-gray-300">{section.objective}</p>}
                 {!Array.isArray(section.text_layers) && section.copy_title && <p className="mt-2 text-sm font-medium">{section.copy_title}</p>}
                 {Array.isArray(section.text_layers) ? section.text_layers.map((layer, i) => <p key={i} className="mt-1 select-text text-xs leading-5 text-gray-600 dark:text-gray-300">{layer.text}</p>) : Array.isArray(section.copy_points) && section.copy_points.map((point, i) => <p key={i} className="mt-1 select-text text-xs leading-5 text-gray-600 dark:text-gray-300">{point}</p>)}
-                {projectId && onUpdated && section.status === "succeeded" && section.source_image_url && <DetailPageRevisionEditor section={section} index={index} projectId={projectId} modelCode={modelCode} userPrompt={userPrompt} designSystem={designSystem} onUpdated={onUpdated} />}
+                {Array.isArray(section.in_image_copy) && section.in_image_copy.map((line, i) => <p key={`in-image-${i}`} className="mt-1 select-text text-xs leading-5 text-gray-600 dark:text-gray-300">{line}</p>)}
+                {projectId && onUpdated && !hasAIIntegratedText && section.status === "succeeded" && section.source_image_url && <DetailPageRevisionEditor section={section} index={index} projectId={projectId} modelCode={modelCode} userPrompt={userPrompt} designSystem={designSystem} onUpdated={onUpdated} />}
               </div>
             ))}
           </div>

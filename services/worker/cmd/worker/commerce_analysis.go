@@ -146,6 +146,9 @@ const commerceTransformationInstruction = `创作优先级：用户当前明确�
 const commerceFreeCreationInstruction = `当前为自由创作模式：目标是用很少的输入快速产出有吸引力、可继续修改的电商视觉。用户明确写出的要求仍是硬要求；没有明确指定的商品细节、人物、场景、构图、氛围、虚拟品牌名和概念文案可以合理补全，参考图默认是创作参考而不是必须逐像素复刻的实物凭证。允许把真实或虚构素材继续改造成新的虚拟商品和广告概念，不因信息不足反复追问或停止生成。
 如果用户明确说“保持商品不变、严格还原、Logo/包装/人物不能改、只换背景、只改局部”等，则该项自动转为精准约束，优先于自由创作。未给出的材质、技术、功效、规格、卖点和广告文案可以由AI主动构思成完整的虚拟商品方案，供用户挑选和修改；不要因为用户没有逐项提供就删掉、留空或反复追问。候选方案应在视觉方向和文案思路上有明显差异，不生成多张近似重复结果。`
 
+const commerceNativeDetailTextInstruction = `当前为“自由创作（AI原生文字）”模式。以下要求覆盖本提示中关于“无字底图、文字后期排版、图片模型不绘字”的相反说明：AI必须主动增强用户输入并策划每屏原创营销文案，把最终要展示的标题、短句、卖点或标签直接写进对应image_prompt，作为构图、光影、色彩和空间关系的一部分随图片一次生成。用户明确要求的文字必须保留；未提供的文案可大胆原创，不因可能出现错别字而改回后期叠字。
+detail_sections仍可用text_layers记录每屏计划展示的文字，方便生成阶段可靠取用，但坐标、字号、颜色只作构思思路，不会触发后期渲染；不要为文字另做无字占位底图。整页仍须共用同一主题、主辅色和视觉母题，每屏文字的位置、层级、颜色和融合方式应跟随各自画面自然变化。`
+
 func commercePrecisionRequested(inputs map[string]interface{}) bool {
 	mode := strings.ToLower(strings.TrimSpace(stringAny(inputs["creative_mode"])))
 	if mode == "precise" || mode == "faithful" || mode == "strict" {
@@ -164,7 +167,25 @@ func commercePrecisionRequested(inputs map[string]interface{}) bool {
 }
 
 func commerceFreeCreation(inputs map[string]interface{}) bool {
+	mode := strings.ToLower(strings.TrimSpace(stringAny(inputs["creative_mode"])))
+	return (mode == "free" || mode == "render_text") && !commercePrecisionRequested(inputs)
+}
+
+func commerceGeneratesDetailText(inputs map[string]interface{}) bool {
 	return strings.EqualFold(strings.TrimSpace(stringAny(inputs["creative_mode"])), "free") && !commercePrecisionRequested(inputs)
+}
+
+func commerceRendersDetailText(inputs map[string]interface{}) bool {
+	return strings.EqualFold(strings.TrimSpace(stringAny(inputs["creative_mode"])), "render_text") && !commercePrecisionRequested(inputs)
+}
+
+func commerceNativeDetailAnalysisPrompt(system string) string {
+	return strings.NewReplacer(
+		"image_prompt和layout只能描述无字底图，不得要求画技术参数、价格、尺码、购买按钮、标题或其他营销文字；想表达这些内容时放到text_layers，而不是让图片模型先画一遍。", "image_prompt和layout必须同时描述画面与计划直接生成在画面内的营销文字，text_layers只记录文案计划，不代表后期叠字。",
+		"；不要求模型绘字", "；明确要求图片模型把计划文案与画面一起生成",
+		"最终文字与位置要在看过真实底图后重新决定，图片模型不绘制新增文字。", "最终文字、位置、色彩和画面由图片模型一次生成，不安排后期叠字。",
+		"image_prompt和layout只写可见商品、镜头、场景、光线及无字装饰；不要写“技术参数并列展示”“购买按钮和价格信息突出”等会诱导图片模型画字的指令，相关内容交给text_layers。最终文案与排版会在看到实际底图后再由AI决定。精准模式仍按copy_title/copy_points排版。底图不绘制新增文字，文字由后期准确排版。", "image_prompt和layout要同时写清可见商品、镜头、场景、光线、装饰和计划直接生成在画面内的文案；text_layers只保存文案计划。自由创作由图片模型一次完成画面与文字，不执行后期排版。",
+	).Replace(system)
 }
 
 func detailSectionMinimum(inputs map[string]interface{}) int {

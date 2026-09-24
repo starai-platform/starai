@@ -51,7 +51,7 @@ func (h *Handler) EnhanceCanvasPrompt(c *gin.Context) {
 		return
 	}
 	commerceDetailGuide := ""
-	freeCommerce := code == "ecommerce_image" && req.CreativeMode == "free"
+	freeCommerce := code == "ecommerce_image" && (req.CreativeMode == "free" || req.CreativeMode == "render_text")
 	enhanceContext := canvasEnhanceContext(code, req.TargetKind)
 	factRule := "没有给出的商品功效、参数、价格、参考素材不可编造。"
 	example := "示例：原始指令“为红色保温杯写通勤文案，不写价格”→增强指令“请为一款红色保温杯撰写简短通勤文案，突出上班途中携带和使用的生活情境，语言自然克制。保留红色外观，不虚构保温时长、材质认证或价格。输出可直接发布的文案正文。”"
@@ -62,6 +62,7 @@ func (h *Handler) EnhanceCanvasPrompt(c *gin.Context) {
 	}
 	if code == "ecommerce_image" && (req.TargetKind == "detail_image" || req.TargetKind == "auto") {
 		commerceDetailGuide = "\n电商详情图增强规则：除非原始指令明确指定，不要添加固定模块顺序、模块数量、渐变、卡片、图标或留白比例；工作流中的默认模块预算不是用户硬性要求。给下游留出构思空间。"
+		commerceDetailGuide += commerceDetailTextModeGuide(req.CreativeMode)
 	}
 	input := service.CompletionInput{ModelCode: modelCode, Ephemeral: true, BillingLabel: "画布提示词增强", Messages: []runtime.ChatMessage{
 		{Role: "system", Content: enhanceContext + `
@@ -228,5 +229,16 @@ func freeCommerceEnhanceContext(target string) string {
 		return "当前用途：电商营销海报。AI补全广告概念、视觉焦点与原创文案，用户未提供的商品卖点可作为虚拟概念构思。"
 	default:
 		return "当前用途：电商图片智能识别。先依据用户用途选择一种出图类型，再让AI主动补全未指定的商品设定、视觉主题与文案。"
+	}
+}
+
+func commerceDetailTextModeGuide(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "free":
+		return " 当前为自由创作：增强后的指令应要求下游AI主动补充原创营销文案，并让文字作为构图的一部分随详情图直接生成；不要改成无字底图或后期叠字。"
+	case "render_text":
+		return " 当前为渲染文字：增强后的指令可主动补充原创营销文案，但先生成无字底图，再由系统准确渲染为可编辑文字。"
+	default:
+		return ""
 	}
 }

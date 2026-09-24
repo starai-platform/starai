@@ -69,6 +69,7 @@ const MINIMAX_H3_MAX_TEMPLATE_KEY = "minimax_h3_max_v2";
 const VEO_REFERENCE_TEMPLATE_KEY = "veo_reference_v1";
 const VEO_FRAME_PAIR_TEMPLATE_KEY = "veo_frame_pair_v1";
 const OMNI_REFERENCE_TEMPLATE_KEY = "omni_reference_v1";
+const DOLA_SEEDANCE_TEMPLATE_KEY = "dola_seedance_30s";
 const ALIYUN_QWEN_IMAGE_TEMPLATE_KEY = "aliyun_qwen_image_v3";
 const ALIYUN_HAPPYHORSE_TEMPLATE_KEY = "aliyun_happyhorse";
 type HappyHorseProfile = "text" | "first_frame" | "reference" | "edit";
@@ -757,7 +758,9 @@ export default function ModelsPage() {
     } else {
       setAudioTemplateKey("");
     }
-    if ((m.runtime_rule as any)?.upstream?.adapter === "volcengine_seedance_2") {
+    if ((m.runtime_rule as any)?.upstream?.adapter === "dola_seedance_30s") {
+      setVideoTemplateKey(DOLA_SEEDANCE_TEMPLATE_KEY);
+    } else if ((m.runtime_rule as any)?.upstream?.adapter === "volcengine_seedance_2") {
       const variant = inferSeedanceVariant(m.new_api_model, m.runtime_rule);
       setVideoTemplateKey(getSeedanceVariantConfig(variant).templateKey);
     } else if ((m.runtime_rule as any)?.upstream?.adapter === "minimax_h3_v2") {
@@ -2191,6 +2194,60 @@ export default function ModelsPage() {
     ),
     default_params: JSON.stringify({ count: 1, duration: "4s", orientation: "portrait" }, null, 2),
     price_rule: JSON.stringify({ billing_type: "per_second", unit_price: 0.08 }, null, 2),
+  });
+
+  const applyDolaSeedance30s = (prev: FormState): FormState => ({
+    ...prev,
+    category: "video",
+    request_mode: "video",
+    new_api_model: "dola-seedance-30s",
+    new_api_endpoint: "/api/v1/videos",
+    new_api_extra_params: setConnection(prev.new_api_extra_params, {
+      provider: "dola",
+      protocol: "custom_http",
+      base_url: "https://43.254.166.145",
+      auth_type: "bearer",
+      api_key_header: "Authorization",
+      models_endpoint: "",
+      headers: {},
+      request_transform: {},
+    }),
+    input_schema: JSON.stringify({
+      type: "object",
+      required: ["duration", "ratio"],
+      properties: {
+        duration: { type: "integer", title: "视频时长", enum: [30], enumLabels: { "30": "30s" }, default: 30, "x-order": 1, "x-widget": "option_menu", "x-icon": "clock", "x-highlight": true },
+        ratio: { type: "string", title: "画面比例", enum: ["16:9", "9:16", "1:1", "3:4", "4:3", "21:9"], default: "16:9", "x-order": 2, "x-widget": "option_menu", "x-icon": "ratio" },
+      },
+    }, null, 2),
+    default_params: JSON.stringify({ duration: 30, ratio: "16:9" }, null, 2),
+    runtime_rule: JSON.stringify({
+      video: {
+        upload_profile: "multi_ref",
+        min_reference_images: 0,
+        max_reference_images: 9,
+        max_total_images: 9,
+        count_toward_total: true,
+        prompt_required: true,
+        prompt_hint: "输入视频描述，可选上传 1～9 张 JPEG/PNG 参考图；固定生成 30 秒视频",
+        show_channel: false,
+        show_web_search: false,
+        count_options: [1],
+        count_allow_custom: false,
+        count_max: 1,
+        reference_images: { key: "reference_images", max: 9 },
+      },
+      upstream: {
+        adapter: "dola_seedance_30s",
+        include: ["duration", "ratio", "reference_images"],
+        poll_path: "/api/v1/videos/{id}",
+        poll_interval_sec: 10,
+        poll_timeout_sec: 1800,
+        request_timeout_sec: 300,
+      },
+      capabilities: { web_search: false, deep_think: false },
+    }, null, 2),
+    price_rule: JSON.stringify({ billing_type: "per_request", currency: "¥", unit_price: 1 }, null, 2),
   });
 
   const aliyunVideoConnection = (extra: string) => setConnection(extra, {
@@ -4682,6 +4739,8 @@ export default function ModelsPage() {
                         const variant = getSeedanceVariantByTemplateKey(value);
                         if (variant) {
                           setForm((prev) => applyVolcengineSeedance2(prev, variant));
+                        } else if (value === DOLA_SEEDANCE_TEMPLATE_KEY) {
+                          setForm((prev) => applyDolaSeedance30s(prev));
                         } else if (value === MINIMAX_H3_TEMPLATE_KEY) {
                           setForm((prev) => applyMiniMaxH3V2(prev));
                         } else if (value === MINIMAX_H3_MAX_TEMPLATE_KEY) {
@@ -4703,6 +4762,7 @@ export default function ModelsPage() {
                       <option value={VEO_FRAME_PAIR_TEMPLATE_KEY}>章鱼哥 · VEO 首尾帧（无参考图）</option>
                       <option value={VEO_REFERENCE_TEMPLATE_KEY}>第三方 OpenAI 兼容 · 参考图（VEO 类）</option>
                       <option value={OMNI_REFERENCE_TEMPLATE_KEY}>章鱼哥 · Omni 文生 / 参考图</option>
+                      <option value={DOLA_SEEDANCE_TEMPLATE_KEY}>Dola · Seedance 30 秒视频</option>
                       <option value={SEEDANCE_VARIANTS.standard.templateKey}>火山方舟 · Doubao Seedance 2.0 Standard</option>
                       <option value={SEEDANCE_VARIANTS.fast.templateKey}>火山方舟 · Doubao Seedance 2.0 Fast</option>
                       <option value={SEEDANCE_VARIANTS.mini.templateKey}>火山方舟 · Doubao Seedance 2.0 Mini</option>
@@ -4712,6 +4772,7 @@ export default function ModelsPage() {
                       <option value={ALIYUN_WAN3_TEMPLATE_KEY}>阿里云百炼 · Wan 3.0 全能视频</option>
                     </select>
                     {(getSeedanceVariantByTemplateKey(videoTemplateKey) ||
+                      videoTemplateKey === DOLA_SEEDANCE_TEMPLATE_KEY ||
                       videoTemplateKey === MINIMAX_H3_TEMPLATE_KEY ||
                       videoTemplateKey === MINIMAX_H3_MAX_TEMPLATE_KEY ||
                       videoTemplateKey === VEO_FRAME_PAIR_TEMPLATE_KEY ||
@@ -4726,6 +4787,8 @@ export default function ModelsPage() {
                           const variant = getSeedanceVariantByTemplateKey(videoTemplateKey);
                           if (variant) {
                             setForm((prev) => applyVolcengineSeedance2(prev, variant));
+                          } else if (videoTemplateKey === DOLA_SEEDANCE_TEMPLATE_KEY) {
+                            setForm((prev) => applyDolaSeedance30s(prev));
                           } else if (videoTemplateKey === MINIMAX_H3_TEMPLATE_KEY) {
                             setForm((prev) => applyMiniMaxH3V2(prev));
                           } else if (videoTemplateKey === MINIMAX_H3_MAX_TEMPLATE_KEY) {
@@ -4749,7 +4812,7 @@ export default function ModelsPage() {
                     )}
                   </div>
                   <div className="mt-2 text-[11px] leading-5 text-gray-500">
-                    VEO 首尾帧模板默认使用当前更通用的 veo_3_1-fl，只接收 1 张首帧或“首帧 + 尾帧”，不提供参考图槽位；VEO 参考图模板则固定显示 8 秒，支持文生和 1～3 张参考图。Omni 模板固定 10 秒 720P，支持文生和 1～7 张参考图。三者的 JSON 图片都会自动映射到 images，固定时长不发送上游。Seedance 三个模板会分别写入官方模型 ID、分辨率和 Token 价格。MiniMax-H3 支持 768P/2K、4～15 秒及五种素材组合；H3-Max 支持 480P/768P、5～15 秒及文生/首尾帧模式。API Key 仍需管理员填写。
+                    Dola 模板固定 30 秒，支持文生和 1～9 张 JPEG/PNG 参考图，通过 multipart 接口提交。VEO 首尾帧模板默认使用当前更通用的 veo_3_1-fl，只接收 1 张首帧或“首帧 + 尾帧”，不提供参考图槽位；VEO 参考图模板则固定显示 8 秒，支持文生和 1～3 张参考图。Omni 模板固定 10 秒 720P，支持文生和 1～7 张参考图。三者的 JSON 图片都会自动映射到 images，固定时长不发送上游。Seedance 三个模板会分别写入官方模型 ID、分辨率和 Token 价格。MiniMax-H3 支持 768P/2K、4～15 秒及五种素材组合；H3-Max 支持 480P/768P、5～15 秒及文生/首尾帧模式。API Key 仍需管理员填写。
                   </div>
                 </div>
                 <div className="rounded-xl border border-cyan-200 bg-cyan-50/50 p-4">

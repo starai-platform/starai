@@ -27,6 +27,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	xdraw "golang.org/x/image/draw"
+	"golang.org/x/image/font/opentype"
 	_ "golang.org/x/image/webp"
 )
 
@@ -2225,6 +2226,10 @@ func runAgentAnalysis(ctx context.Context, pool *pgxpool.Pool, baseURL, token, m
 		system = strings.ReplaceAll(system, "\n"+commerceTransformationInstruction, "")
 		system += "\n" + commerceFreeCreationInstruction
 	}
+	if commerceGeneratesDetailText(inputs) && (sceneCode == "detail_image" || sceneCode == "auto") {
+		system = commerceNativeDetailAnalysisPrompt(system)
+		system += "\n" + commerceNativeDetailTextInstruction
+	}
 	content := fmt.Sprintf("用户需求：%s\n参考图片数量：%d（图片已随消息附上）\n出图场景：%s\n当前生成参数：%s\n请补全创作方案。", firstNonEmpty(stringAny(inputs["user_prompt"]), firstUserPrompt(inputs)), len(referenceImageURLs(inputs)), sceneLabel, agentGenerationParamSummary(inputs))
 	if sceneCode == "detail_image" || sceneCode == "auto" {
 		content += fmt.Sprintf("\n详情模块数量：%d–%d（明确指定数量时必须精确执行）", detailSectionMinimum(inputs), detailSectionCount(inputs))
@@ -2769,7 +2774,15 @@ func agentPromptWithScene(prompt string, inputs map[string]interface{}) string {
 
 func applyImageGenerationPolicies(prompt string, inputs map[string]interface{}) string {
 	cleanPrompt := strings.TrimSpace(prompt)
-	if commerceFreeCreation(inputs) && stringAny(inputs["creative_scene"]) == "detail_image" {
+	if commerceGeneratesDetailText(inputs) && stringAny(inputs["creative_scene"]) == "detail_image" {
+		if strings.Contains(cleanPrompt, "AI-INTEGRATED TEXT POLICY:") {
+			return cleanPrompt
+		}
+		language := firstNonEmpty(strings.TrimSpace(generationLanguageLabel(inputs)), "用户指定的语言")
+		instruction := fmt.Sprintf("AI-INTEGRATED TEXT POLICY: Render the planned marketing headlines, short copy, feature labels and other requested words directly inside the image as a native part of the composition. AI-expanded copy from this prompt is allowed. Integrate typography with the scene, lighting, palette, depth and available space; vary placement and hierarchy by module. Keep it concise and legible. Do not add unrelated watermarks, UI controls or gibberish. Render the planned copy in %s unless the user explicitly requests another language.", language)
+		return cleanPrompt + "\n\n" + instruction
+	}
+	if commerceRendersDetailText(inputs) && stringAny(inputs["creative_scene"]) == "detail_image" {
 		if strings.Contains(cleanPrompt, "TEXT RENDERING POLICY:") {
 			return cleanPrompt
 		}
@@ -4075,9 +4088,13 @@ func runAgentDetailPageTasks(ctx context.Context, pool *pgxpool.Pool, baseURL, t
 	}
 	inputs["_detail_product"] = analysis["asset_notes"]
 	analysis = groundedDetailAnalysis(analysis, inputs)
-	typeface, fontErr := loadDetailFont()
-	if fontErr != nil {
-		return nil, map[string]interface{}{"status": "failed"}, fontErr.Error()
+	var typeface *opentype.Font
+	if !commerceGeneratesDetailText(inputs) {
+		var fontErr error
+		typeface, fontErr = loadDetailFont()
+		if fontErr != nil {
+			return nil, map[string]interface{}{"status": "failed"}, fontErr.Error()
+		}
 	}
 	sections := agentDetailSections(analysis, inputs, basePrompt)
 	type detailJob struct {
@@ -4152,7 +4169,7 @@ func runAgentDetailPageTasks(ctx context.Context, pool *pgxpool.Pool, baseURL, t
 		return []map[string]interface{}{item}, 0, ""
 	}, func([]map[string]interface{}) {})
 	typographyWarning := ""
-	if commerceFreeCreation(inputs) {
+	if commerceRendersDetailText(inputs) {
 		sources := make([]string, len(sections))
 		for i, item := range results {
 			if stringAny(item["status"]) == "succeeded" && !boolAny(item["reused"]) {
@@ -4192,19 +4209,29 @@ func runAgentDetailPageTasks(ctx context.Context, pool *pgxpool.Pool, baseURL, t
 		if stringAny(item["status"]) == "succeeded" && !boolAny(item["reused"]) {
 			out, _ := mapAny(item["output"])
 			sourceURL := stringAny(out["source_image_url"])
-			layoutSection := copyMap(sections[i])
-			layoutSection["_style"] = inputs["_detail_style"]
-			layoutSection["_free_creation"] = commerceFreeCreation(inputs)
-			imageURL, err := typesetDetailSection(ctx, publicID, sourceURL, layoutSection, typeface)
-			if err != nil {
-				imageURL = sourceURL
-				sections[i]["text_layers"] = []interface{}{}
-				item["detail_section"] = sections[i]
-				typographyWarning = "部分文字未能安全排版，已保留对应无字底图，可在专业编辑中补文案：" + err.Error()
+			imageURL := sourceURL
+			if !commerceGeneratesDetailText(inputs) {
+				layoutSection := copyMap(sections[i])
+				layoutSection["_style"] = inputs["_detail_style"]
+				layoutSection["_free_creation"] = commerceRendersDetailText(inputs)
+				var err error
+				imageURL, err = typesetDetailSection(ctx, publicID, sourceURL, layoutSection, typeface)
+				if err != nil {
+					imageURL = sourceURL
+					sections[i]["text_layers"] = []interface{}{}
+					item["detail_section"] = sections[i]
+					typographyWarning = "部分文字未能安全排版，已保留对应无字底图，可在专业编辑中补文案：" + err.Error()
+				}
 			}
 			out["image_url"] = imageURL
 			out["images"] = []map[string]interface{}{{"url": imageURL}}
 			item["output"] = out
+			results[i] = item
+		}
+		if commerceGeneratesDetailText(inputs) && stringAny(item["status"]) == "succeeded" {
+			sections[i]["in_image_copy"] = detailSectionCopy(sections[i])
+			sections[i]["text_layers"] = []interface{}{}
+			item["detail_section"] = sections[i]
 			results[i] = item
 		}
 		if !boolAny(item["reused"]) && jobs[i].failed == nil {
@@ -4242,6 +4269,9 @@ func runAgentDetailPageTasks(ctx context.Context, pool *pgxpool.Pool, baseURL, t
 		"sections":        completedSections,
 		"section_count":   len(sections),
 		"completed_count": successCount,
+	}
+	if commerceGeneratesDetailText(inputs) {
+		detailPage["render_mode"] = "ai_generated_text_modules"
 	}
 	if typographyWarning != "" {
 		detailPage["typography_warning"] = typographyWarning
@@ -4443,7 +4473,28 @@ func detailSectionGenerationPrompt(_ string, section map[string]interface{}, ind
 	placement := normalizeDetailCopyPlacement(stringAny(section["copy_placement"]), detailDefaultCopyPlacement(kind, index))
 	layout := normalizeDetailLayout(stringAny(section["layout"]), detailDefaultLayout(kind, index))
 	hasCopy := strings.TrimSpace(stringAny(section["copy_title"])) != "" || len(stringSlice(section["copy_points"])) > 0
-	if commerceFreeCreation(inputs) {
+	if commerceGeneratesDetailText(inputs) {
+		copyLines := detailSectionCopy(section)
+		copyInstruction := "本屏可以不放文字，让画面承担叙事。"
+		if len(copyLines) > 0 {
+			copyInstruction = "把以下策划文案自然生成在画面内（文字内容保留，具体位置、字体、层级、颜色和融合方式由图片模型按画面决定）：\n- " + strings.Join(copyLines, "\n- ")
+		}
+		prompt := fmt.Sprintf(`商品详情长页的第%d/%d屏，生成一张文字与画面一次成型的完整电商详情图，不是无字底图，也不做后期叠字。
+生成参数：%s
+商品和参考依据：%s
+整页唯一视觉系统：%s
+本屏构图：%s
+本屏画面与创意：%s
+本屏文案：%s
+
+AI应把文案当作画面设计的一部分：结合主体位置、留白、景深、光线和色彩自然安排，文字可与环境、材质或图形母题融合，不要像后贴的统一模板；各屏位置和层级应随构图变化，不要全部固定在同一区域。允许用与背景有适当色差的文字、局部柔和半透明底或自然遮罩保障可读性。用户明确写出的文字和要求必须保留；AI规划的原创营销短句也允许直接绘入图片，即使图片模型偶尔可能产生错别字，也不得改回后期排版流程。
+所有模块沿用同一主题、主辅色和视觉母题，但镜头、人物、场景、构图与文字位置可以变化。上下边缘延续整页色光与纹理走势，便于无缝拼接。不要生成无关水印、软件界面、假按钮或乱码堆叠。`, index+1, total, agentGenerationParamSummary(moduleInputs), stringAny(inputs["_detail_product"]), stringAny(inputs["_detail_style"]), firstNonEmpty(stringAny(section["layout"]), layout), firstNonEmpty(stringAny(section["image_prompt"]), stringAny(section["objective"])), copyInstruction)
+		if userPrompt := strings.TrimSpace(stringAny(inputs["user_prompt"])); userPrompt != "" {
+			prompt += "\n\n用户明确要求（只应用与当前模块有关的内容）：" + userPrompt
+		}
+		return applyImageGenerationPolicies(prompt+"\n\n"+commerceFreeCreationInstruction, inputs)
+	}
+	if commerceRendersDetailText(inputs) {
 		copySpace := "顺着本屏商品位置、光线和视觉流向自然形成可读的低细节呼吸空间；留白方位由本屏构图决定，整组图片不要都在同一位置。后续AI会看实际底图再决定写什么、放哪里；不要按草稿文字坐标预留固定卡片或文字栏，也不要生成占位字。"
 		visualLayout := firstNonEmpty(detailVisualOnly(stringAny(section["layout"])), "商品本体与无字视觉装饰")
 		visualPrompt := firstNonEmpty(detailVisualOnly(stringAny(section["image_prompt"])), detailVisualOnly(stringAny(section["objective"])), "商品本体与无字视觉装饰")
@@ -4492,10 +4543,29 @@ DETAIL PAGE MODULE %d/%d（页面顺序，不画入图片）
 	if userPrompt := strings.TrimSpace(stringAny(inputs["user_prompt"])); userPrompt != "" && !boolAny(inputs["_commerce_resolved"]) {
 		prompt += "\n\n用户明确要求（只应用与当前模块有关的内容）：" + userPrompt
 	}
-	if commerceFreeCreation(inputs) {
-		prompt += "\n\n" + commerceFreeCreationInstruction
-	}
 	return applyImageGenerationPolicies(prompt, inputs)
+}
+
+func detailSectionCopy(section map[string]interface{}) []string {
+	copyLines := make([]string, 0, 4)
+	if layers, ok := section["text_layers"].([]interface{}); ok {
+		for _, raw := range layers {
+			layer, ok := mapAny(raw)
+			if !ok {
+				continue
+			}
+			if value := strings.TrimSpace(stringAny(layer["text"])); value != "" {
+				copyLines = append(copyLines, value)
+			}
+		}
+	}
+	if len(copyLines) == 0 {
+		if title := strings.TrimSpace(stringAny(section["copy_title"])); title != "" {
+			copyLines = append(copyLines, title)
+		}
+		copyLines = append(copyLines, stringSlice(section["copy_points"])...)
+	}
+	return copyLines
 }
 
 func detailVisualOnly(value string) string {

@@ -183,19 +183,65 @@ func TestVisionTypographyReceivesRealDownscaledImage(t *testing.T) {
 	}
 }
 
-func TestFreeDetailBaseImageDoesNotLockDraftCoordinates(t *testing.T) {
+func TestRenderTextDetailBaseImageDoesNotLockDraftCoordinates(t *testing.T) {
 	section := map[string]interface{}{"type": "hero", "layout": "商品位于右侧，左侧有流动光影", "image_prompt": "蓝色运动鞋特写", "text_layers": []interface{}{map[string]interface{}{"text": "草稿", "x": .08, "y": .12, "width": .3, "font_size": .05}}}
-	prompt := detailSectionGenerationPrompt("", section, 0, 4, map[string]interface{}{"creative_mode": "free", "user_prompt": "运动鞋"})
+	prompt := detailSectionGenerationPrompt("", section, 0, 4, map[string]interface{}{"creative_mode": "render_text", "user_prompt": "运动鞋"})
 	if strings.Contains(prompt, `"x":0.08`) || !strings.Contains(prompt, "后续AI会看实际底图") {
 		t.Fatalf("base image still follows fixed typography: %s", prompt)
 	}
 }
 
-func TestFreeDetailBaseImageDropsTextInstructions(t *testing.T) {
+func TestRenderTextDetailBaseImageDropsTextInstructions(t *testing.T) {
 	section := map[string]interface{}{"type": "feature", "layout": "产品与参数并列，简洁背景", "image_prompt": "运动鞋与技术参数并列展示，柔和自然光，购买按钮和价格信息突出"}
-	prompt := detailSectionGenerationPrompt("", section, 3, 5, map[string]interface{}{"creative_mode": "free", "creative_scene": "detail_image", "user_prompt": "请写尺码36-43"})
+	prompt := detailSectionGenerationPrompt("", section, 3, 5, map[string]interface{}{"creative_mode": "render_text", "creative_scene": "detail_image", "user_prompt": "请写尺码36-43"})
 	if strings.Contains(prompt, "技术参数并列展示") || strings.Contains(prompt, "购买按钮和价格信息突出") || strings.Contains(prompt, "用户明确要求：请写") || !strings.HasSuffix(prompt, "Genuine markings printed on the product may remain.") {
 		t.Fatalf("image model still receives conflicting copy instructions: %s", prompt)
+	}
+}
+
+func TestFreeDetailGeneratesPlannedCopyInsideImage(t *testing.T) {
+	section := map[string]interface{}{"type": "hero", "layout": "商品位于右侧，标题融入左侧光影", "image_prompt": "蓝色运动鞋在清晨城市街道", "text_layers": []interface{}{
+		map[string]interface{}{"text": "让风穿过每一步", "x": .08, "y": .12},
+		map[string]interface{}{"text": "轻盈启程", "x": .08, "y": .2},
+	}}
+	inputs := map[string]interface{}{"creative_mode": "free", "creative_scene": "detail_image", "generation_language_label": "简体中文", "user_prompt": "运动鞋详情图"}
+	prompt := detailSectionGenerationPrompt("", section, 0, 4, inputs)
+	for _, expected := range []string{"文字与画面一次成型", "让风穿过每一步", "轻盈启程", "AI-INTEGRATED TEXT POLICY:", "简体中文", "不做后期叠字"} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("native free detail prompt lost %q: %s", expected, prompt)
+		}
+	}
+	for _, forbidden := range []string{"text-free visual background", "Those words are added after image generation", "后续AI会看实际底图"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("native free mode leaked post-typesetting instruction %q: %s", forbidden, prompt)
+		}
+	}
+	if !commerceGeneratesDetailText(inputs) || commerceRendersDetailText(inputs) {
+		t.Fatal("free mode was not separated from render-text mode")
+	}
+}
+
+func TestRenderTextAndFreeRemainCreativePlanningModes(t *testing.T) {
+	for _, mode := range []string{"free", "render_text"} {
+		if !commerceFreeCreation(map[string]interface{}{"creative_mode": mode}) {
+			t.Fatalf("%s lost creative planning", mode)
+		}
+	}
+	if !commerceRendersDetailText(map[string]interface{}{"creative_mode": "render_text"}) || commerceGeneratesDetailText(map[string]interface{}{"creative_mode": "render_text"}) {
+		t.Fatal("render_text mode was not separated from native image text")
+	}
+}
+
+func TestFreeDetailAnalysisRemovesPostTypesettingContradictions(t *testing.T) {
+	system := buildAgentAnalysisSystemPrompt("image", "ecommerce_image", 3, "detail_image", true) + "\n" + commerceResolutionInstruction
+	system = commerceNativeDetailAnalysisPrompt(system) + "\n" + commerceNativeDetailTextInstruction
+	for _, forbidden := range []string{"image_prompt和layout只能描述无字底图", "最终文案与排版会在看到实际底图后再由AI决定", "图片模型不绘制新增文字", "文字由后期准确排版"} {
+		if strings.Contains(system, forbidden) {
+			t.Fatalf("native free analysis still contains post-typesetting rule %q", forbidden)
+		}
+	}
+	if !strings.Contains(system, "图片模型一次完成画面与文字") || !strings.Contains(system, "AI原生文字") {
+		t.Fatal("native free analysis lost its direct text-generation override")
 	}
 }
 

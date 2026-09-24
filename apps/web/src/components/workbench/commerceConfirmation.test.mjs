@@ -47,6 +47,7 @@ test("opening history restores saved confirmation controls without resetting liv
     setImageSize: value => { values.tier = value; }, setDetailSectionCount: value => { values.sections = value; },
     setDetailSectionCountLocked: value => { values.sectionsLocked = value; },
     setCreativeMode: value => { values.creativeMode = value; },
+    normalizeCreativeMode: value => value === "render_text" || value === "precise" ? value : "free",
   };
   const run = callback(restore, ctx);
   run();

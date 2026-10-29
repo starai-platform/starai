@@ -423,6 +423,7 @@ export function AgentWorkspace({ code }: { code: string }) {
   const [novelModelCode, setNovelModelCode] = useState("");
   const pollRef = useRef<(() => void) | null>(null);
   const pollScopeRef = useRef<string | null>(null);
+  const pollProjectRef = useRef<string | null>(null);
   const commerceParamsProjectRef = useRef("");
   const workflowDefaultsCodeRef = useRef("");
   const modelDefaultsCodeRef = useRef("");
@@ -499,8 +500,10 @@ export function AgentWorkspace({ code }: { code: string }) {
 
   useEffect(() => {
     pollScopeRef.current = code;
+    pollProjectRef.current = null;
     return () => {
       pollScopeRef.current = null;
+      pollProjectRef.current = null;
       pollRef.current?.();
     };
   }, [code]);
@@ -797,6 +800,7 @@ export function AgentWorkspace({ code }: { code: string }) {
 
   const selectComicProject = (item: ComicProject) => {
     pollRef.current?.();
+    pollProjectRef.current = null;
     setProject(null);
     setError("");
     setActiveComicProject(item);
@@ -813,10 +817,12 @@ export function AgentWorkspace({ code }: { code: string }) {
   const startPolling = (publicId: string) => {
     if (pollScopeRef.current !== code) return;
     pollRef.current?.();
+    pollProjectRef.current = publicId;
     pollRef.current = pollAsync(async (signal) => {
       try {
         const p = await api<Project>(`/api/agent-projects/${publicId}`, { signal });
         if (signal.aborted) return;
+        if (pollProjectRef.current !== publicId || pollScopeRef.current !== code) return;
         setProject(p);
         if (p.status === "succeeded" || p.status === "failed" || p.status === "waiting_confirm" || p.status === "canceled") {
           pollRef.current?.();

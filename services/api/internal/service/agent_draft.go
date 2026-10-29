@@ -193,15 +193,18 @@ func (s *ChatService) recoverAgentSubmission(ctx context.Context, userID int64, 
 		return d, nil
 	}
 	var kind, ref string
-	err = tx.QueryRow(ctx, `SELECT kind,ref FROM (
+	var matches int
+	err = tx.QueryRow(ctx, `SELECT COALESCE((array_agg(kind ORDER BY kind, ref))[1],''), COALESCE((array_agg(ref ORDER BY kind, ref))[1],''), COUNT(*) FROM (
  SELECT 'generation' AS kind,task_no AS ref FROM tasks WHERE user_id=$1 AND input->>'_agent_confirmation'=$2
- UNION ALL SELECT 'workflow',public_id FROM workflow_projects WHERE user_id=$1 AND inputs->>'_agent_confirmation'=$2
- ) existing LIMIT 1`, userID, AgentConfirmationKey(conversationID, d.Version)).Scan(&kind, &ref)
-	if err == nil {
+		UNION ALL SELECT 'workflow',public_id FROM workflow_projects WHERE user_id=$1 AND inputs->>'_agent_confirmation'=$2
+		) existing`, userID, AgentConfirmationKey(conversationID, d.Version)).Scan(&kind, &ref, &matches)
+	if err == nil && matches > 1 {
+		return nil, errors.New("同一 Agent 确认标记对应多个任务，已停止自动恢复")
+	} else if err == nil && matches == 1 {
 		d.Status, d.ExecutionKind, d.ExecutionRef, d.Error = "submitted", kind, ref, ""
-	} else if !errors.Is(err, pgx.ErrNoRows) {
+	} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
-	} else if d.Status == "executing" && expired {
+	} else if err == nil && matches == 0 && d.Status == "executing" && expired {
 		d.Version++ // Fence the old request, including one that resumes very late.
 		d.Status, d.ExecutionKind, d.ExecutionRef = "draft", "", ""
 		if len(d.Missing) == 0 && len(d.Plan) > 0 {
@@ -304,8 +307,11 @@ func (s *ChatService) CompleteAgentDraft(ctx context.Context, userID int64, conv
 		status = "failed"
 	}
 	patch, _ := json.Marshal(map[string]interface{}{"status": status, "execution_kind": kind, "execution_ref": ref, "error": failure})
-	_, err := s.db.Exec(ctx, `UPDATE conversations SET agent_state=agent_state || $4::jsonb,updated_at=now()
-	 WHERE public_id=$1 AND user_id=$2 AND (agent_state->>'version')::bigint=$3 AND agent_state->>'status' IN ('executing','failed')`, conversationID, userID, version, patch)
+	result, err := s.db.Exec(ctx, `UPDATE conversations SET agent_state=agent_state || $4::jsonb,updated_at=now()
+	 WHERE public_id=$1 AND user_id=$2 AND (agent_state->>'version')::bigint=$3 AND agent_state->>'status'='executing'`, conversationID, userID, version, patch)
+	if err == nil && result.RowsAffected() != 1 {
+		return errors.New("执行结果已失效，未更新当前 Agent 方案")
+	}
 	return err
 }
 
@@ -313,7 +319,7 @@ func (s *ChatService) CancelAgentDraft(ctx context.Context, userID int64, conver
 	patch, _ := json.Marshal(map[string]interface{}{"status": "cancelled", "version": version + 1})
 	result, err := s.db.Exec(ctx, `UPDATE conversations SET agent_state=agent_state || $4::jsonb,updated_at=now()
 	 WHERE public_id=$1 AND user_id=$2 AND (agent_state->>'version')::bigint=$3
-	 AND agent_state->>'status' IN ('planning','draft','awaiting_confirmation','cancelled','failed')`, conversationID, userID, version, patch)
+	 AND agent_state->>'status' IN ('planning','draft','awaiting_confirmation','failed')`, conversationID, userID, version, patch)
 	if err != nil {
 		return err
 	}

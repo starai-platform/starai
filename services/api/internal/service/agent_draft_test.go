@@ -276,3 +276,21 @@ func TestAgentDraftDatabaseInterruptedSubmission(t *testing.T) {
 		t.Fatalf("committed submission not recovered: %+v", got)
 	}
 }
+
+func TestAgentDraftLateCompletionCannotResurrectFailure(t *testing.T) {
+	pool := agentTestDatabase(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `INSERT INTO conversations(public_id,user_id,agent_state) VALUES ('late_completion',1,$1)`, mustAgentJSON(map[string]interface{}{"version": 1, "status": "failed", "error": "upstream timeout"})); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&ChatService{db: pool}).CompleteAgentDraft(ctx, 1, "late_completion", 1, "workflow", "late-project", ""); err == nil {
+		t.Fatal("late completion should be rejected after failure")
+	}
+	d, err := (&ChatService{db: pool}).GetAgentDraft(ctx, 1, "late_completion")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Status != "failed" || d.ExecutionRef != "" {
+		t.Fatalf("late completion resurrected failed draft: %#v", d)
+	}
+}

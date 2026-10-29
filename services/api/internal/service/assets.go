@@ -227,7 +227,9 @@ func (s *AssetService) Delete(ctx context.Context, userID int64, publicID string
 	if err := s.db.QueryRow(ctx, `SELECT id FROM assets WHERE user_id=$1 AND public_id=$2`, userID, publicID).Scan(&assetID); err != nil {
 		return err
 	}
-	_, _ = s.db.Exec(ctx, `UPDATE works SET asset_id=NULL WHERE user_id=$1 AND asset_id=$2`, userID, assetID)
+	if _, err := s.db.Exec(ctx, `UPDATE works SET asset_id=NULL WHERE user_id=$1 AND asset_id=$2`, userID, assetID); err != nil {
+		return fmt.Errorf("detach asset from works: %w", err)
+	}
 	tag, err := s.db.Exec(ctx, `DELETE FROM assets WHERE user_id=$1 AND public_id=$2`, userID, publicID)
 	if err != nil {
 		return err

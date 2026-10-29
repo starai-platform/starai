@@ -435,7 +435,9 @@ func (s *AgentService) CreateProject(ctx context.Context, userID int64, code str
 		return nil, err
 	}
 	if stringValue(def.RuntimeConfig["agent_mode"]) == "comic_drama" {
-		s.attachWorkflowToComicProject(ctx, userID, projectID, inputs)
+		if err := s.attachWorkflowToComicProject(ctx, userID, projectID, inputs); err != nil {
+			return nil, fmt.Errorf("attach workflow to comic project: %w", err)
+		}
 	}
 	if err := queue.EnqueueWorkflowTask(s.queue, queue.WorkflowTaskPayload{ProjectID: projectID, UserID: userID}); err != nil {
 		cleanupErr := s.billing.UnfreezeWithFinalize(ctx, userID, billingReservation, "workflow", publicID, func(tx pgx.Tx) error {
@@ -1501,12 +1503,13 @@ func (s *AgentService) DeleteComicDramaStyle(ctx context.Context, userID int64, 
 	return nil
 }
 
-func (s *AgentService) attachWorkflowToComicProject(ctx context.Context, userID, workflowProjectID int64, inputs map[string]interface{}) {
+func (s *AgentService) attachWorkflowToComicProject(ctx context.Context, userID, workflowProjectID int64, inputs map[string]interface{}) error {
 	publicID := stringValue(inputs["comic_project_id"])
 	if publicID == "" {
-		return
+		return nil
 	}
-	_, _ = s.db.Exec(ctx, `UPDATE comic_drama_projects SET last_workflow_project_id=$1, updated_at=now() WHERE public_id=$2 AND user_id=$3`, workflowProjectID, publicID, userID)
+	_, err := s.db.Exec(ctx, `UPDATE comic_drama_projects SET last_workflow_project_id=$1, updated_at=now() WHERE public_id=$2 AND user_id=$3`, workflowProjectID, publicID, userID)
+	return err
 }
 
 func scanComicDramaProject(row pgx.Row) (*ComicDramaProjectDTO, error) {

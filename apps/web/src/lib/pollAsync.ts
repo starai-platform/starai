@@ -4,10 +4,13 @@ export function pollAsync(
   intervalMs: number,
   immediate = false,
   pauseWhenHidden = true,
+  maxConsecutiveFailures = 5,
+  onError?: (error: unknown, consecutiveFailures: number) => void,
 ): () => void {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout>;
   let running = false;
+  let consecutiveFailures = 0;
 
   const schedule = (delay: number) => {
     clearTimeout(timer);
@@ -23,8 +26,15 @@ export function pollAsync(
     running = true;
     try {
       await refresh(controller.signal);
-    } catch {
-      // Transient read failures are retried on the next tick.
+      consecutiveFailures = 0;
+    } catch (error) {
+      consecutiveFailures += 1;
+      onError?.(error, consecutiveFailures);
+      // Keep retrying transient failures, but stop a permanently broken poll.
+      if (consecutiveFailures >= maxConsecutiveFailures) {
+        controller.abort();
+        return;
+      }
     } finally {
       running = false;
       if (!controller.signal.aborted) schedule(intervalMs);

@@ -332,7 +332,9 @@ routeLoop:
 			continue
 		}
 		if route.ID > 0 {
-			_, _ = pool.Exec(ctx, `UPDATE tasks SET route_id=$1,updated_at=now() WHERE task_no=$2`, route.ID, p.TaskNo)
+			if _, err := pool.Exec(ctx, `UPDATE tasks SET route_id=$1,updated_at=now() WHERE task_no=$2`, route.ID, p.TaskNo); err != nil {
+				log.Printf("Task %s route assignment failed route=%d: %v", p.TaskNo, route.ID, err)
+			}
 		}
 		for retry := 0; retry <= route.MaxRetries; retry++ {
 			if attempt >= maxWorkerRouteAttempts {
@@ -395,14 +397,18 @@ routeLoop:
 	runtimeRule, conn, endpoint, newAPIModel := selected.RuntimeRule, selected.Connection, selected.Endpoint, selected.UpstreamModel
 	respBody, resultData, upstreamID := selected.ResponseBody, selected.ResultData, selected.UpstreamTaskID
 	if upstreamID != "" {
-		_, _ = pool.Exec(ctx, `UPDATE tasks SET upstream_task_id=$1,route_id=$2,updated_at=now() WHERE task_no=$3`, upstreamID, nullableRouteID(selected.Route.ID), p.TaskNo)
+		if _, err := pool.Exec(ctx, `UPDATE tasks SET upstream_task_id=$1,route_id=$2,updated_at=now() WHERE task_no=$3`, upstreamID, nullableRouteID(selected.Route.ID), p.TaskNo); err != nil {
+			log.Printf("Task %s upstream assignment failed upstream=%s: %v", p.TaskNo, upstreamID, err)
+		}
 	}
 
 	usage := upstreamUsageFromBodyWithRule(respBody, runtimeRule)
 	if !(isImage && isVideoImageAPI(endpoint, newAPIModel)) {
 		resultData, upstreamID = parseUpstreamMediaWithRule(respBody, runtimeRule)
 		if upstreamID != "" {
-			pool.Exec(ctx, `UPDATE tasks SET upstream_task_id=$1, updated_at=now() WHERE task_no=$2`, upstreamID, p.TaskNo)
+			if _, err := pool.Exec(ctx, `UPDATE tasks SET upstream_task_id=$1, updated_at=now() WHERE task_no=$2`, upstreamID, p.TaskNo); err != nil {
+				log.Printf("Task %s async upstream assignment failed upstream=%s: %v", p.TaskNo, upstreamID, err)
+			}
 		}
 		if len(resultData) == 0 && upstreamID != "" {
 			pollCfg := resolveMediaPollConfig(runtimeRule, endpoint, respBody, conn.BaseURL)

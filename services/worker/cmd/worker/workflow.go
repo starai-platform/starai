@@ -3059,7 +3059,12 @@ func chargeStepBilling(ctx context.Context, pool *pgxpool.Pool, userID, projectI
 	if _, err = tx.Exec(ctx, `UPDATE wallets SET compute_balance=$1, frozen_compute=$2, updated_at=now() WHERE user_id=$3`, newBalance, newFrozen, userID); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE balance_freezes SET amount=GREATEST(amount-$1,0) WHERE user_id=$2 AND ref_type='workflow' AND ref_id=$3 AND status='frozen'`, charge, userID, publicID); err != nil {
+	if _, err = tx.Exec(ctx, `
+		UPDATE balance_freezes
+		SET amount=GREATEST(amount-$1,0),
+		    status=CASE WHEN amount <= $1 THEN 'charged' ELSE status END,
+		    released_at=CASE WHEN amount <= $1 THEN now() ELSE released_at END
+		WHERE user_id=$2 AND ref_type='workflow' AND ref_id=$3 AND status='frozen'`, charge, userID, publicID); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO wallet_transactions (user_id, type, direction, amount, balance_after, ref_type, ref_id, remark) VALUES ($1,'workflow_usage','out',$2,$3,'workflow',$4,'工作流分段扣费')`, userID, charge, newBalance, publicID); err != nil {

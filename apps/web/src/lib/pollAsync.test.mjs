@@ -21,7 +21,7 @@ test("polling waits for completion, recovers after failure and aborts without re
   t.mock.timers.tick(1);
   assert.equal(calls, 1);
   t.mock.timers.tick(1000);
-  assert.equal(calls, 1);
+  assert.equal(calls, 1, "slow requests must not overlap");
   release();
   await settle();
   t.mock.timers.tick(100);
@@ -29,7 +29,7 @@ test("polling waits for completion, recovers after failure and aborts without re
   assert.equal(calls, 2);
   t.mock.timers.tick(100);
   await settle();
-  assert.equal(calls, 3);
+  assert.equal(calls, 3, "failure must not permanently stop polling");
   stop();
   assert.equal(signal.aborted, true);
   t.mock.timers.tick(1000);
@@ -78,4 +78,25 @@ test("polling pauses in hidden tabs and refreshes immediately when visible", asy
   t.mock.timers.tick(0);
   await settle();
   assert.equal(calls, 1);
+});
+
+test("polling stops after configured consecutive failures and reports the last error", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let calls = 0;
+  const failures = [];
+  const stop = pollAsync(async () => {
+    calls += 1;
+    throw new Error(`failure-${calls}`);
+  }, 10, true, true, 2, (error, count) => failures.push([error.message, count]));
+  t.after(stop);
+
+  t.mock.timers.tick(0);
+  await settle();
+  t.mock.timers.tick(10);
+  await settle();
+  t.mock.timers.tick(100);
+  await settle();
+
+  assert.equal(calls, 2);
+  assert.deepEqual(failures, [["failure-1", 1], ["failure-2", 2]]);
 });

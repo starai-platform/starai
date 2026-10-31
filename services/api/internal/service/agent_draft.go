@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type AgentSlotSource struct {
@@ -307,8 +309,19 @@ func (s *ChatService) CompleteAgentDraft(ctx context.Context, userID int64, conv
 		status = "failed"
 	}
 	patch, _ := json.Marshal(map[string]interface{}{"status": status, "execution_kind": kind, "execution_ref": ref, "error": failure})
-	result, err := s.db.Exec(ctx, `UPDATE conversations SET agent_state=agent_state || $4::jsonb,updated_at=now()
-	 WHERE public_id=$1 AND user_id=$2 AND (agent_state->>'version')::bigint=$3 AND agent_state->>'status'='executing'`, conversationID, userID, version, patch)
+	var result pgconn.CommandTag
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		result, err = s.db.Exec(ctx, `UPDATE conversations SET agent_state=agent_state || $4::jsonb,updated_at=now()
+			 WHERE public_id=$1 AND user_id=$2 AND (agent_state->>'version')::bigint=$3 AND agent_state->>'status'='executing'`, conversationID, userID, version, patch)
+		if err == nil || ctx.Err() != nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Duration(attempt+1) * 50 * time.Millisecond):
+		}
+	}
 	if err == nil && result.RowsAffected() != 1 {
 		return errors.New("执行结果已失效，未更新当前 Agent 方案")
 	}

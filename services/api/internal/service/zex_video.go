@@ -18,6 +18,9 @@ func validateZexVideoParams(model *ModelFull, cfg videoRuntimeConfig, params map
 		return errors.New("视频生成需要填写提示词")
 	}
 	for native, platform := range map[string]string{"images": cfg.ReferenceImagesKey, "videos": cfg.ReferenceVideosKey, "audios": cfg.ReferenceAudiosKey} {
+		if native == platform {
+			continue
+		}
 		if value, exists := params[native]; exists {
 			if _, conflict := params[platform]; conflict {
 				return fmt.Errorf("参数 %s 与 %s 不能同时传入", native, platform)

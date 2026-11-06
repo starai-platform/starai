@@ -12,6 +12,20 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+func TestZexNativeNamedSlotsDoNotConflictWithThemselves(t *testing.T) {
+	model := &ModelFull{RuntimeRule: map[string]interface{}{
+		"upstream": map[string]interface{}{"adapter": "zex_video"},
+		"video": map[string]interface{}{"upload_profile": "aliyun_multimodal", "max_reference_images": 9,
+			"reference_images": map[string]interface{}{"key": "images", "max": 9},
+			"reference_videos": map[string]interface{}{"key": "videos", "max": 9},
+			"reference_audios": map[string]interface{}{"key": "audios", "max": 9}},
+	}}
+	params := map[string]interface{}{"prompt": "test", "generation_mode": "reference", "images": []string{"https://e.test/image.png"}, "videos": []string{"https://e.test/video.mp4"}, "audios": []string{"https://e.test/audio.mp3"}}
+	if err := ValidateVideoParams(model, params); err != nil {
+		t.Fatalf("configured native field names should not conflict: %v", err)
+	}
+}
+
 func TestZexSeedanceReferenceLimitMigrationDatabase(t *testing.T) {
 	dsn := os.Getenv("MEDIA_BILLING_TEST_DATABASE_URL")
 	if dsn == "" {

@@ -6,6 +6,17 @@ const item = url => ({ url, name: url });
 const rule = adapter => ({ upstream: { adapter }, template_key: "zex_seedance_2_0", video: { upload_profile: adapter === "zex_video" ? "gateway_reference" : "seedance_2" } });
 const media = { ...EMPTY_VIDEO_MEDIA, first_frame: item("first"), last_frame: item("last"), reference_images: [item("a"), item("b"), item("c")], reference_videos: [item("v")], reference_audios: [item("s")] };
 
+test("Omni submits only active image slots and clears imported gateway aliases", () => {
+  const stale = { reference_images: ["old"], first_frame: "old", videos: ["old"], images: ["old"], audios: ["old"], input_reference: ["old"], first_last_frame: true };
+  for (const adapter of ["omni_reference_v1", "octopus_sd_mini_v1"]) {
+    const runtime = { upstream: { adapter }, video: { upload_profile: "omni_reference" } };
+    assert.deepEqual(buildVideoTaskParams({ ...stale, generation_mode: "text" }, media, runtime), { generation_mode: "text" });
+    assert.deepEqual(buildVideoTaskParams({ ...stale, generation_mode: "reference" }, media, runtime), { generation_mode: "reference", reference_images: ["a", "b", "c"] });
+  }
+  const frames = buildVideoTaskParams(stale, media, { upstream: { adapter: "omni_frame_pair_v1" }, video: { upload_profile: "veo_frame_pair" } });
+  assert.deepEqual(frames, { first_frame: "first", last_frame: "last" });
+});
+
 test("verified Seedance/MiniMax channels expose only submitted media and clear hidden stale params", () => {
   for (const adapter of ["zex_video", "volcengine_seedance_2", "topenrouter_seedance_2", "minimax_h3_v2"]) {
     const runtime = rule(adapter);

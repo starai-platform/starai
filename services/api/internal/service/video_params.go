@@ -89,6 +89,12 @@ func ValidateVideoParams(model *ModelFull, params map[string]interface{}) error 
 	}
 	normalizeVideoSchemaParamTypes(model.InputSchema, params)
 	cfg := parseVideoRuntimeConfig(model.RuntimeRule)
+	adapter := strings.ToLower(parseUpstreamConfig(model.RuntimeRule).Adapter)
+	if adapter == "omni_reference_v1" || adapter == "omni_frame_pair_v1" {
+		if err := validateOmniVideoParams(model, cfg, params, adapter == "omni_frame_pair_v1"); err != nil {
+			return err
+		}
+	}
 	if strings.EqualFold(parseUpstreamConfig(model.RuntimeRule).Adapter, "zex_video") {
 		if err := validateZexVideoParams(model, cfg, params); err != nil {
 			return err
@@ -105,6 +111,30 @@ func ValidateVideoParams(model *ModelFull, params map[string]interface{}) error 
 		return err
 	}
 	return validateSchemaParams(model.InputSchema, params)
+}
+
+func validateOmniVideoParams(model *ModelFull, cfg videoRuntimeConfig, params map[string]interface{}, frames bool) error {
+	if strings.TrimSpace(stringValue(params["prompt"])) == "" {
+		return errors.New("Omni 视频生成需要填写提示词")
+	}
+	for _, key := range []string{cfg.ReferenceVideosKey, cfg.ReferenceAudiosKey, "images", "videos", "audios", "input_reference", "first_last_frame"} {
+		if value, exists := params[key]; exists && value != nil {
+			return fmt.Errorf("Omni 请使用模板配置的图片或首尾帧参数，不支持参数 %s", key)
+		}
+	}
+	if frames {
+		if !strings.HasSuffix(strings.ToLower(model.NewAPIModel), "-fl") {
+			return errors.New("Omni 首尾帧模板必须使用带 -fl 的独立型号，例如 omni_flash-10s-fl")
+		}
+		if urlFieldCount(params[cfg.FirstFrameKey]) != 1 || urlFieldCount(params[cfg.LastFrameKey]) > 1 || urlFieldCount(params[cfg.ReferenceImagesKey]) > 0 {
+			return errors.New("Omni 首尾帧模式需要 1 张首帧和可选的 1 张尾帧，不能混用参考图")
+		}
+	} else if strings.HasSuffix(strings.ToLower(model.NewAPIModel), "-fl") {
+		return errors.New("Omni 的 -fl 型号请选择首尾帧模板")
+	} else if urlFieldCount(params[cfg.FirstFrameKey])+urlFieldCount(params[cfg.LastFrameKey]) > 0 {
+		return errors.New("Omni 参考图模板不支持首尾帧，请选择 -fl 型号和首尾帧模板")
+	}
+	return nil
 }
 
 // normalizeVideoSchemaParamTypes accepts semantically equivalent legacy

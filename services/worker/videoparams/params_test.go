@@ -2,9 +2,71 @@ package videoparams
 
 import (
 	"encoding/json"
+	"reflect"
 	"strconv"
 	"testing"
 )
+
+func TestOmniFramePairUsesIndependentModelAndOrderedImages(t *testing.T) {
+	rule := map[string]interface{}{
+		"video":    map[string]interface{}{"upload_profile": "veo_frame_pair"},
+		"upstream": map[string]interface{}{"adapter": "omni_frame_pair_v1", "include": []interface{}{"size", "first_frame", "last_frame"}},
+	}
+	for _, tail := range []string{"", "https://e.test/last.png"} {
+		params := map[string]interface{}{"prompt": "transition", "first_frame": "https://e.test/first.png", "last_frame": tail, "duration": 10, "size": "720x1280", "reference_images": []string{"stale"}}
+		out := SanitizeUpstreamPayload(BuildUpstreamVideoPayload("omni-frames", "omni_flash-10s-fl", rule,
+			map[string]interface{}{"seconds": "10", "resolution": "1080p", "first_last_frame": true, "videos": []string{"stale"}}, params), "/v1/videos")
+		wantImages := []string{"https://e.test/first.png"}
+		if tail != "" {
+			wantImages = append(wantImages, tail)
+		}
+		if !reflect.DeepEqual(out, map[string]interface{}{"model": "omni_flash-10s-fl", "prompt": "transition", "size": "720x1280", "images": wantImages}) {
+			t.Fatalf("unexpected Omni frame request: %#v", out)
+		}
+	}
+}
+
+func TestZexWorkerFiltersInactiveMediaWithCustomSlots(t *testing.T) {
+	rule := map[string]interface{}{
+		"video":    map[string]interface{}{"mode_param": "mode", "frames": map[string]interface{}{"first": map[string]interface{}{"key": "start"}, "last": map[string]interface{}{"key": "end"}}, "reference_images": map[string]interface{}{"key": "pictures"}},
+		"upstream": map[string]interface{}{"adapter": "zex_video", "include": []interface{}{"duration", "mode", "pictures", "start", "end", "reference_video_duration_seconds"}},
+	}
+	for _, mode := range []string{"text", "first_frame", "first_last", "image_audio", "reference"} {
+		params := map[string]interface{}{"prompt": "test", "duration": 6, "mode": mode, "pictures": []string{"image"}, "start": "first", "end": "last", "reference_videos": []string{"video"}, "reference_audios": []string{"audio"}, "reference_video_duration_seconds": 3}
+		out := SanitizeUpstreamPayload(BuildUpstreamVideoPayload("logical", "seedance-2.0", rule, nil, params), "/v1/videos")
+		want := map[string]interface{}{"model": "seedance-2.0", "prompt": "test", "seconds": "6"}
+		switch mode {
+		case "first_frame":
+			want["images"], want["first_last_frame"] = []string{"first"}, true
+		case "first_last":
+			want["images"], want["first_last_frame"] = []string{"first", "last"}, true
+		case "image_audio":
+			want["images"], want["audios"] = []string{"image"}, []string{"audio"}
+		case "reference":
+			want["images"], want["videos"], want["audios"] = []string{"image"}, []string{"video"}, []string{"audio"}
+		}
+		if !reflect.DeepEqual(out, want) {
+			t.Fatalf("mode %s: got %#v, want %#v", mode, out, want)
+		}
+		if params["start"] != "first" || params["reference_videos"] == nil {
+			t.Fatal("builder mutated stored task parameters")
+		}
+	}
+}
+
+func TestZexNativeNamedSlotsKeepAllMediaArrays(t *testing.T) {
+	rule := map[string]interface{}{
+		"video":    map[string]interface{}{"reference_images": map[string]interface{}{"key": "images"}, "reference_videos": map[string]interface{}{"key": "videos"}, "reference_audios": map[string]interface{}{"key": "audios"}},
+		"upstream": map[string]interface{}{"adapter": "zex_video"},
+	}
+	params := map[string]interface{}{"prompt": "test", "duration": 6, "generation_mode": "reference", "images": []string{"image"}, "videos": []string{"video"}, "audios": []string{"audio"}}
+	out := SanitizeUpstreamPayload(BuildUpstreamVideoPayload("logical", "minimax-h3", rule, nil, params), "/v1/videos")
+	for _, key := range []string{"images", "videos", "audios"} {
+		if !reflect.DeepEqual(out[key], params[key]) {
+			t.Fatalf("native-named %s slot lost: %#v", key, out)
+		}
+	}
+}
 
 func TestZexSeedance25DefaultResolution(t *testing.T) {
 	rule := map[string]interface{}{"upstream": map[string]interface{}{"adapter": "zex_video", "model_template": "seedance-2.5-{duration}s", "include": []interface{}{"duration", "aspect_ratio", "resolution"}}}

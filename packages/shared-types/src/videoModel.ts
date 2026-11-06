@@ -232,7 +232,10 @@ export function schemaCountConfig(prop: SchemaFieldMeta, runtime: Pick<VideoRunt
 export function selectVideoTaskMedia(params: Record<string, unknown>, media: VideoMediaState, runtimeRule?: Record<string, unknown>): VideoMediaState {
   const cfg = parseVideoRuntime(runtimeRule);
   const adapter = String(asRecord(runtimeRule?.upstream).adapter || "");
-  if (!["zex_video", "volcengine_seedance_2", "topenrouter_seedance_2", "minimax_h3_v2"].includes(adapter) && !["seedance_2", "minimax_h3"].includes(String(cfg.upload_profile))) return media;
+  if (adapter === "omni_frame_pair_v1") return { ...EMPTY_VIDEO_MEDIA, first_frame: media.first_frame, last_frame: media.last_frame };
+  if (["omni_reference_v1", "octopus_sd_mini_v1"].includes(adapter)) return String(params[cfg.mode_param || "generation_mode"] || "text") === "reference"
+    ? { ...EMPTY_VIDEO_MEDIA, reference_images: media.reference_images } : EMPTY_VIDEO_MEDIA;
+  if (!["zex_video", "volcengine_seedance_2", "topenrouter_seedance_2", "minimax_h3_v2", "omni_reference_v1", "octopus_sd_mini_v1"].includes(adapter) && !["seedance_2", "minimax_h3"].includes(String(cfg.upload_profile))) return media;
   const mode = String(params[cfg.mode_param || "generation_mode"] || "text");
   return mode === "text" || mode === "draft_task" || cfg.upload_profile === "none" ? EMPTY_VIDEO_MEDIA
     : ["first_frame", "last_frame", "first_last"].includes(mode) ? { ...EMPTY_VIDEO_MEDIA, first_frame: mode !== "last_frame" ? media.first_frame : null, last_frame: mode !== "first_frame" ? media.last_frame : null }
@@ -254,8 +257,8 @@ export function buildVideoTaskParams(
   const refVideoKey = cfg.reference_videos?.key || "reference_videos";
   const refAudioKey = cfg.reference_audios?.key || "reference_audios";
   const out: Record<string, unknown> = { ...params };
-  if (["zex_video", "volcengine_seedance_2", "topenrouter_seedance_2", "minimax_h3_v2"].includes(String(asRecord(runtimeRule?.upstream).adapter)) || ["seedance_2", "minimax_h3"].includes(String(cfg.upload_profile))) {
-    for (const key of [firstKey, lastKey, refKey, refVideoKey, refAudioKey, "reference_video_duration_seconds"]) delete out[key];
+  if (["zex_video", "volcengine_seedance_2", "topenrouter_seedance_2", "minimax_h3_v2", "omni_reference_v1", "omni_frame_pair_v1", "octopus_sd_mini_v1"].includes(String(asRecord(runtimeRule?.upstream).adapter)) || ["seedance_2", "minimax_h3"].includes(String(cfg.upload_profile))) {
+    for (const key of [firstKey, lastKey, refKey, refVideoKey, refAudioKey, "images", "videos", "audios", "input_reference", "first_last_frame", "reference_video_duration_seconds"]) delete out[key];
   }
   media = selectVideoTaskMedia(params, media, runtimeRule);
   if (media.first_frame?.url) out[firstKey] = media.first_frame.url;
@@ -357,7 +360,7 @@ export function isSizeBasedVideoProfile(runtimeRule?: Record<string, unknown>) {
   const upstream = asRecord(runtimeRule?.upstream);
   const profile = String(video.upload_profile || "").toLowerCase();
   const adapter = String(upstream.adapter || "").toLowerCase();
-  return SIZE_BASED_VIDEO_PROFILES.has(profile) || ["veo_frame_pair_v1", "veo_reference_v1", "omni_reference_v1"].includes(adapter);
+  return SIZE_BASED_VIDEO_PROFILES.has(profile) || ["veo_frame_pair_v1", "veo_reference_v1", "omni_reference_v1", "omni_frame_pair_v1"].includes(adapter);
 }
 
 export function canonicalVideoSize(value: unknown, fallback = "1280x720") {

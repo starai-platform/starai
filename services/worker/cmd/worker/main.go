@@ -2414,6 +2414,9 @@ func validateOmniReferencePayload(payload map[string]interface{}) error {
 	}
 	refs := payload["images"]
 	if refs == nil {
+		if strings.HasSuffix(strings.ToLower(stringAny(payload["model"])), "-fl") {
+			return errors.New("Omni 首尾帧型号至少需要 1 张首帧图片")
+		}
 		return nil
 	}
 	images := []string{}
@@ -2424,6 +2427,9 @@ func validateOmniReferencePayload(payload map[string]interface{}) error {
 		for _, item := range value {
 			images = append(images, strings.TrimSpace(fmt.Sprint(item)))
 		}
+	}
+	if strings.HasSuffix(strings.ToLower(stringAny(payload["model"])), "-fl") && (len(images) < 1 || len(images) > 2) {
+		return errors.New("Omni 首尾帧型号仅支持 1 张首帧和可选的 1 张尾帧")
 	}
 	for _, image := range images {
 		if !strings.HasPrefix(strings.ToLower(image), "data:image/") {

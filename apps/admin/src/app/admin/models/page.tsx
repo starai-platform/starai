@@ -1294,7 +1294,7 @@ export default function ModelsPage() {
     { value: "first_frame", label: "仅首帧（NEW API / Grok / Hailuo）" },
     { value: "multi_ref", label: "多参考图 1~N (SD 类)" },
     { value: "frame_pair", label: "首尾帧 + 参考图 (VEO 类)" },
-    { value: "veo_frame_pair", label: "VEO 首尾帧 1~2 张（无参考图）" },
+    { value: "veo_frame_pair", label: "VEO / Omni 首尾帧 1~2 张（无参考图）" },
     { value: "veo_reference", label: "参考图 1~3 张 (VEO 类，文生 / 参考图)" },
     { value: "omni_reference", label: "Omni 参考图 1~7 张 (文生 / 参考图)" },
     { value: "seedance_2", label: "Seedance 2.0 多模态组合" },
@@ -2611,7 +2611,7 @@ export default function ModelsPage() {
     category: "video",
     request_mode: "video",
     new_api_model: String(prev.new_api_model || "").toLowerCase().includes("omni")
-      ? prev.new_api_model
+      ? prev.new_api_model.replace(/-fl$/i, "")
       : "omni_flash-10s",
     new_api_endpoint: "/v1/videos",
     new_api_extra_params: setConnection(prev.new_api_extra_params, {
@@ -3300,8 +3300,13 @@ export default function ModelsPage() {
       };
       runtimeRule = parsedRuntimeRule;
     }
+    if (parsedRuntimeRule?.upstream?.adapter === "omni_frame_pair_v1" && !/^omni.*-10s-fl$/i.test(form.new_api_model)) {
+      setErr("Omni 首尾帧模板必须使用独立的 10 秒 -fl 型号，例如 omni_flash-10s-fl");
+      return;
+    }
     const isVeoFramePair =
       form.category === "video" &&
+      parsedRuntimeRule?.upstream?.adapter !== "omni_frame_pair_v1" &&
       (parsedRuntimeRule?.upstream?.adapter === "veo_frame_pair_v1" ||
         parsedRuntimeRule?.video?.upload_profile === "veo_frame_pair");
     if (isVeoFramePair) {
@@ -5166,8 +5171,9 @@ export default function ModelsPage() {
                           return;
                         }
                         if (profile === "veo_frame_pair") {
-                          setVideoTemplateKey(VEO_FRAME_PAIR_TEMPLATE_KEY);
-                          setForm((prev) => applyVeoFramePairV1(prev));
+                          const omni = /^omni/i.test(form.new_api_model) || String(currentRuntimeRule?.upstream?.adapter || "").startsWith("omni_");
+                          setVideoTemplateKey(omni ? "omni_frame_pair_v1" : VEO_FRAME_PAIR_TEMPLATE_KEY);
+                          setForm((prev) => omni ? applyMultimediaTemplate(prev, "omni_frame_pair_v1") : applyVeoFramePairV1(prev));
                           return;
                         }
                         if (profile === "omni_reference") {

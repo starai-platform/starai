@@ -5,6 +5,53 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
 
+test("Studio gateway duration defaults agree with the form schema", () => {
+  for (const template of MULTIMEDIA_TEMPLATES.filter(item => /^zex_(seedance_2_0|minimax_h3)/.test(item.key))) {
+    assert.deepEqual(template.schema.properties.duration.enum, Array.from({ length: 12 }, (_, i) => i + 4));
+    assert.equal(template.defaults.duration, 6);
+    assert.equal(template.schema.properties.duration.default, 6);
+    assert.equal(template.runtime.video.max_reference_total, 9);
+  }
+});
+
+test("Omni frame template uses its own fixed-duration model and preserves ordered frame slots", () => {
+  const template = MULTIMEDIA_TEMPLATES.find(item => item.key === "omni_frame_pair_v1");
+  const form = applyMultimediaTemplate({ new_api_model: "omni_flash-10s", new_api_extra_params: '{"connection":{"api_key":"keep"}}', runtime_rule: "{}" }, template.key);
+  assert.equal(form.new_api_model, "omni_flash-10s-fl");
+  assert.equal(JSON.parse(form.new_api_extra_params).connection.api_key, "keep");
+  assert.deepEqual(template.schema.properties.size.enum, ["1280x720", "720x1280"]);
+  assert.deepEqual(template.schema.required, ["first_frame"]);
+  assert.equal(template.defaults.duration, 10);
+  assert.equal(template.runtime.video.frames.last.max, 1);
+  assert.equal(template.runtime.video.reference_videos.max, 0);
+  assert.deepEqual(template.runtime.upstream.include, ["size", "first_frame", "last_frame"]);
+});
+
+test("Omni input shape switches select matching physical models in both directions", () => {
+  const source = ts.createSourceFile("models.tsx", readFileSync(new URL("../app/admin/models/page.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let applyReference, change;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === "applyOmniReferenceV1") applyReference = node.getText(source);
+    if (ts.isJsxOpeningElement(node) && node.tagName.getText(source) === "select" && node.attributes.properties.some(attr => attr.name?.text === "value" && attr.getText(source).includes("getVideoRule(form.runtime_rule).upload_profile"))) {
+      change = node.attributes.properties.find(attr => attr.name?.text === "onChange").initializer.expression.getText(source);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  assert.ok(applyReference && change);
+  let form = { new_api_model: "omni_flash-10s", runtime_rule: '{"upstream":{"adapter":"omni_reference_v1"}}', new_api_extra_params: "{}" };
+  const context = { form, currentRuntimeRule: JSON.parse(form.runtime_rule), setVideoTemplateKey() {}, setForm: update => { form = update(form); }, applyMultimediaTemplate, setConnection: text => text, VEO_FRAME_PAIR_TEMPLATE_KEY: "veo_frame_pair_v1", OMNI_REFERENCE_TEMPLATE_KEY: "omni_reference_v1" };
+  vm.runInNewContext(ts.transpileModule(`var ${applyReference}; var change = ${change};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
+  context.change({ target: { value: "veo_frame_pair" } });
+  assert.equal(form.new_api_model, "omni_flash-10s-fl");
+  assert.equal(JSON.parse(form.runtime_rule).upstream.adapter, "omni_frame_pair_v1");
+  context.form = form;
+  context.currentRuntimeRule = JSON.parse(form.runtime_rule);
+  context.change({ target: { value: "omni_reference" } });
+  assert.equal(form.new_api_model, "omni_flash-10s");
+  assert.equal(JSON.parse(form.runtime_rule).upstream.adapter, "omni_reference_v1");
+});
+
 test("advanced JSON editing synchronizes changed defaults of all field types and tolerates unfinished JSON", () => {
   const source = ts.createSourceFile("models.tsx", readFileSync(new URL("../app/admin/models/page.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let handler;
@@ -181,7 +228,7 @@ test("saving advanced gateway material defaults synchronizes workbench params an
 
 test("gateway templates retain credentials and explicit identity while resetting provider params and prices", () => {
   const current = { new_api_model: "custom-model-alias", runtime_rule: '{"upstream":{"adapter":"old","static":{"old":true}}}', new_api_extra_params: JSON.stringify({ connection: { base_url: "https://gateway.test", api_key: "test-key" }, custom: true }) };
-  assert.equal(MULTIMEDIA_TEMPLATES.length, 28);
+  assert.equal(MULTIMEDIA_TEMPLATES.length, 29);
   assert.equal(new Set(MULTIMEDIA_TEMPLATES.map((item) => item.key)).size, MULTIMEDIA_TEMPLATES.length);
   for (const template of MULTIMEDIA_TEMPLATES) {
     const form = applyMultimediaTemplate(current, template.key);

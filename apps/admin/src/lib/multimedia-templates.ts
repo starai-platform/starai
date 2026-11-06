@@ -45,6 +45,7 @@ const zexVideoTemplates: MultimediaTemplate[] = ZEX_VIDEO_MODELS.map((model) => 
   const multimodal = minimax || model.startsWith("seedance-2.0");
   const seedance25 = model === "seedance-2.5";
   const durations = seedance25 ? [10, 15, 30] : Array.from({ length: 12 }, (_, i) => i + 4);
+  const defaultDuration = seedance25 ? 10 : multimodal ? 6 : 5;
   const modes = minimax ? ZEX_MINIMAX_MODES : ["text", "first_frame", ...(!fast && !lite ? ["first_last"] : []), ...(!lite ? ["reference"] : [])];
   const maxImages = lite ? 1 : grok ? 7 : multimodal ? 9 : 4;
   const resolutions = minimax ? ["480p", "768p"] : ["480p", "720p"];
@@ -55,12 +56,12 @@ const zexVideoTemplates: MultimediaTemplate[] = ZEX_VIDEO_MODELS.map((model) => 
     schema: {
       ...schema({
         generation_mode: { ...field("素材组合", modes, "layers", 0), ...(minimax ? { description: "选择参考素材组合，上传对应素材。" } : {}), enumLabels: { text: "文生视频", first_frame: "首帧", first_last: "首尾帧", reference: minimax ? "自由参考组合" : "参考内容", image: "图片 + 文本", video: "视频 + 文本", audio: "音频 + 文本", image_audio: "图片 + 音频", image_video: "图片 + 视频", video_audio: "视频 + 音频", image_video_audio: "图片 + 视频 + 音频" } },
-        duration: field("视频时长", durations, "clock", 1),
+        duration: { ...field("视频时长", durations, "clock", 1), default: defaultDuration },
         aspect_ratio: field("画面比例", ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"], "ratio", 2),
         resolution: field("分辨率", resolutions, "4k", 3),
       }), required: ["duration"],
     },
-    defaults: { generation_mode: "text", duration: seedance25 ? 10 : 5, aspect_ratio: "16:9", resolution: resolutions[0] }, billing: seedance25 || model === "seedance-2.0" ? "per_request" : "per_second",
+    defaults: { generation_mode: "text", duration: defaultDuration, aspect_ratio: "16:9", resolution: resolutions[0] }, billing: seedance25 || model === "seedance-2.0" ? "per_request" : "per_second",
     ...(seedance25 ? { priceRule: { unit_price_by_duration: { "10": 0, "15": 0, "30": 0 } } } : multimodal ? { priceRule: { unit_price_by_resolution: Object.fromEntries(resolutions.map(resolution => [resolution, 0])) } } : {}),
     connection: { auth_type: "bearer" },
     runtime: {
@@ -109,6 +110,21 @@ export function configureZexUploadProfile<T extends { runtime_rule: string; inpu
 
 export const MULTIMEDIA_TEMPLATES: MultimediaTemplate[] = [
   ...zexVideoTemplates,
+  {
+    key: "omni_frame_pair_v1", label: "章鱼哥 · Omni Flash 10 秒 · 首帧 / 首尾帧", category: "video", endpoint: "/v1/videos", model: "omni_flash-10s-fl",
+    description: "Omni 首尾帧独立型号，固定 10 秒、720P；首帧必填、尾帧可选。按顺序发送 images 和 size，时长由模型名决定。",
+    schema: { ...schema({ duration: field("视频时长", [10], "clock", 1), size: field("视频尺寸", ["1280x720", "720x1280"], "ratio", 2) }), required: ["first_frame"] },
+    defaults: { duration: 10, size: "1280x720" }, billing: "per_request",
+    connection: { auth_type: "bearer" },
+    runtime: {
+      video: { ...video("veo_frame_pair", 0), max_total_images: 2, max_reference_total: 2,
+        frames: { first: { key: "first_frame", label: "首帧", max: 1 }, last: { key: "last_frame", label: "尾帧（可选）", max: 1 } },
+        reference_videos: { key: "reference_videos", max: 0 }, reference_audios: { key: "reference_audios", max: 0 } },
+      upstream: { adapter: "omni_frame_pair_v1", request_format: "json", include: ["size", "first_frame", "last_frame"],
+        poll_path: "/v1/videos/{id}", poll_interval_sec: 10, poll_timeout_sec: 7200, request_timeout_sec: 120,
+        response_map: { task_id: "id", status: "status", media_url: ["url", "video_url"] } },
+    },
+  },
   ...[
     ["newapi_grok_image", "Grok", "grok-imagine-image"],
     ["newapi_doubao_image", "Doubao / Seedream", ""],

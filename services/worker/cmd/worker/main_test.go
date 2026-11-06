@@ -272,6 +272,17 @@ func TestOpenAIImagesReferenceUploadUsesEditsMultipart(t *testing.T) {
 	}
 }
 
+func TestOmniFramePayloadCannotDegradeToTextGeneration(t *testing.T) {
+	for _, refs := range []interface{}{nil, []string{}, []string{"data:image/png;base64,eA==", "data:image/png;base64,eA==", "data:image/png;base64,eA=="}} {
+		if err := validateOmniReferencePayload(map[string]interface{}{"model": "omni_flash-10s-fl", "images": refs}); err == nil {
+			t.Fatalf("invalid frame payload accepted: %#v", refs)
+		}
+	}
+	if err := validateOmniReferencePayload(map[string]interface{}{"model": "omni_flash-10s-fl", "images": []string{"data:image/png;base64,eA=="}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestOmniReferenceUsesManagedAssetBytes(t *testing.T) {
 	store, err := storage.NewLocal(t.TempDir(), "http://127.0.0.1:1/uploads-local")
 	if err != nil {

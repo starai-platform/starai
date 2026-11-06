@@ -331,6 +331,41 @@ func TestValidateOmniReferenceModes(t *testing.T) {
 	}
 }
 
+func TestValidateOmniFrameTemplateContract(t *testing.T) {
+	model := &ModelFull{NewAPIModel: "omni_flash-10s-fl", RuntimeRule: map[string]interface{}{
+		"video":    map[string]interface{}{"upload_profile": "veo_frame_pair", "max_reference_images": 0},
+		"upstream": map[string]interface{}{"adapter": "omni_frame_pair_v1"},
+	}}
+	for _, test := range []struct {
+		name    string
+		extra   map[string]interface{}
+		invalid bool
+	}{
+		{"first only", nil, false},
+		{"ordered pair", map[string]interface{}{"last_frame": "https://e.test/last.png"}, false},
+		{"missing first", map[string]interface{}{"first_frame": ""}, true},
+		{"multiple first images", map[string]interface{}{"first_frame": []string{"one", "two"}}, true},
+		{"blank prompt", map[string]interface{}{"prompt": " "}, true},
+		{"mixed references", map[string]interface{}{"reference_images": []string{"https://e.test/ref.png"}}, true},
+		{"video unsupported", map[string]interface{}{"reference_videos": []string{"https://e.test/ref.mp4"}}, true},
+		{"gateway alias", map[string]interface{}{"first_last_frame": true}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			params := map[string]interface{}{"prompt": "test", "first_frame": "https://e.test/first.png"}
+			for key, value := range test.extra {
+				params[key] = value
+			}
+			if err := ValidateVideoParams(model, params); (err != nil) != test.invalid {
+				t.Fatalf("invalid=%v, error=%v", test.invalid, err)
+			}
+		})
+	}
+	model.NewAPIModel = "omni_flash-10s"
+	if err := ValidateVideoParams(model, map[string]interface{}{"prompt": "test", "first_frame": "https://e.test/first.png"}); err == nil {
+		t.Fatal("frame adapter must not silently use the reference model")
+	}
+}
+
 func TestValidateVeoFramePairRejectsReferenceImages(t *testing.T) {
 	cfg := videoRuntimeConfig{
 		UploadProfile:      "veo_frame_pair",

@@ -106,6 +106,13 @@ func BuildUpstreamVideoPayload(
 	if strings.EqualFold(upCfg.Adapter, "veo_frame_pair_v1") {
 		out = buildVeoFramePairPayload(out, params)
 	}
+	if strings.EqualFold(upCfg.Adapter, "omni_frame_pair_v1") {
+		out = buildVeoFramePairPayload(out, params)
+		for _, key := range []string{"seconds", "resolution", "videos", "audios", "first_last_frame"} {
+			delete(out, key)
+		}
+		out["_video_upload_profile"] = "veo_frame_pair"
+	}
 	if strings.EqualFold(upCfg.Adapter, "omni_reference_v1") {
 		out = buildOmniReferencePayload(out, params)
 	}
@@ -168,7 +175,31 @@ func buildZexVideoPayload(out, params, runtimeRule map[string]interface{}) map[s
 	out["seconds"] = fmt.Sprint(normalizeVideoDuration(firstNonNil(params["duration"], params["seconds"])))
 	delete(out, "duration")
 	images := mediaURLList(params[imageKey])
+	videos, audios := mediaURLList(params[videoKey]), mediaURLList(params[audioKey])
 	first, last := firstMediaURL(params[firstKey]), firstMediaURL(params[lastKey])
+	modeKey, _ := video["mode_param"].(string)
+	if modeKey == "" {
+		modeKey = "generation_mode"
+	}
+	// Queued tasks can retain uploads from an earlier mode. Apply the same
+	// material selection as the workbench, including custom slot names.
+	if mode, _ := params[modeKey].(string); mode != "" {
+		if mode != "first_frame" && mode != "first_last" {
+			first = ""
+		}
+		if mode != "first_last" {
+			last = ""
+		}
+		if mode != "reference" && !strings.Contains(mode, "image") {
+			images = nil
+		}
+		if mode != "reference" && !strings.Contains(mode, "video") {
+			videos = nil
+		}
+		if mode != "reference" && !strings.Contains(mode, "audio") {
+			audios = nil
+		}
+	}
 	if first != "" || last != "" {
 		images = nil
 		if first != "" {
@@ -181,7 +212,7 @@ func buildZexVideoPayload(out, params, runtimeRule map[string]interface{}) map[s
 	} else {
 		delete(out, "first_last_frame")
 	}
-	for key, refs := range map[string][]string{"images": images, "videos": mediaURLList(params[videoKey]), "audios": mediaURLList(params[audioKey])} {
+	for key, refs := range map[string][]string{"images": images, "videos": videos, "audios": audios} {
 		delete(out, key)
 		if len(refs) > 0 {
 			out[key] = refs
@@ -190,8 +221,10 @@ func buildZexVideoPayload(out, params, runtimeRule map[string]interface{}) map[s
 	for _, key := range []string{"first_frame", "last_frame", "reference_images", "reference_videos", "reference_audios", "generation_mode", "count", "n"} {
 		delete(out, key)
 	}
-	for _, key := range []string{firstKey, lastKey, imageKey, videoKey, audioKey} {
-		delete(out, key)
+	for _, key := range []string{firstKey, lastKey, imageKey, videoKey, audioKey, modeKey, "input_reference", "reference_video_duration_seconds"} {
+		if key != "images" && key != "videos" && key != "audios" {
+			delete(out, key)
+		}
 	}
 	return out
 }
@@ -823,7 +856,7 @@ func buildVeoFramePairPayload(out, params map[string]interface{}) map[string]int
 func buildOmniReferencePayload(out, params map[string]interface{}) map[string]interface{} {
 	applyCanonicalVideoSize(out, params)
 	mode := strings.ToLower(strings.TrimSpace(fmt.Sprint(params["generation_mode"])))
-	for _, key := range []string{"generation_mode", "duration", "first_frame", "last_frame", "image", "image_url"} {
+	for _, key := range []string{"generation_mode", "duration", "seconds", "resolution", "first_frame", "last_frame", "image", "image_url", "input_reference", "first_last_frame", "videos", "audios", "reference_videos", "reference_audios"} {
 		delete(out, key)
 	}
 	if mode == "reference" {

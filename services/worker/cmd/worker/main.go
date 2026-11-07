@@ -2495,7 +2495,9 @@ func normalizePayloadMedia(ctx context.Context, payload map[string]interface{}, 
 			}
 			continue
 		}
-		if videoAPI && key == "images" {
+		// Omni's reference guard requires inline image bytes, including when
+		// the source is a public URL. Other video models can keep public URLs.
+		if videoAPI && key == "images" && !strings.Contains(strings.ToLower(stringAny(payload["model"])), "omni") {
 			payload[key] = normalizeVideoReferenceImages(ctx, v)
 			continue
 		}

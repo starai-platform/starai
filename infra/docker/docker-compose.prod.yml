@@ -119,6 +119,8 @@ services:
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?set NEXT_PUBLIC_API_URL}
     restart: unless-stopped
+    # 由 tini 回收 healthcheck 超时后遗弃的 wget 子进程，避免僵尸累积
+    init: true
     logging: *default-logging
     environment:
       NODE_ENV: production
